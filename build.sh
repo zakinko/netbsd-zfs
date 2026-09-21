@@ -127,7 +127,7 @@ NAME=swap	none		swap	sw,dp		0 0
 kernfs		/kern		kernfs	rw
 ptyfs		/dev/pts	ptyfs	rw
 procfs		/proc		procfs	rw
-tmpfs		/var/shm	tmpfs	rw,-m1777,-sram=25%
+tmpfs		/var/shm	tmpfs	rw,-m1777,-sram%25
 FSTAB
 cat > "$ALTROOT/etc/rc.conf" <<RCCONF
 # See rc.conf(5) for more information.
