@@ -1,0 +1,56 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths: ['build.sh', 'test.sh', '.github/workflows/build.yml']
+  pull_request:
+    paths: ['build.sh', 'test.sh', '.github/workflows/build.yml']
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 1 * *'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image in NetBSD
+        uses: vmactions/netbsd-vm@v1
+        with:
+          release: '11.0'
+          copyback: true
+          sync: rsync
+          mem: 4096
+          run: |
+            sh build.sh
+
+      - name: Boot test under qemu
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q qemu-system-x86 expect
+          sudo chmod 666 /dev/kvm
+          gunzip -k out/netbsd-zfs.img.gz
+          sh test.sh out/netbsd-zfs.img
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: netbsd-zfs-image
+          path: |
+            out/netbsd-zfs.img.gz
+            boot.log
+          retention-days: 14
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/netbsd-zfs.img.gz
