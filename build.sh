@@ -64,7 +64,8 @@ fetch
 log "creating $IMG (${IMG_MB}MB)"
 mkdir -p "$OUT"
 rm -f "$IMG"
-truncate -s "${IMG_MB}m" "$IMG"
+# no truncate(1) on NetBSD; write the last block to size the sparse file
+dd if=/dev/zero of="$IMG" bs=1m seek=$((IMG_MB - 1)) count=1 msgfmt=quiet
 vnconfig "$VND" "$IMG"
 
 log "partitioning"
