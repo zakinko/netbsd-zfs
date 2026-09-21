@@ -1,0 +1,1225 @@
+diff --git a/usr.sbin/sysinst/Makefile.inc b/usr.sbin/sysinst/Makefile.inc
+index ffc79ffd2..d32ec2f84 100644
+--- a/usr.sbin/sysinst/Makefile.inc
++++ b/usr.sbin/sysinst/Makefile.inc
+@@ -108,6 +108,12 @@ CPPFLAGS+=	-DHAVE_DTB
+ CPPFLAGS+=	-DHAVE_MODULES
+ .endif
+ 
++.if ${HAVE_ZFS_ROOT:Uno} == "yes" && ${MKZFS:Uno} != "no"
++CPPFLAGS+=	-DHAVE_ZFS_ROOT
++MD_OPTIONS+=	HAVE_ZFS_ROOT
++SRCS+=	disks_zfs.c
++.endif
++
+ CATALOGDIR=	/usr/share/sysinst/catalog
+ CPPFLAGS+=	-I. -I${.CURDIR}/../.. -I${.CURDIR} \
+ 		-I${.CURDIR}/../../../../sbin/fsck \
+diff --git a/usr.sbin/sysinst/arch/amd64/Makefile b/usr.sbin/sysinst/arch/amd64/Makefile
+index 6444df560..9afe5f834 100644
+--- a/usr.sbin/sysinst/arch/amd64/Makefile
++++ b/usr.sbin/sysinst/arch/amd64/Makefile
+@@ -8,6 +8,7 @@ MSG_MD=		../i386/msg.md.${SYSINSTLANG} msg.mbr.${SYSINSTLANG}
+ MD_OPTIONS=	BOOTSEL AOUT2ELF HAVE_INSTALL_IMAGE
+ NO_MBR=no
+ HAVE_DVD_IMAGE=yes
++HAVE_ZFS_ROOT=yes
+ 
+ CPPFLAGS+=	-DBOOTSEL -DWSKBD
+ 
+diff --git a/usr.sbin/sysinst/arch/i386/md.c b/usr.sbin/sysinst/arch/i386/md.c
+index 1078e76ed..fe72be937 100644
+--- a/usr.sbin/sysinst/arch/i386/md.c
++++ b/usr.sbin/sysinst/arch/i386/md.c
+@@ -236,9 +236,10 @@ static int
+ update_bios_boot(struct install_partition_desc *install, bool use_target_files)
+ {
+ 	int ret;
+-	size_t len;
++	size_t len, bp;
+ 	char boot_options[1024];
+ 	char *bootxx_filename, *p;
++	const char *bootdir;
+ 	/*
+ 	 * XXX - this code retains a lot of cruft from when we went
+ 	 * to great pains to exclude installboot from the ramdisk
+@@ -282,10 +283,17 @@ update_bios_boot(struct install_partition_desc *install, bool use_target_files)
+ 			return 0;
+ 	}
+ 
++	/*
++	 * The boot loader and the bootstrap go into the partition the
++	 * firmware boots from, usually the root partition.
++	 */
++	bp = (pm == NULL || !pm->no_part) ? bootxx_partition(install) : ~0U;
++	bootdir = bp < install->num ? install->infos[bp].mount : "/";
++
+ 	if (use_target_files)
+-		ret = cp_within_target("/usr/mdec/boot", "/", 0);
++		ret = cp_within_target("/usr/mdec/boot", bootdir, 0);
+ 	else
+-		ret = cp_to_target("/usr/mdec/boot", "/");
++		ret = cp_to_target("/usr/mdec/boot", bootdir);
+ 	if (ret)
+ 		return ret;
+ 	if (pm && pm->no_part)
+@@ -298,11 +306,11 @@ update_bios_boot(struct install_partition_desc *install, bool use_target_files)
+ 	} else {
+ 	        bootxx_filename = p;
+ 	}
+-        if (bootxx_filename != NULL) {
++        if (bootxx_filename != NULL && bp < install->num) {
+ 		char rdev[PATH_MAX];
+ 
+-		install->infos[0].parts->pscheme->get_part_device(
+-		    install->infos[0].parts, install->infos[0].cur_part_id,
++		install->infos[bp].parts->pscheme->get_part_device(
++		    install->infos[bp].parts, install->infos[bp].cur_part_id,
+ 		    rdev, sizeof rdev, NULL, raw_dev_name, true, true);
+ 
+ 		snprintf(boot_options, sizeof boot_options,
+@@ -455,12 +463,63 @@ md_post_newfs(struct install_partition_desc *install)
+ 	    : md_post_newfs_bios(install);
+ }
+ 
++#ifdef HAVE_ZFS_ROOT
++/*
++ * Fill the boot partition of a ZFS root and write a boot.cfg that
++ * loads the zfs modules and the root ramdisk from it.  The boot.cfg
++ * the etc set put on the ZFS root is out of the boot loader's reach.
++ */
++static int
++zfs_root_boot_cfg(struct install_partition_desc *install)
++{
++	static const char zfs_boot[] =
++	    "load solaris;load zfs;fs /" ZFS_ROOT_RAMDISK ";boot";
++	FILE *f;
++	int ret;
++
++	ret = zfs_root_post_extract(install);
++	if (ret != 0)
++		return ret;
++
++	f = target_fopen(ZFS_BOOT_MOUNT "/boot.cfg", "w");
++	if (f == NULL)
++		return 1;
++	scripting_fprintf(NULL, "cat <<EOF >%s" ZFS_BOOT_MOUNT "/boot.cfg\n",
++	    target_prefix());
++	scripting_fprintf(f, "banner=Welcome to NetBSD\n");
++	scripting_fprintf(f, "banner=Root file system is %s/%s (ZFS)\n",
++	    ZFS_ROOT_POOL, ZFS_ROOT_FS);
++	scripting_fprintf(f, "banner=Kernel and modules are in the boot "
++	    "partition, mounted as %s\n", ZFS_BOOT_MOUNT);
++	scripting_fprintf(f, "banner=\n");
++	scripting_fprintf(f, "menu=Boot normally:%s\n", zfs_boot);
++	scripting_fprintf(f, "menu=Boot single user:%s -s\n", zfs_boot);
++	scripting_fprintf(f, "menu=Drop to boot prompt:prompt\n");
++	scripting_fprintf(f, "default=1\n");
++	scripting_fprintf(f, "timeout=5\n");
++	scripting_fprintf(f, "clear=1\n");
++	scripting_fprintf(NULL, "EOF\n");
++	fclose(f);
++	return 0;
++}
++#endif
++
+ int
+ md_post_extract(struct install_partition_desc *install, bool upgrade)
+ {
+ 	if (upgrade)
+ 		update_boot_code(install, true);
+ 
++#ifdef HAVE_ZFS_ROOT
++	if (!upgrade && zfs_boot_part(install) != NULL) {
++		int ret;
++
++		ret = zfs_root_boot_cfg(install);
++		if (ret)
++			return ret;
++	}
++#endif
++
+ #if defined(__amd64__)
+ 	if (get_kernel_set() == SET_KERNEL_2) {
+ 		int ret;
+diff --git a/usr.sbin/sysinst/bsddisklabel.c b/usr.sbin/sysinst/bsddisklabel.c
+index a9af942ee..2ff14cdff 100644
+--- a/usr.sbin/sysinst/bsddisklabel.c
++++ b/usr.sbin/sysinst/bsddisklabel.c
+@@ -149,6 +149,36 @@ default_parts_init[] =
+ 	  .fs_type = FS_BSDFFS, .fs_version = 3 },
+ };
+ 
++#ifdef HAVE_ZFS_ROOT
++/*
++ * The default layout with root on ZFS: the boot loader reads the
++ * kernel, the zfs modules and the root ramdisk from a small FFS
++ * partition, / itself is ZFS_ROOT_POOL/ZFS_ROOT_FS.  No separate
++ * /usr or /var, those would be data sets in the pool.
++ */
++static const struct part_usage_info
++default_parts_zfs_init[] =
++{
++	{ .size = DEFZFSBOOTSIZE*(MEG/512), .mount = ZFS_BOOT_MOUNT,
++	  .type = PT_root, .fs_type = FS_BSDFFS, .fs_version = 3,
++	  .instflags = PUIINST_BOOT, .mountflags = PUIMNT_NOAUTO },
++	{ .size = DEFROOTSIZE*(MEG/512), .mount = "/", .type = PT_root,
++	  .fs_type = FS_ZFS, .flags = PUIFLAG_EXTEND },
++	{
++#if DEFSWAPSIZE > 0
++	  .size = DEFSWAPSIZE*(MEG/512),
++#endif
++	  .type = PT_swap, .fs_type = FS_SWAP },
++#ifdef HAVE_TMPFS
++	{ .type = PT_root, .mount = "/tmp", .fs_type = FS_TMPFS,
++	  .flags = PUIFLG_JUST_MOUNTPOINT },
++#else
++	{ .type = PT_root, .mount = "/tmp", .fs_type = FS_MFS,
++	  .flags = PUIFLG_JUST_MOUNTPOINT },
++#endif
++};
++#endif
++
+ static const char size_separator[] =
+     "----------------------------------- - --------------------";
+ static char size_menu_title[STRSIZE];
+@@ -779,6 +809,15 @@ set_use_default_sizes(menudesc *m, void *arg)
+ 	return 0;
+ }
+ 
++#ifdef HAVE_ZFS_ROOT
++static int
++set_use_default_sizes_zfs(menudesc *m, void *arg)
++{
++	((arg_rep_int*)arg)->rv = LY_USEDEFAULT_ZFS;
++	return 0;
++}
++#endif
++
+ static int
+ set_use_empty_parts(menudesc *m, void *arg)
+ {
+@@ -820,7 +859,7 @@ ask_layout(struct disk_partitions *parts, bool have_existing)
+ 	const char *args[2];
+ 	int menu;
+ 	size_t num_opts;
+-	menu_ent options[5], *opt;
++	menu_ent options[6], *opt;
+ 
+ 	args[0] = msg_string(parts->pscheme->name);
+ 	args[1] = msg_string(parts->pscheme->short_name);
+@@ -851,6 +890,16 @@ ask_layout(struct disk_partitions *parts, bool have_existing)
+ 	opt++;
+ 	num_opts++;
+ 
++#ifdef HAVE_ZFS_ROOT
++	if (zfs_root_available() && zfs_root_scheme_ok(parts)) {
++		opt->opt_name = MSG_Use_Default_Parts_ZFS;
++		opt->opt_flags = OPT_EXIT;
++		opt->opt_action = set_use_default_sizes_zfs;
++		opt++;
++		num_opts++;
++	}
++#endif
++
+ 	opt->opt_name = MSG_Use_Empty_Parts;
+ 	opt->opt_flags = OPT_EXIT;
+ 	opt->opt_action = set_use_empty_parts;
+@@ -959,14 +1008,23 @@ have_x11_by_default(void)
+ 
+ static void
+ fill_defaults(struct partition_usage_set *wanted, struct disk_partitions *parts,
+-    daddr_t ptstart, daddr_t ptsize)
++    daddr_t ptstart, daddr_t ptsize, bool zfs_root)
+ {
++	const struct part_usage_info *defaults = default_parts_init;
+ 	size_t i, root = ~0U, usr = ~0U, swap = ~0U, def_usr = ~0U;
++	size_t num_defaults = __arraycount(default_parts_init);
+ 	daddr_t free_space, dump_space, required;
+ #if defined(DEFAULT_UFS2) && !defined(HAVE_UFS2_BOOT)
+ 	size_t boot = ~0U;
+ #endif
+ 
++#ifdef HAVE_ZFS_ROOT
++	if (zfs_root) {
++		defaults = default_parts_zfs_init;
++		num_defaults = __arraycount(default_parts_zfs_init);
++	}
++#endif
++
+ 	memset(wanted, 0, sizeof(*wanted));
+ 	wanted->parts = parts;
+ 	if (ptstart > parts->disk_start)
+@@ -975,14 +1033,14 @@ fill_defaults(struct partition_usage_set *wanted, struct disk_partitions *parts,
+ 		wanted->reserved_space +=
+ 		    (parts->disk_start+parts->disk_size) -
+ 		    (ptstart + ptsize);
+-	wanted->num = __arraycount(default_parts_init);
++	wanted->num = num_defaults;
+ 	wanted->infos = calloc(wanted->num, sizeof(*wanted->infos));
+ 	if (wanted->infos == NULL) {
+ 		err_msg_win(err_outofmem);
+ 		return;
+ 	}
+ 
+-	memcpy(wanted->infos, default_parts_init, sizeof(default_parts_init));
++	memcpy(wanted->infos, defaults, num_defaults * sizeof(*defaults));
+ 
+ #ifdef HAVE_TMPFS
+ 	if (get_ramsize() >= SMALL_RAM_SIZE) {
+@@ -1727,7 +1785,8 @@ apply_settings_to_partitions(struct disk_partitions *parts,
+ 
+ static void
+ replace_by_default(struct disk_partitions *parts,
+-    daddr_t start, daddr_t size, struct partition_usage_set *wanted)
++    daddr_t start, daddr_t size, struct partition_usage_set *wanted,
++    bool zfs_root)
+ {
+ 
+ 	if (start == 0 && size == parts->disk_size)
+@@ -1737,7 +1796,7 @@ replace_by_default(struct disk_partitions *parts,
+ 	else
+ 		assert(parts->num_part == 0);
+ 
+-	fill_defaults(wanted, parts, start, size);
++	fill_defaults(wanted, parts, start, size, zfs_root);
+ 	apply_settings_to_partitions(parts, wanted, start, size);
+ }
+ 
+@@ -1747,7 +1806,7 @@ edit_with_defaults(struct disk_partitions *parts,
+ {
+ 	bool ok;
+ 
+-	fill_defaults(wanted, parts, start, size);
++	fill_defaults(wanted, parts, start, size, false);
+ 	ok = get_ptn_sizes(wanted);
+ 	if (ok)
+ 		apply_settings_to_partitions(parts, wanted, start, size);
+@@ -1837,7 +1896,8 @@ make_bsd_partitions(struct install_partition_desc *install)
+ 			return 0;
+ 	}
+ 
+-	if (layoutkind == LY_USEDEFAULT || layoutkind == LY_SETSIZES) {
++	if (layoutkind == LY_USEDEFAULT || layoutkind == LY_USEDEFAULT_ZFS ||
++	    layoutkind == LY_SETSIZES) {
+ 		/* calc available disk area for the NetBSD partitions */
+ 		p_start = pm->ptstart;
+ 		p_size = pm->ptsize;
+@@ -1862,9 +1922,10 @@ make_bsd_partitions(struct install_partition_desc *install)
+ 			p_size = space.size;
+ 			wanted.cur_free_space = space.size;
+ 		}
+-	} else if (layoutkind == LY_USEDEFAULT) {
++	} else if (layoutkind == LY_USEDEFAULT ||
++	    layoutkind == LY_USEDEFAULT_ZFS) {
+ 		replace_by_default(parts, p_start, p_size,
+-		    &wanted);
++		    &wanted, layoutkind == LY_USEDEFAULT_ZFS);
+ 	} else if (layoutkind == LY_SETSIZES) {
+ 		if (!edit_with_defaults(parts, p_start, p_size,
+ 		    &wanted)) {
+@@ -1913,6 +1974,27 @@ make_bsd_partitions(struct install_partition_desc *install)
+ 			break;
+ 		}
+ 	}
++#ifdef HAVE_ZFS_ROOT
++	/*
++	 * With root on ZFS the firmware boots the FFS partition next to
++	 * it; flag that one so the partitioning scheme points its boot
++	 * record there instead of at the install target.
++	 */
++	for (size_t i = 0; i < wanted.num; i++) {
++		struct disk_part_info info;
++
++		if ((wanted.infos[i].instflags & PUIINST_BOOT) == 0 ||
++		    wanted.infos[i].fs_type != FS_BSDFFS)
++			continue;
++		wanted.infos[i].cur_flags |= PTI_BOOT;
++		if (!wanted.parts->pscheme->get_part_info(wanted.parts,
++		    wanted.infos[i].cur_part_id, &info))
++			continue;
++		info.flags |= PTI_BOOT;
++		wanted.parts->pscheme->set_part_info(wanted.parts,
++		    wanted.infos[i].cur_part_id, &info, NULL);
++	}
++#endif
+ #ifdef HAVE_EFI_BOOT
+ 	size_t boot_part = ~0U;
+ 	for (part_id i = 0; i < wanted.num; i++) {
+@@ -2035,5 +2117,10 @@ check_partitions(struct install_partition_desc *install)
+ 	}
+ #endif
+ 
++#ifdef HAVE_ZFS_ROOT
++	if (!zfs_root_check_partitions(install))
++		return false;
++#endif
++
+ 	return md_check_partitions(install);
+ }
+diff --git a/usr.sbin/sysinst/defs.h b/usr.sbin/sysinst/defs.h
+index 484902af8..35da20e12 100644
+--- a/usr.sbin/sysinst/defs.h
++++ b/usr.sbin/sysinst/defs.h
+@@ -116,6 +116,7 @@ enum layout_type {
+ 	LY_OTHERSCHEME,		/* delete all, select new partitioning scheme */
+ 	LY_SETSIZES,		/* edit sizes */
+ 	LY_USEDEFAULT,		/* use default sizes */
++	LY_USEDEFAULT_ZFS,	/* use default sizes, root on ZFS */
+ 	LY_USEFULL,		/* use full disk for NetBSD */
+ 	LY_USENONE,		/* start with empty partitions, manual mode */
+ 	LY_ERROR		/* used for "abort" in menu */
+@@ -739,11 +740,37 @@ void	set_swap(struct install_partition_desc *);
+ void	clear_swap(void);
+ int	check_swap(const char *, int);
+ char *bootxx_name(struct install_partition_desc *);
++size_t bootxx_partition(struct install_partition_desc *);
+ int get_dkwedges(struct dkwedge_info **, const char *);
+ 
+ /* from disks_lfs.c */
+ int	fs_is_lfs(void *);
+ 
++#ifdef HAVE_ZFS_ROOT
++/*
++ * from disks_zfs.c
++ * The pool and file system names are what the ramdisk-zfsroot.fs
++ * image from the release expects, the mount point of the boot
++ * partition follows the NetBSD wiki's root on ZFS setup.
++ */
++#define	ZFS_ROOT_POOL	"rpool"
++#define	ZFS_ROOT_FS	"ROOT"
++#define	ZFS_BOOT_MOUNT	"/altroot"
++#define	ZFS_ROOT_RAMDISK "ramdisk-zfsroot.fs"
++#ifndef DEFZFSBOOTSIZE
++#define	DEFZFSBOOTSIZE	256	/* MB for kernel, modules and ramdisk */
++#endif
++extern bool zfs_root_install;
++bool	zfs_root_available(void);
++bool	zfs_root_scheme_ok(const struct disk_partitions *);
++struct part_usage_info *zfs_root_part(struct install_partition_desc *);
++struct part_usage_info *zfs_boot_part(struct install_partition_desc *);
++bool	zfs_root_check_partitions(struct install_partition_desc *);
++int	zfs_root_setup(struct part_usage_info *, const char *);
++int	zfs_root_get_ramdisk(void);
++int	zfs_root_post_extract(struct install_partition_desc *);
++#endif
++
+ /* from label.c */
+ /*
+  * Bits valid for "flags" in get_last_mounted.
+@@ -801,6 +828,7 @@ bool	get_label_geom(const char *, struct disklabel *);
+ extern int network_up;
+ extern char net_namesvr[STRSIZE];
+ int	get_via_ftp(unsigned int);
++int	ftp_fetch_file(const char *, const char *);
+ int	get_via_nfs(void);
+ int	config_network(int force);
+ void	mnt_net_config(void);
+@@ -1002,7 +1030,8 @@ daddr_t parse_disk_pos(
+ 
+ /* flags whether to offer the respective options (depending on helper
+    programs available on install media */
+-extern int have_raid, have_vnd, have_cgd, have_lvm, have_gpt, have_dk;
++extern int have_raid, have_vnd, have_cgd, have_lvm, have_gpt, have_dk,
++    have_zfs;
+ /* initialize above variables */
+ void check_available_binaries(void);
+ 
+diff --git a/usr.sbin/sysinst/disks.c b/usr.sbin/sysinst/disks.c
+index 196c47c2c..c7654cbe5 100644
+--- a/usr.sbin/sysinst/disks.c
++++ b/usr.sbin/sysinst/disks.c
+@@ -1329,6 +1329,17 @@ make_filesystems(struct install_partition_desc *install)
+ 		parts->pscheme->get_part_device(parts, ptn->cur_part_id,
+ 		    rdev, sizeof rdev, &partno, raw_dev_name, true, true);
+ 
++#ifdef HAVE_ZFS_ROOT
++		/* the root pool is neither newfs'd nor mounted by device */
++		if (ptn->fs_type == FS_ZFS && strcmp(ptn->mount, "/") == 0) {
++			md_pre_mount(install, i);
++			error = zfs_root_setup(ptn, devdev);
++			if (error != 0)
++				return error;
++			continue;
++		}
++#endif
++
+ 		opts[0] = 0;
+ 		switch (ptn->fs_type) {
+ 		case FS_APPLEUFS:
+@@ -1582,6 +1593,15 @@ make_fstab(struct install_partition_desc *install)
+ 			fstype = "sysvbfs";
+ 			make_target_dir("/stand");
+ 			break;
++#ifdef HAVE_ZFS_ROOT
++		case FS_ZFS:
++			if (strcmp(mp, "/") != 0)
++				continue;
++			/* the ramdisk mounts it before init runs */
++			scripting_fprintf(f, "# %s/%s\t/\tzfs\trw\t\t 0 0\n",
++			    ZFS_ROOT_POOL, ZFS_ROOT_FS);
++			continue;
++#endif
+ 		default:
+ 			fstype = "???";
+ 			s = "# ";
+@@ -2204,31 +2224,47 @@ check_swap(const char *disk, int remove_swap)
+ }
+ 
+ #ifdef HAVE_BOOTXX_xFS
+-char *
+-bootxx_name(struct install_partition_desc *install)
++/*
++ * Index of the partition the primary bootstrap belongs to: a boot
++ * partition of a type we have boot code for, else the root partition.
++ * Returns ~0U if there is none.
++ */
++size_t
++bootxx_partition(struct install_partition_desc *install)
+ {
+ 	size_t i;
+-	int fstype = -1;
+-	const char *bootxxname;
+-	char *bootxx;
+ 
++	for (i = 0; i < install->num; i++) {
++		if ((install->infos[i].instflags & PUIINST_BOOT) &&
++		    (install->infos[i].fs_type == FS_BSDFFS ||
++		    install->infos[i].fs_type == FS_BSDLFS))
++			return i;
++	}
+ 	/* find a partition to be mounted as / */
+ 	for (i = 0; i < install->num; i++) {
+ 		if ((install->infos[i].instflags & PUIINST_MOUNT)
+-		    && strcmp(install->infos[i].mount, "/") == 0) {
+-			fstype = install->infos[i].fs_type;
+-			break;
+-		}
++		    && strcmp(install->infos[i].mount, "/") == 0)
++			return i;
+ 	}
+-	if (fstype < 0) {
+-		/* not found? take first root type partition instead */
+-		for (i = 0; i < install->num; i++) {
+-			if (install->infos[i].type == PT_root) {
+-				fstype = install->infos[i].fs_type;
+-				break;
+-			}
+-		}
++	/* not found? take first root type partition instead */
++	for (i = 0; i < install->num; i++) {
++		if (install->infos[i].type == PT_root)
++			return i;
+ 	}
++	return ~0U;
++}
++
++char *
++bootxx_name(struct install_partition_desc *install)
++{
++	size_t i;
++	int fstype = -1;
++	const char *bootxxname;
++	char *bootxx;
++
++	i = bootxx_partition(install);
++	if (i < install->num)
++		fstype = install->infos[i].fs_type;
+ 
+ 	/* check we have boot code for the root partition type */
+ 	switch (fstype) {
+diff --git a/usr.sbin/sysinst/disks_zfs.c b/usr.sbin/sysinst/disks_zfs.c
+new file mode 100644
+index 000000000..8707076dd
+--- /dev/null
++++ b/usr.sbin/sysinst/disks_zfs.c
+@@ -0,0 +1,286 @@
++/*	$NetBSD$	*/
++
++/*
++ * Copyright (c) 2026 The NetBSD Foundation, Inc.
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE NETBSD FOUNDATION, INC. AND CONTRIBUTORS
++ * ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
++ * TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE FOUNDATION OR CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++/*
++ * Root on ZFS.
++ *
++ * The boot loader can not read ZFS, so the root pool is paired with a
++ * small FFS boot partition holding the kernel, the solaris and zfs
++ * modules and the ramdisk-zfsroot.fs image from the release.  The
++ * ramdisk imports the pool, mounts ZFS_ROOT_POOL/ZFS_ROOT_FS on
++ * /altroot and points init.root at it; that is where the names used
++ * here come from (see distrib/common/zfsroot.rc).  The boot partition
++ * stays reachable from the installed system as ZFS_BOOT_MOUNT.
++ */
++
++#include <sys/sysctl.h>
++#include <string.h>
++
++#include "defs.h"
++#include "msg_defs.h"
++
++/*
++ * Set once the root pool has been created, so the code that runs
++ * after the sets are extracted (and no longer has the partition
++ * description at hand) knows to fetch the ramdisk.
++ */
++bool zfs_root_install;
++
++static const char zfs_ramdisk_subdir[] = "installation/ramdisk";
++static const char zfs_sets_subdir[] = "binary/sets";
++
++#ifdef HAVE_GPT
++extern const struct disk_partitioning_scheme gpt_parts;
++#endif
++
++/*
++ * Do we have what a ZFS root needs on the install medium?
++ */
++bool
++zfs_root_available(void)
++{
++
++	check_available_binaries();
++	return have_zfs;
++}
++
++/*
++ * The ramdisk finds the pool with zpool import, which on NetBSD only
++ * scans whole disks and wedges, so the pool partition has to be one
++ * the kernel turns into a wedge by itself: a GPT one.  A disklabel
++ * partition would need DKWEDGE_METHOD_BSDLABEL, which GENERIC lacks.
++ */
++bool
++zfs_root_scheme_ok(const struct disk_partitions *parts)
++{
++
++#ifdef HAVE_GPT
++	return parts->pscheme == &gpt_parts;
++#else
++	return false;
++#endif
++}
++
++/*
++ * The partition that will be mounted as / on ZFS, or NULL.
++ */
++struct part_usage_info *
++zfs_root_part(struct install_partition_desc *install)
++{
++	size_t i;
++
++	for (i = 0; i < install->num; i++) {
++		if (install->infos[i].fs_type == FS_ZFS &&
++		    strcmp(install->infos[i].mount, "/") == 0)
++			return &install->infos[i];
++	}
++	return NULL;
++}
++
++/*
++ * The FFS boot partition belonging to a ZFS root, or NULL.
++ */
++struct part_usage_info *
++zfs_boot_part(struct install_partition_desc *install)
++{
++	size_t i;
++
++	for (i = 0; i < install->num; i++) {
++		if ((install->infos[i].instflags & PUIINST_BOOT) &&
++		    (install->infos[i].instflags & PUIINST_MOUNT) &&
++		    install->infos[i].fs_type == FS_BSDFFS &&
++		    strcmp(install->infos[i].mount, ZFS_BOOT_MOUNT) == 0)
++			return &install->infos[i];
++	}
++	return NULL;
++}
++
++/*
++ * A ZFS root only works with the boot partition next to it.
++ */
++bool
++zfs_root_check_partitions(struct install_partition_desc *install)
++{
++
++	if (zfs_root_part(install) == NULL)
++		return true;
++	if (!zfs_root_available()) {
++		hit_enter_to_continue(NULL, MSG_zfs_root_unavailable);
++		return false;
++	}
++	if (zfs_boot_part(install) == NULL) {
++		hit_enter_to_continue(NULL, MSG_zfs_root_no_boot_part);
++		return false;
++	}
++	if (!zfs_root_scheme_ok(zfs_root_part(install)->parts)) {
++		hit_enter_to_continue(NULL, MSG_zfs_root_needs_gpt);
++		return false;
++	}
++	return true;
++}
++
++/*
++ * Create the root pool on the partition's device and mount the root
++ * file system, the equivalent of newfs and mount for other types.
++ * The pool itself is not mounted anywhere (the install medium may
++ * well be read-only), ZFS_ROOT_FS uses a legacy mount point so
++ * mount(8) and the ramdisk can deal with it.
++ */
++int
++zfs_root_setup(struct part_usage_info *ptn, const char *dev)
++{
++	int error;
++
++	if (ptn->instflags & PUIINST_NEWFS) {
++		error = run_program(RUN_DISPLAY | RUN_PROGRESS,
++		    "/sbin/zpool create -f -m none -o cachefile=none %s %s",
++		    ZFS_ROOT_POOL, dev);
++		if (error != 0)
++			return error;
++		error = run_program(RUN_DISPLAY | RUN_PROGRESS,
++		    "/sbin/zfs create -o mountpoint=legacy %s/%s",
++		    ZFS_ROOT_POOL, ZFS_ROOT_FS);
++		if (error != 0)
++			return error;
++		ptn->instflags &= ~PUIINST_NEWFS;
++	}
++
++	if (partman_go == 0 && (ptn->instflags & PUIINST_MOUNT)) {
++		char fs[STRSIZE];
++
++		snprintf(fs, sizeof fs, "%s/%s", ZFS_ROOT_POOL, ZFS_ROOT_FS);
++		make_target_dir(ptn->mount);
++		error = target_mount_do("-t zfs", fs, ptn->mount);
++		if (error != 0) {
++			msg_display_subst(MSG_mountfail, 2, fs, ptn->mount);
++			hit_enter_to_continue(NULL, NULL);
++			return error;
++		}
++	}
++
++	zfs_root_install = true;
++	return 0;
++}
++
++/*
++ * The ramdisk lives in installation/ramdisk of the release, next to
++ * the binary/sets directory the sets came from.  Turn one into the
++ * other; fails if the sets directory is not the release layout.
++ */
++static bool
++zfs_ramdisk_dir(char *buf, size_t len, const char *setsdir)
++{
++	size_t slen = strlen(setsdir), suflen = strlen(zfs_sets_subdir);
++
++	while (slen > 0 && setsdir[slen - 1] == '/')
++		slen--;
++	if (slen < suflen ||
++	    strncmp(setsdir + slen - suflen, zfs_sets_subdir, suflen) != 0)
++		return false;
++	snprintf(buf, len, "%.*s%s", (int)(slen - suflen), setsdir,
++	    zfs_ramdisk_subdir);
++	return true;
++}
++
++/*
++ * Put the ramdisk into the target's boot partition.  Called while
++ * the distribution medium is still mounted, right after the sets.
++ * Fetched sets come via ftp into xfer_dir; local media have the
++ * release directory at hand.
++ */
++int
++zfs_root_get_ramdisk(void)
++{
++	char dir[STRSIZE], src[STRSIZE], dest[STRSIZE];
++
++	snprintf(dest, sizeof dest, "%s/%s", ZFS_BOOT_MOUNT, ZFS_ROOT_RAMDISK);
++
++	if (fetch_fn != NULL) {
++		if (!zfs_ramdisk_dir(dir, sizeof dir, set_dir_bin) ||
++		    ftp_fetch_file(dir, ZFS_ROOT_RAMDISK) != SET_OK)
++			goto missing;
++		snprintf(src, sizeof src, "%s/%s", xfer_dir, ZFS_ROOT_RAMDISK);
++		if (!target_file_exists_p(src))
++			goto missing;
++		mv_within_target_or_die(src, dest);
++		return 0;
++	}
++
++	if (!zfs_ramdisk_dir(dir, sizeof dir, ext_dir_bin))
++		goto missing;
++	snprintf(src, sizeof src, "%s/%s", dir, ZFS_ROOT_RAMDISK);
++	if (!file_exists_p(src))
++		goto missing;
++	return cp_to_target(src, dest);
++
++missing:
++	msg_display_subst(MSG_zfs_root_no_ramdisk, 1, ZFS_ROOT_RAMDISK);
++	hit_enter_to_continue(NULL, NULL);
++	return 1;
++}
++
++/*
++ * After the sets are in: the boot loader needs the kernel and the two
++ * modules on the boot partition, the rest of the modules are loaded
++ * from the ZFS root once init has chrooted there.  The kernel we run
++ * is the one we install, so it knows where the modules set put them.
++ */
++int
++zfs_root_post_extract(struct install_partition_desc *install)
++{
++	static const char *modules[] = { "solaris", "zfs" };
++	char modbase[STRSIZE], moddir[STRSIZE], src[STRSIZE], dest[STRSIZE];
++	size_t i, len;
++	int error;
++
++	if (zfs_boot_part(install) == NULL)
++		return 0;
++
++	error = cp_within_target("/netbsd", ZFS_BOOT_MOUNT "/netbsd", 0);
++	if (error != 0)
++		return error;
++
++	len = sizeof modbase;
++	if (sysctlbyname("kern.module.path", modbase, &len, NULL, 0) != 0)
++		return 1;
++
++	for (i = 0; i < __arraycount(modules); i++) {
++		snprintf(moddir, sizeof moddir, "%s/%s", modbase, modules[i]);
++		snprintf(src, sizeof src, "%s/%s.kmod", moddir, modules[i]);
++		snprintf(dest, sizeof dest, "%s%s", ZFS_BOOT_MOUNT, moddir);
++		make_target_dir(dest);
++		snprintf(dest, sizeof dest, "%s%s/%s.kmod", ZFS_BOOT_MOUNT,
++		    moddir, modules[i]);
++		error = cp_within_target(src, dest, 0);
++		if (error != 0)
++			return error;
++	}
++
++	add_rc_conf("zfs=YES\n");
++	return 0;
++}
+diff --git a/usr.sbin/sysinst/gpt.c b/usr.sbin/sysinst/gpt.c
+index 77cde14aa..1075cc361 100644
+--- a/usr.sbin/sysinst/gpt.c
++++ b/usr.sbin/sysinst/gpt.c
+@@ -142,6 +142,7 @@ struct gpt_part_entry {
+ #define	GPEF_WEDGE	4		/* wedge for this exists */
+ #define	GPEF_RESIZED	8		/* size has changed */
+ #define	GPEF_TARGET	16		/* marked install target */
++#define	GPEF_BOOT	32		/* firmware boots from this one */
+ 	struct gpt_part_entry *gp_next;
+ };
+ 
+@@ -555,6 +556,8 @@ gpt_get_part_info(const struct disk_partitions *arg, part_id id,
+ 	info->fs_opt3 = p->fs_opt3;
+ 	if (p->gp_flags & GPEF_TARGET)
+ 		info->flags |= PTI_INSTALL_TARGET;
++	if (p->gp_flags & GPEF_BOOT)
++		info->flags |= PTI_BOOT;
+ 
+ 	return true;
+ }
+@@ -669,6 +672,10 @@ gpt_set_part_info(struct disk_partitions *arg, part_id id,
+ 	} else {
+ 		p->gp_flags &= ~GPEF_TARGET;
+ 	}
++	if (info->flags & PTI_BOOT)
++		p->gp_flags |= GPEF_BOOT;
++	else
++		p->gp_flags &= ~GPEF_BOOT;
+ 
+ 	if ((p->gp_flags & GPEF_ON_DISK)) {
+ 		if (info->start != p->gp_start) {
+@@ -1149,6 +1156,8 @@ gpt_add_part(struct disk_partitions *arg,
+ 				if (n != p)
+ 					n->gp_flags &= ~GPEF_TARGET;
+ 		}
++		if (info->flags & PTI_BOOT)
++			p->gp_flags |= GPEF_BOOT;
+ 
+ 		parts->dp.num_part++;
+ 		parts->dp.free_space -= p->gp_size;
+@@ -1563,8 +1572,8 @@ gpt_write_to_disk(struct disk_partitions *arg)
+ 	char label_arg[sizeof(p->gp_label) + 10];
+ 	char diskpath[MAXPATHLEN];
+ 	int fd, bits = 0;
+-	bool root_is_new = false, efi_is_new = false;
+-	part_id root_id = NO_PART, efi_id = NO_PART, pno;
++	bool root_is_new = false, boot_is_new = false, efi_is_new = false;
++	part_id root_id = NO_PART, boot_id = NO_PART, efi_id = NO_PART, pno;
+ 
+ 	/*
+ 	 * Remove all wedges on this disk - they may become invalid and we
+@@ -1581,10 +1590,18 @@ gpt_write_to_disk(struct disk_partitions *arg)
+ 
+ 	/*
+ 	 * Collect first root and efi partition (if available), clear
+-	 * "have wedge" flags.
++	 * "have wedge" flags.  A partition flagged for booting (the FFS
++	 * one next to a ZFS root) takes the place of the root partition
++	 * for the boot record.
+ 	 */
+ 	for (pno = 0, p = parts->partitions; p != NULL; p = p->gp_next, pno++) {
+ 		p->gp_flags &= ~GPEF_WEDGE;
++		if (boot_id == NO_PART && p->gp_type != NULL &&
++		    p->gp_type->gent.generic_ptype == PT_root &&
++		    (p->gp_flags & GPEF_BOOT)) {
++			boot_id = pno;
++			boot_is_new = !(p->gp_flags & GPEF_ON_DISK);
++		}
+ 		if (root_id == NO_PART && p->gp_type != NULL) {
+ 			if (p->gp_type->gent.generic_ptype == PT_root &&
+ 			    (p->gp_flags & GPEF_TARGET)) {
+@@ -1598,6 +1615,11 @@ gpt_write_to_disk(struct disk_partitions *arg)
+ 		}
+ 	}
+ 
++	if (boot_id != NO_PART) {
++		root_id = boot_id;
++		root_is_new = boot_is_new;
++	}
++
+ 	/*
+ 	 * If no GPT on disk yet, create it.
+ 	 */
+diff --git a/usr.sbin/sysinst/msg.mi.de b/usr.sbin/sysinst/msg.mi.de
+index 76fd296a2..c82765f5b 100644
+--- a/usr.sbin/sysinst/msg.mi.de
++++ b/usr.sbin/sysinst/msg.mi.de
+@@ -1036,6 +1036,26 @@ message cannot_ufs2_root
+ {Leider existiert für diese Maschine kein Bootloader für FFSv2 Dateisysteme,
+ daher kann das Root-Dateisystem nicht im FFSv2 Format angelegt werden.}
+ 
++message zfs_root_unavailable
++{ZFS is not available on this installation medium, the root file system
++can not be put on it.}
++
++message zfs_root_no_boot_part
++{A root file system on ZFS needs a FFS boot partition mounted as /altroot
++for the kernel, the zfs modules and the boot ramdisk.  Please choose the
++"root on ZFS" partition layout.}
++
++message zfs_root_needs_gpt
++{A root file system on ZFS needs a GPT partition for the pool: the boot
++ramdisk finds the pool by scanning whole disks and wedges only.}
++
++/* Called with:				Example
++ *  $0 = ramdisk file name		ramdisk-zfsroot.fs
++ */
++message zfs_root_no_ramdisk
++{Could not find $0 in installation/ramdisk next to the sets.
++The system will not boot until it is copied to the boot partition.}
++
+ message edit_partitions_again
+ {
+ 
+@@ -1151,6 +1171,12 @@ message Set_Sizes {Gr
+  */
+ message Use_Default_Parts {Standard-Partitionsgößen verwenden}
+ 
++/* Called with:				Example
++ *  $0 = partitioning name		Master Boot Record (MBR)
++ *  $1 = short version of $0		MBR
++ */
++message Use_Default_Parts_ZFS {Use default partition sizes, root on ZFS}
++
+ /* Called with: 			Example
+  *  $0 = partitioning name		Master Boot Record (MBR)
+  *  $1 = short version of $0		MBR
+diff --git a/usr.sbin/sysinst/msg.mi.en b/usr.sbin/sysinst/msg.mi.en
+index ea188b841..bf0f173b8 100644
+--- a/usr.sbin/sysinst/msg.mi.en
++++ b/usr.sbin/sysinst/msg.mi.en
+@@ -971,6 +971,26 @@ message cannot_ufs2_root
+ {Sorry, the root file system can't be FFSv2 due to lack of bootloader support
+ on this port.}
+ 
++message zfs_root_unavailable
++{ZFS is not available on this installation medium, the root file system
++can not be put on it.}
++
++message zfs_root_no_boot_part
++{A root file system on ZFS needs a FFS boot partition mounted as /altroot
++for the kernel, the zfs modules and the boot ramdisk.  Please choose the
++"root on ZFS" partition layout.}
++
++message zfs_root_needs_gpt
++{A root file system on ZFS needs a GPT partition for the pool: the boot
++ramdisk finds the pool by scanning whole disks and wedges only.}
++
++/* Called with:				Example
++ *  $0 = ramdisk file name		ramdisk-zfsroot.fs
++ */
++message zfs_root_no_ramdisk
++{Could not find $0 in installation/ramdisk next to the sets.
++The system will not boot until it is copied to the boot partition.}
++
+ message edit_partitions_again
+ {
+ 
+@@ -1086,6 +1106,12 @@ message Set_Sizes {Set sizes of NetBSD partitions}
+  */
+ message Use_Default_Parts {Use default partition sizes}
+ 
++/* Called with:				Example
++ *  $0 = partitioning name		Master Boot Record (MBR)
++ *  $1 = short version of $0		MBR
++ */
++message Use_Default_Parts_ZFS {Use default partition sizes, root on ZFS}
++
+ /* Called with:				Example
+  *  $0 = partitioning name		Master Boot Record (MBR)
+  *  $1 = short version of $0		MBR
+diff --git a/usr.sbin/sysinst/msg.mi.es b/usr.sbin/sysinst/msg.mi.es
+index 357275920..11382a1e6 100644
+--- a/usr.sbin/sysinst/msg.mi.es
++++ b/usr.sbin/sysinst/msg.mi.es
+@@ -990,6 +990,26 @@ message cannot_ufs2_root
+ {Sorry, the root file system can't be FFSv2 due to lack of bootloader support
+ on this port.}
+ 
++message zfs_root_unavailable
++{ZFS is not available on this installation medium, the root file system
++can not be put on it.}
++
++message zfs_root_no_boot_part
++{A root file system on ZFS needs a FFS boot partition mounted as /altroot
++for the kernel, the zfs modules and the boot ramdisk.  Please choose the
++"root on ZFS" partition layout.}
++
++message zfs_root_needs_gpt
++{A root file system on ZFS needs a GPT partition for the pool: the boot
++ramdisk finds the pool by scanning whole disks and wedges only.}
++
++/* Called with:				Example
++ *  $0 = ramdisk file name		ramdisk-zfsroot.fs
++ */
++message zfs_root_no_ramdisk
++{Could not find $0 in installation/ramdisk next to the sets.
++The system will not boot until it is copied to the boot partition.}
++
+ message edit_partitions_again
+ {
+ 
+@@ -1107,6 +1127,12 @@ message Set_Sizes {Establecer los tama
+  */
+ message Use_Default_Parts {Use default partition sizes}
+ 
++/* Called with:				Example
++ *  $0 = partitioning name		Master Boot Record (MBR)
++ *  $1 = short version of $0		MBR
++ */
++message Use_Default_Parts_ZFS {Use default partition sizes, root on ZFS}
++
+ /* Called with:				Example
+  *  $0 = partitioning name		Master Boot Record (MBR)
+  *  $1 = short version of $0		MBR
+diff --git a/usr.sbin/sysinst/msg.mi.fr b/usr.sbin/sysinst/msg.mi.fr
+index efac92445..9790ec93e 100644
+--- a/usr.sbin/sysinst/msg.mi.fr
++++ b/usr.sbin/sysinst/msg.mi.fr
+@@ -1032,6 +1032,26 @@ message cannot_ufs2_root
+ {Le système de fichiers de la partition racine ne peut pas être FFSv2 car le
+ chargeur de démarrage ne le supporte pas.}
+ 
++message zfs_root_unavailable
++{ZFS is not available on this installation medium, the root file system
++can not be put on it.}
++
++message zfs_root_no_boot_part
++{A root file system on ZFS needs a FFS boot partition mounted as /altroot
++for the kernel, the zfs modules and the boot ramdisk.  Please choose the
++"root on ZFS" partition layout.}
++
++message zfs_root_needs_gpt
++{A root file system on ZFS needs a GPT partition for the pool: the boot
++ramdisk finds the pool by scanning whole disks and wedges only.}
++
++/* Called with:				Example
++ *  $0 = ramdisk file name		ramdisk-zfsroot.fs
++ */
++message zfs_root_no_ramdisk
++{Could not find $0 in installation/ramdisk next to the sets.
++The system will not boot until it is copied to the boot partition.}
++
+ message edit_partitions_again
+ {
+ Vous pouvez éditer la table de partitions à la main, ou abandonner et
+@@ -1158,6 +1178,12 @@ message Set_Sizes {Sp
+  */
+ message Use_Default_Parts {Use default partition sizes}
+ 
++/* Called with:				Example
++ *  $0 = partitioning name		Master Boot Record (MBR)
++ *  $1 = short version of $0		MBR
++ */
++message Use_Default_Parts_ZFS {Use default partition sizes, root on ZFS}
++
+ /* Called with:				Example
+  *  $0 = partitioning name		Master Boot Record (MBR)
+  *  $1 = short version of $0		MBR
+diff --git a/usr.sbin/sysinst/msg.mi.pl b/usr.sbin/sysinst/msg.mi.pl
+index b3344a213..4b5a1a86f 100644
+--- a/usr.sbin/sysinst/msg.mi.pl
++++ b/usr.sbin/sysinst/msg.mi.pl
+@@ -963,6 +963,26 @@ message cannot_ufs2_root
+ {Glowny system plikow nie moze byc FFSv2 poniewaz nie ma programu rozruchowego dla
+ tej platformy.}
+ 
++message zfs_root_unavailable
++{ZFS is not available on this installation medium, the root file system
++can not be put on it.}
++
++message zfs_root_no_boot_part
++{A root file system on ZFS needs a FFS boot partition mounted as /altroot
++for the kernel, the zfs modules and the boot ramdisk.  Please choose the
++"root on ZFS" partition layout.}
++
++message zfs_root_needs_gpt
++{A root file system on ZFS needs a GPT partition for the pool: the boot
++ramdisk finds the pool by scanning whole disks and wedges only.}
++
++/* Called with:				Example
++ *  $0 = ramdisk file name		ramdisk-zfsroot.fs
++ */
++message zfs_root_no_ramdisk
++{Could not find $0 in installation/ramdisk next to the sets.
++The system will not boot until it is copied to the boot partition.}
++
+ message edit_partitions_again
+ {
+ 
+@@ -1074,6 +1094,12 @@ message Set_Sizes {Ustaw rozmiary partycji NetBSD}
+  */
+ message Use_Default_Parts {Uzyj domyslnych rozmiarow partycji}
+ 
++/* Called with:				Example
++ *  $0 = partitioning name		Master Boot Record (MBR)
++ *  $1 = short version of $0		MBR
++ */
++message Use_Default_Parts_ZFS {Use default partition sizes, root on ZFS}
++
+ /* Called with:				Example
+  *  $0 = partitioning name		Master Boot Record (MBR)
+  *  $1 = short version of $0		MBR
+diff --git a/usr.sbin/sysinst/net.c b/usr.sbin/sysinst/net.c
+index ce8a17cee..80bc163e0 100644
+--- a/usr.sbin/sysinst/net.c
++++ b/usr.sbin/sysinst/net.c
+@@ -979,8 +979,13 @@ pkgsrc_fetch(const char *set_name)
+ 	return do_ftp_fetch(set_name, true, &pkgsrc, true);
+ }
+ 
++/*
++ * Fetch file from directory dir on the server f into the transfer
++ * directory.
++ */
+ static int
+-do_ftp_fetch(const char *set_name, bool force_tgz, struct ftpinfo *f, bool in_chroot)
++do_ftp_fetch_file(const char *dir, const char *file, struct ftpinfo *f,
++    bool in_chroot)
+ {
+ 	const char *ftp_opt;
+ 	char url[STRSIZE];
+@@ -1004,11 +1009,10 @@ do_ftp_fetch(const char *set_name, bool force_tgz, struct ftpinfo *f, bool in_ch
+ 		}
+ 	}
+ 
+-	make_url(url, f, set_dir_for_set(set_name));
++	make_url(url, f, dir);
+ 	rval = run_program(RUN_DISPLAY | RUN_PROGRESS | RUN_XFER_DIR | (in_chroot?RUN_CHROOT:0),
+-		    "/usr/bin/ftp %s%s/%s%s",
+-		    ftp_opt, url, set_name,
+-		    force_tgz ? dist_tgz_postfix : dist_postfix);
++		    "/usr/bin/ftp %s%s/%s",
++		    ftp_opt, url, file);
+ 
+ 	if (remove_target_resolv)
+ 		unlink(target_expand("/etc/resolv.conf"));
+@@ -1016,6 +1020,27 @@ do_ftp_fetch(const char *set_name, bool force_tgz, struct ftpinfo *f, bool in_ch
+ 	return rval ? SET_RETRY : SET_OK;
+ }
+ 
++static int
++do_ftp_fetch(const char *set_name, bool force_tgz, struct ftpinfo *f, bool in_chroot)
++{
++	char file[STRSIZE];
++
++	snprintf(file, sizeof file, "%s%s", set_name,
++	    force_tgz ? dist_tgz_postfix : dist_postfix);
++	return do_ftp_fetch_file(set_dir_for_set(set_name), file, f,
++	    in_chroot);
++}
++
++/*
++ * Fetch a release file that is not a set (e.g. from installation/)
++ * from the same server as the sets.
++ */
++int
++ftp_fetch_file(const char *dir, const char *file)
++{
++	return do_ftp_fetch_file(dir, file, &ftp, false);
++}
++
+ 
+ // XXX: check MSG_netnotup_continueanyway and MSG_netnotup
+ 
+diff --git a/usr.sbin/sysinst/util.c b/usr.sbin/sysinst/util.c
+index 2e938d213..8e9bc1da9 100644
+--- a/usr.sbin/sysinst/util.c
++++ b/usr.sbin/sysinst/util.c
+@@ -194,7 +194,7 @@ static bool have_warned_compat_missing;
+ 
+ /* flags whether to offer the respective options (depending on helper
+    programs available on install media */
+-int have_raid, have_vnd, have_cgd, have_lvm, have_gpt, have_dk;
++int have_raid, have_vnd, have_cgd, have_lvm, have_gpt, have_dk, have_zfs;
+ 
+ int console_tty = -1;	/* tty where console is currently redirected */
+ 
+@@ -1561,6 +1561,15 @@ get_and_unpack_sets(int update, msg setupdone_msg, msg success_msg, msg failure_
+ 	MD_SET_EXTRACT_FINALIZE(update);
+ #endif
+ 
++#ifdef HAVE_ZFS_ROOT
++	/*
++	 * The root ramdisk is not a set, but it comes from the same
++	 * place and this is the last moment that place is reachable.
++	 */
++	if (!update && zfs_root_install)
++		zfs_root_get_ramdisk();
++#endif
++
+ 	if (tarstats.nerror == 0 && tarstats.nsuccess == tarstats.nselected) {
+ 		msg_display(MSG_endtarok);
+ 		/* Give user a chance to see the success message */
+@@ -2468,6 +2477,7 @@ check_available_binaries(void)
+ 	have_lvm = binary_available("lvm");
+ 	have_gpt = binary_available("gpt");
+ 	have_dk = binary_available("dkctl");
++	have_zfs = binary_available("zpool") && binary_available("zfs");
+ }
+ 
+ /*

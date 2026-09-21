@@ -1,0 +1,73 @@
+name: iso
+
+# Build NetBSD/amd64 from source with the sysinst root-on-ZFS patch,
+# make the install ISO, and install from it under qemu choosing the
+# new "root on ZFS" layout.  The full build takes about two hours on
+# a standard runner, so this only runs when the patch or the CI
+# changes, on request, and once a month to catch bit rot.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths: ['patches/**', 'ci/**', '.github/workflows/iso.yml']
+  pull_request:
+    paths: ['patches/**', 'ci/**', '.github/workflows/iso.yml']
+  workflow_dispatch:
+  schedule:
+    - cron: '41 4 2 * *'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  iso:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Make room on the runner
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+              /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q build-essential zlib1g-dev \
+              qemu-system-x86 python3-pexpect genisoimage
+          sudo chmod 666 /dev/kvm || true
+
+      - name: Check out NetBSD src (netbsd-11)
+        run: |
+          rev=$(cat patches/SRC_REV)
+          git init -q nbsrc/src
+          git -C nbsrc/src remote add origin https://github.com/NetBSD/src.git
+          git -C nbsrc/src fetch -q --depth 1 origin "$rev"
+          git -C nbsrc/src checkout -q FETCH_HEAD
+          git -C nbsrc/src log -1 --format='%H %cd'
+
+      - name: Build release and ISO
+        run: sh ci/build-iso.sh release iso-image
+
+      - name: Install from the CD with root on ZFS and boot it
+        run: sh ci/test-install.sh "$PWD/nbsrc/rel/amd64/"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: netbsd-zfs-iso
+          path: |
+            nbsrc/rel/images/NetBSD-*-amd64.iso
+            nbsrc/anita.log
+          retention-days: 14
+          compression-level: 0
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: nbsrc/rel/images/NetBSD-*-amd64.iso

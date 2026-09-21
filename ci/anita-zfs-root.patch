@@ -1,0 +1,73 @@
+Only in anita-2.18: __pycache__
+diff -ru anita-2.18.orig/anita anita-2.18/anita
+--- anita-2.18.orig/anita	2026-09-21 18:05:57
++++ anita-2.18/anita	2026-09-21 18:05:57
+@@ -77,6 +77,8 @@
+                       type="string", metavar='SCHEME')
+     parser.add_option("--no-entropy", help='do not seed the installed system with entropy',
+                       action="store_true")
++    parser.add_option("--zfs-root", help='choose the "root on ZFS" partition layout',
++                      action="store_true")
+ 
+     (options, args) = parser.parse_args()
+ 
+@@ -120,7 +122,8 @@
+         machine = options.machine,
+         network_config = options.network_config,
+         partitioning_scheme = options.partitioning_scheme,
+-        no_entropy = options.no_entropy
++        no_entropy = options.no_entropy,
++        zfs_root = options.zfs_root
+         ) as a:
+ 
+         status = 0
+diff -ru anita-2.18.orig/anita.py anita-2.18/anita.py
+--- anita-2.18.orig/anita.py	2026-09-21 18:05:57
++++ anita-2.18/anita.py	2026-09-21 18:47:54
+@@ -773,6 +773,14 @@
+                 ["installation", "cdrom", bootcd],
+                 True)
+ 
++        # The ZFS root ramdisk is not a set; sysinst looks for it in
++        # installation/ramdisk next to the sets.
++        if self.arch() in ['i386', 'amd64']:
++            download_if_missing_3(self.dist_url(),
++                self.download_local_arch_dir(),
++                ["installation", "ramdisk", "ramdisk-zfsroot.fs"],
++                True)
++
+         # For netbooting/noemu
+         if self.arch() in ['i386', 'amd64']:
+             # Must be optional so that we can still install NetBSD 4.0
+@@ -1076,7 +1084,7 @@
+         structured_log = None, structured_log_file = None, no_install = False,
+         tests = 'atf', dtb = '', xen_type = 'pv', image_format = 'dense',
+         machine = None, network_config = None, partitioning_scheme = None,
+-        no_entropy = False):
++        no_entropy = False, zfs_root = False):
+         self.dist = dist
+         if workdir:
+             self.workdir = workdir
+@@ -1162,6 +1170,7 @@
+         self.machine = machine or self.get_arch_vmm_prop('machine_default')
+         self.partitioning_scheme = partitioning_scheme
+         self.no_entropy = no_entropy
++        self.zfs_root = zfs_root
+ 
+         self.is_logged_in = False
+         self.halted = False
+@@ -2377,7 +2386,13 @@
+                 child.send("0\n")
+             elif r == 24:
+                 # "(([a-z]): Set sizes of NetBSD partitions)"
+-                child.send(child.match.group(1) + b"\n")
++                if self.zfs_root:
++                    # The ZFS layout comes with its own defaults; the
++                    # entry follows "Use default partition sizes".
++                    child.expect(r"([a-z]): Use default partition sizes, root on ZFS")
++                    child.send(child.match.group(1) + b"\n")
++                else:
++                    child.send(child.match.group(1) + b"\n")
+             elif r == 25:
+                 raise AssertionError
+             elif r == 26:
