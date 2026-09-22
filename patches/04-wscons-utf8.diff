@@ -1,0 +1,730 @@
+diff --git a/distrib/amd64/cdroms/Makefile.cdrom b/distrib/amd64/cdroms/Makefile.cdrom
+index 4deb06a..58a91ba 100644
+--- a/distrib/amd64/cdroms/Makefile.cdrom
++++ b/distrib/amd64/cdroms/Makefile.cdrom
+@@ -55,4 +55,16 @@ image_md_pre: ${EFIBOOTIMG}
+ 	${INSTALL} ${COPY} -m 0555 ${.CURDIR}/../install.sh cdrom/install.sh
+ 	${MKDIR} ${MKDIRPERM} cdrom/mnt2 cdrom/targetroot
+ 	${INSTALL} ${COPY} ${SYSINSTDIR}/sysinstmsgs.?? cdrom/usr/share/sysinst/catalog/
++	# The etc set overwrote the CD's own boot.cfg, and the stock one
++	# leaves the console in VGA text mode, where a UTF-8 catalog has
++	# no glyphs.  vesa is a boot.cfg(5) command rather than a key, so
++	# it goes inside the entries that boot.  The shell does the test
++	# because this file is included before CDVESA gets set.
++	if [ -n "${CDVESA}" ]; then					\
++		${TOOL_SED} -e 's/;boot/;vesa ${CDVESA};boot/'		\
++		    cdrom/boot.cfg > boot.cfg.tmp;			\
++		${RM} -f cdrom/boot.cfg;				\
++		${INSTALL} ${COPY} -m 0444 boot.cfg.tmp cdrom/boot.cfg;	\
++		${RM} -f boot.cfg.tmp;					\
++	fi
+ 	${MKDIR} ${MKDIRPERM} cdrom/var
+diff --git a/distrib/amd64/cdroms/installcd/Makefile b/distrib/amd64/cdroms/installcd/Makefile
+index 9884d54..564f99f 100644
+--- a/distrib/amd64/cdroms/installcd/Makefile
++++ b/distrib/amd64/cdroms/installcd/Makefile
+@@ -12,6 +12,7 @@ CDRELEASE=	true			# include $RELEASEDIR/$RELEASEMACHINEDIR
+ CDRELEASE_NODEBUG=	true
+ CDRELEASE_NOCOMPAT=	true
+ CDBUILDEXTRA=	boot.cfg		# Add boot.cfg file
++CDVESA=		1024x768x16		# framebuffer console, for UTF-8
+ CLEANFILES+=	boot.cfg
+ 
+ prepare_md_post:
+diff --git a/sys/arch/amd64/conf/GENERIC b/sys/arch/amd64/conf/GENERIC
+index 2404ba7..94b5823 100644
+--- a/sys/arch/amd64/conf/GENERIC
++++ b/sys/arch/amd64/conf/GENERIC
+@@ -1225,6 +1225,7 @@ pseudo-device	wsfont
+ # Give us a choice of fonts based on monitor size
+ options 	FONT_BOLD8x16
+ options 	FONT_BOLD16x32
++options 	FONT_SHNMK16x16	# kanji, for UTF-8 consoles
+ 
+ # pseudo audio device driver
+ pseudo-device	pad
+diff --git a/sys/dev/rasops/rasops.c b/sys/dev/rasops/rasops.c
+index f5a104d..4a96b58 100644
+--- a/sys/dev/rasops/rasops.c
++++ b/sys/dev/rasops/rasops.c
+@@ -226,6 +226,10 @@ static const uint8_t apple4_devcmap[16] = {
+ static void	rasops_copyrows(void *, int, int, int);
+ static void	rasops_copycols(void *, int, int, int, int);
+ static int	rasops_mapchar(void *, int, u_int *);
++#ifdef _KERNEL
++static void	rasops_lock_wide_font(struct rasops_info *);
++#endif
++static void	rasops_putchar_wide(void *, int, int, u_int, long);
+ static void	rasops_cursor(void *, int, int, int);
+ static int	rasops_allocattr_color(void *, int, int, int, long *);
+ static int	rasops_allocattr_mono(void *, int, int, int, long *);
+@@ -274,6 +278,7 @@ rasops_init(struct rasops_info *ri, int wantrows, int wantcols)
+ {
+ 
+ 	memset(&ri->ri_optfont, 0, sizeof(ri->ri_optfont));
++	ri->ri_wfont = NULL;
+ #ifdef _KERNEL
+ 	/* Select a font if the caller doesn't care */
+ 	if (ri->ri_font == NULL) {
+@@ -334,6 +339,7 @@ rasops_init(struct rasops_info *ri, int wantrows, int wantcols)
+ 
+ 		ri->ri_wsfcookie = cookie;
+ 	}
++
+ #endif
+ 
+ 	/* This should never happen in reality... */
+@@ -372,6 +378,15 @@ rasops_reconfig(struct rasops_info *ri, int wantrows, int wantcols)
+ 	if (wantcols == 0)
+ 		wantcols = RASOPS_DEFAULT_WIDTH;
+ 
++#ifdef _KERNEL
++	/* the wide font has to match the text font, which may have changed */
++	if (ri->ri_wfont != NULL) {
++		wsfont_unlock(ri->ri_wfcookie);
++		ri->ri_wfont = NULL;
++	}
++	rasops_lock_wide_font(ri);
++#endif
++
+ 	/* throw away old line drawing character bitmaps, if we have any */
+ 	if (ri->ri_optfont.data != NULL) {
+ 		kmem_free(ri->ri_optfont.data, ri->ri_optfont.stride * 
+@@ -596,6 +611,17 @@ rasops_reconfig(struct rasops_info *ri, int wantrows, int wantcols)
+ 		return -1;
+ 	}
+ 
++	/*
++	 * The depth just installed a putchar for the text font's width.
++	 * Glyphs from the wide font go through ours instead, which hands
++	 * the rest back to it.  Rotation uses ri_real_ops the same way
++	 * and has no wide font, so the two do not meet.
++	 */
++	if (ri->ri_wfont != NULL && (ri->ri_flg & RI_ROTATE_MASK) == 0) {
++		ri->ri_real_ops = ri->ri_ops;
++		ri->ri_ops.putchar = rasops_putchar_wide;
++	}
++
+ #if NRASOPS_ROTATION > 0
+ 	if (ri->ri_flg & RI_ROTATE_MASK) {
+ 		if (ri->ri_flg & RI_ROTATE_CW) {
+@@ -621,6 +647,36 @@ rasops_reconfig(struct rasops_info *ri, int wantrows, int wantcols)
+ 	return 0;
+ }
+ 
++#ifdef _KERNEL
++/*
++ * Find a font twice as wide as the text font, for the characters that
++ * need two cells.  There need not be one; then rasops_mapchar() has no
++ * glyph for them and the emulator prints '?'.
++ */
++static void
++rasops_lock_wide_font(struct rasops_info *ri)
++{
++	int cookie;
++
++	/* rasops_putchar_wide() draws whole bytes only */
++	if (ri->ri_depth < 8)
++		return;
++
++	cookie = wsfont_find(NULL,
++		ri->ri_font->fontwidth * 2,
++		ri->ri_font->fontheight,
++		0,
++		WSDISPLAY_FONTORDER_L2R,
++		WSDISPLAY_FONTORDER_L2R,
++		WSFONT_FIND_BITMAP | WSFONT_FIND_WIDE);
++	if (cookie <= 0 || wsfont_lock(cookie, &ri->ri_wfont) != 0) {
++		ri->ri_wfont = NULL;
++		return;
++	}
++	ri->ri_wfcookie = cookie;
++}
++#endif /* _KERNEL */
++
+ /*
+  * Map a character.
+  */
+@@ -633,6 +689,17 @@ rasops_mapchar(void *cookie, int c, u_int *cp)
+ 
+ 	int glyph = wsfont_map_unichar(ri->ri_font, c);
+ 	if (glyph < 0 || !CHAR_IN_FONT(glyph, PICK_FONT(ri, glyph))) {
++		/*
++		 * Not in the text font; the wide font may have it.  The
++		 * flag tells the emulator the glyph takes two cells.
++		 */
++		if (ri->ri_wfont != NULL) {
++			glyph = wsfont_map_unichar(ri->ri_wfont, c);
++			if (glyph >= 0 && CHAR_IN_FONT(glyph, ri->ri_wfont)) {
++				*cp = glyph | WSFONT_FLAG_WIDE;
++				return 5;
++			}
++		}
+ 		*cp = ' ';
+ 		return 0;
+ 	}
+@@ -641,6 +708,88 @@ rasops_mapchar(void *cookie, int c, u_int *cp)
+ 	return 5;
+ }
+ 
++/*
++ * Draw a glyph of the wide font over this cell and the next; anything
++ * else goes to the putchar the depth installed.  Wide characters are
++ * few among the ASCII around them, so this is a plain pixel at a time
++ * for every depth rather than another set of stamp tables.
++ */
++static void
++rasops_putchar_wide(void *cookie, int row, int col, u_int uc, long attr)
++{
++	struct rasops_info *ri = (struct rasops_info *)cookie;
++	struct wsdisplay_font *font = ri->ri_wfont;
++	uint8_t *fr, *rp, *hp, *p;
++	uint32_t fg, bg, clr;
++	int width, height, x, y, ul_top, ul_bot;
++
++	if ((uc & WSFONT_FLAGS_MASK) != WSFONT_FLAG_WIDE) {
++		(*ri->ri_real_ops.putchar)(cookie, row, col, uc, attr);
++		return;
++	}
++
++	uc &= ~WSFONT_FLAGS_MASK;
++	if (!CHAR_IN_FONT(uc, font))
++		return;
++
++	/* the glyph needs this cell and the one to the right of it */
++	if ((unsigned)row >= (unsigned)ri->ri_rows ||
++	    (unsigned)col + 1 >= (unsigned)ri->ri_cols)
++		return;
++
++	fg = ATTR_FG(ri, attr);
++	bg = ATTR_BG(ri, attr);
++	width = font->fontwidth;
++	height = font->fontheight;
++
++	/* The rows rasops_putchar_width.h underlines. */
++	if ((attr & WSATTR_UNDERLINE) != 0) {
++		ul_bot = height - ri->ri_ul.off;
++		ul_top = ul_bot - ri->ri_ul.height;
++	} else
++		ul_top = ul_bot = height;
++
++	rp = ri->ri_bits + FBOFFSET(ri, row, col);
++	hp = ri->ri_hwbits ? ri->ri_hwbits + FBOFFSET(ri, row, col) : NULL;
++	/* not FONT_GLYPH(): ri_fontscale is the text font's glyph size */
++	fr = (uint8_t *)font->data +
++	    (uc - font->firstchar) * height * font->stride;
++
++	for (y = 0; y < height; y++) {
++		p = rp;
++		for (x = 0; x < width; x++) {
++			if (y >= ul_top && y < ul_bot)
++				clr = fg;
++			else
++				clr = (fr[x >> 3] & (0x80 >> (x & 7))) ?
++				    fg : bg;
++			switch (ri->ri_pelbytes) {
++			case 1:
++				*p = clr;
++				break;
++			case 2:
++				*(uint16_t *)p = clr;
++				break;
++			case 3:
++				p[0] = clr >> 16;
++				p[1] = clr >> 8;
++				p[2] = clr;
++				break;
++			case 4:
++				*(uint32_t *)p = clr;
++				break;
++			}
++			p += ri->ri_pelbytes;
++		}
++		if (hp != NULL) {
++			memcpy(hp, rp, width * ri->ri_pelbytes);
++			hp += ri->ri_stride;
++		}
++		rp += ri->ri_stride;
++		fr += font->stride;
++	}
++}
++
+ /*
+  * Allocate a color attribute.
+  */
+diff --git a/sys/dev/rasops/rasops.h b/sys/dev/rasops/rasops.h
+index 595e097..a12299f 100644
+--- a/sys/dev/rasops/rasops.h
++++ b/sys/dev/rasops/rasops.h
+@@ -154,8 +154,15 @@ struct rasops_info {
+ 	/* Callbacks so we can share some code */
+ 	void	(*ri_do_cursor)(struct rasops_info *);
+ 
+-	/* Used to intercept putchar to permit display rotation */
++	/* Used to intercept putchar, for display rotation or wide glyphs */
+ 	struct	wsdisplay_emulops ri_real_ops;
++
++	/*
++	 * A font twice as wide as ri_font, for the characters that take
++	 * two cells (CJK).  Left NULL when the kernel has no such font.
++	 */
++	struct	wsdisplay_font *ri_wfont;
++	int	ri_wfcookie;
+ };
+ 
+ #define CHAR_IN_FONT(c, font)						\
+diff --git a/sys/dev/wscons/wsconsio.h b/sys/dev/wscons/wsconsio.h
+index 0d92f5a..5b4532a 100644
+--- a/sys/dev/wscons/wsconsio.h
++++ b/sys/dev/wscons/wsconsio.h
+@@ -452,6 +452,7 @@ struct wsdisplay_font {
+ #define	WSDISPLAY_FONTENC_ISO7 3 /* greek */
+ #define	WSDISPLAY_FONTENC_ISO2 4 /* east european */
+ #define	WSDISPLAY_FONTENC_KOI8_R 5 /* russian */
++#define	WSDISPLAY_FONTENC_JISX0208 6 /* japanese, ku/ten order */
+ 	u_int fontwidth, fontheight, stride;
+ #define	WSDISPLAY_MAXFONTSZ	(512*1024)
+ 	int bitorder, byteorder;
+diff --git a/sys/dev/wscons/wsdisplay_vcons.c b/sys/dev/wscons/wsdisplay_vcons.c
+index 4427993..2645ef0 100644
+--- a/sys/dev/wscons/wsdisplay_vcons.c
++++ b/sys/dev/wscons/wsdisplay_vcons.c
+@@ -123,6 +123,13 @@ static void vcons_copyrows_buffer(void *, int, int, int);
+ static void vcons_eraserows_buffer(void *, int, int, long);
+ static int vcons_putchar_buffer(void *, int, int, u_int, long);
+ 
++/*
++ * A glyph two cells wide is drawn from the left one of them, and only
++ * that cell holds it.  The cell to its right gets this instead, so that
++ * a redraw does not put a blank over the right half of the glyph.
++ */
++#define	VCONS_WIDE_CONT	((u_int)~0)
++
+ /*
+  * actual wrapper methods which call both the _buffer ones above and the
+  * driver supplied ones to do the drawing
+@@ -703,6 +710,15 @@ vcons_redraw_screen(struct vcons_screen *scr)
+ 				c = charptr[offset];
+ 				a = attrptr[offset];
+ 				acmp = a & mask;
++				if (c == VCONS_WIDE_CONT) {
++					/* drawn from the cell to the left */
++					if (start != -1) {
++						vdp->erasecols(ri, i, start,
++						    j - start, last_a);
++						start = -1;
++					}
++					goto next;
++				}
+ 				if (c == ' ') {
+ 					/*
+ 					 * if we already erased the background
+@@ -801,8 +817,11 @@ vcons_update_screen(struct vcons_screen *scr)
+ 				 */
+ 				if ((vdp->chars[boffset] != charptr[offset]) ||
+ 				    (vdp->attrs[boffset] != attrptr[offset])) {
+-					scr->putchar(ri, i, j,
+-				 	   charptr[offset], attrptr[offset]);
++					/* skip what the cell to the left drew */
++					if (charptr[offset] != VCONS_WIDE_CONT)
++						scr->putchar(ri, i, j,
++						    charptr[offset],
++						    attrptr[offset]);
+ 					vdp->chars[boffset] = charptr[offset];
+ 					vdp->attrs[boffset] = attrptr[offset];
+ 				}
+@@ -1288,6 +1307,21 @@ vcons_putchar_buffer(void *cookie, int row, int col, u_int c, long attr)
+ 		      (scr->scr_chars[pos + offset] != c);
+ 		scr->scr_attrs[pos + offset] = attr;
+ 		scr->scr_chars[pos + offset] = c;
++
++		if (col + 1 < ri->ri_cols) {
++			uint32_t *next = &scr->scr_chars[pos + offset + 1];
++
++			if ((c & WSFONT_FLAGS_MASK) == WSFONT_FLAG_WIDE) {
++				/* the cell this glyph reaches into */
++				*next = VCONS_WIDE_CONT;
++				scr->scr_attrs[pos + offset + 1] = attr;
++			} else if (*next == VCONS_WIDE_CONT) {
++				/* nothing reaches there any more */
++				*next = ' ';
++				scr->scr_attrs[pos + offset + 1] = attr;
++				ret = 1;
++			}
++		}
+ 	}
+ 
+ 	if (ret)
+diff --git a/sys/dev/wscons/wsemul_vt100.c b/sys/dev/wscons/wsemul_vt100.c
+index 5ee5b9f..02b06bd 100644
+--- a/sys/dev/wscons/wsemul_vt100.c
++++ b/sys/dev/wscons/wsemul_vt100.c
+@@ -44,6 +44,7 @@ __KERNEL_RCSID(0, "$NetBSD: wsemul_vt100.c,v 1.52 2023/08/02 22:37:02 uwe Exp $"
+ #include <dev/wscons/wsemulvar.h>
+ #include <dev/wscons/wsemul_vt100var.h>
+ #include <dev/wscons/ascii.h>
++#include <dev/wsfont/wsfont.h>
+ 
+ static void *wsemul_vt100_cnattach(const struct wsscreen_descr *, void *,
+ 				   int, int, long);
+@@ -86,6 +87,10 @@ static void wsemul_vt100_init(struct wsemul_vt100_emuldata *,
+ 
+ static void wsemul_vt100_output_normal(struct wsemul_vt100_emuldata *,
+ 				       u_char, int);
++static void wsemul_vt100_output_utf8(struct wsemul_vt100_emuldata *,
++				     u_char, int);
++static void wsemul_vt100_putchar(struct wsemul_vt100_emuldata *, u_int, int,
++				 int);
+ static void wsemul_vt100_output_c0c1(struct wsemul_vt100_emuldata *,
+ 				     u_char, int);
+ 
+@@ -106,7 +111,8 @@ wsemul_vt100_output_esc_spc,
+ wsemul_vt100_output_string,
+ wsemul_vt100_output_string_esc,
+ wsemul_vt100_output_dcs,
+-wsemul_vt100_output_dcs_dollar;
++wsemul_vt100_output_dcs_dollar,
++wsemul_vt100_output_esc_percent;
+ 
+ #define	VT100_EMUL_STATE_NORMAL		0	/* normal processing */
+ #define	VT100_EMUL_STATE_ESC		1	/* got ESC */
+@@ -121,6 +127,7 @@ wsemul_vt100_output_dcs_dollar;
+ #define	VT100_EMUL_STATE_STRING_ESC	10	/* waiting for ST, got ESC */
+ #define	VT100_EMUL_STATE_DCS		11	/* got DCS (ESC P) */
+ #define	VT100_EMUL_STATE_DCS_DOLLAR	12	/* got DCS<p>$ */
++#define	VT100_EMUL_STATE_ESC_PERCENT	13	/* got ESC% */
+ 
+ static vt100_handler *vt100_output[] = {
+ 	wsemul_vt100_output_esc,
+@@ -135,6 +142,7 @@ static vt100_handler *vt100_output[] = {
+ 	wsemul_vt100_output_string_esc,
+ 	wsemul_vt100_output_dcs,
+ 	wsemul_vt100_output_dcs_dollar,
++	wsemul_vt100_output_esc_percent,
+ };
+ 
+ static void
+@@ -152,6 +160,8 @@ wsemul_vt100_init(struct wsemul_vt100_emuldata *edp,
+ 	vd->ncols = type->ncols;
+ 	vd->crow = crow;
+ 	vd->ccol = ccol;
++	edp->utf8 = 0;
++	edp->utf8_left = 0;
+ 
+ 	/* The underlying driver has already allocated a default and simple
+ 	 * attribute for us, which is stored in defattr.  We try to set the
+@@ -412,16 +422,8 @@ static void
+ wsemul_vt100_output_normal(struct wsemul_vt100_emuldata *edp, u_char c,
+ 	int kernel)
+ {
+-	struct vt100base_data *vd = &edp->bd;
+ 	u_int *ct, dc;
+ 
+-	if ((vd->flags & (VTFL_LASTCHAR | VTFL_DECAWM)) ==
+-	    (VTFL_LASTCHAR | VTFL_DECAWM)) {
+-		wsemul_vt100_nextline(vd);
+-		vd->ccol = 0;
+-		vd->flags &= ~VTFL_LASTCHAR;
+-	}
+-
+ 	if (c & 0x80) {
+ 		c &= 0x7f;
+ 		ct = edp->chartab_G[edp->chartab1];
+@@ -434,19 +436,96 @@ wsemul_vt100_output_normal(struct wsemul_vt100_emuldata *edp, u_char c,
+ 	}
+ 	dc = (ct ? ct[c] : c);
+ 
+-	if ((vd->flags & VTFL_INSERTMODE) && COLS_LEFT(vd))
+-		COPYCOLS(vd, vd->ccol, vd->ccol + 1, COLS_LEFT(vd));
++	wsemul_vt100_putchar(edp, dc, 0, kernel);
++}
++
++/*
++ * Print one glyph and move the cursor over it.  A glyph the display
++ * flagged as wide takes the cell under the cursor and the one to its
++ * right, and moves to the next line when only one is left.
++ */
++static void
++wsemul_vt100_putchar(struct wsemul_vt100_emuldata *edp, u_int dc, int wide,
++	int kernel)
++{
++	struct vt100base_data *vd = &edp->bd;
++
++	if ((vd->flags & (VTFL_LASTCHAR | VTFL_DECAWM)) ==
++	    (VTFL_LASTCHAR | VTFL_DECAWM)) {
++		wsemul_vt100_nextline(vd);
++		vd->ccol = 0;
++		vd->flags &= ~VTFL_LASTCHAR;
++	}
++
++	if (wide && COLS_LEFT(vd) < 1) {
++		if ((vd->flags & VTFL_DECAWM) == 0)
++			return;
++		wsemul_vt100_nextline(vd);
++		vd->ccol = 0;
++		vd->flags &= ~VTFL_LASTCHAR;
++	}
++
++	if ((vd->flags & VTFL_INSERTMODE) && COLS_LEFT(vd) > wide)
++		COPYCOLS(vd, vd->ccol, vd->ccol + 1 + wide,
++		    COLS_LEFT(vd) - wide);
+ 
+ 	(*vd->emulops->putchar)(vd->emulcookie, vd->crow,
+ 				 vd->ccol << vd->dw, dc,
+ 				 kernel ? edp->kernattr : vd->curattr);
+ 
+-	if (COLS_LEFT(vd))
+-		vd->ccol++;
++	if (COLS_LEFT(vd) > wide)
++		vd->ccol += 1 + wide;
+ 	else
+ 		vd->flags |= VTFL_LASTCHAR;
+ }
+ 
++/*
++ * Assemble a UTF-8 sequence, and print the code point once it is
++ * complete.  The display's mapchar says which glyph it is and whether
++ * that glyph takes two cells; a code point with no glyph prints '?'.
++ * A byte that cannot continue the sequence in hand abandons it.
++ */
++static void
++wsemul_vt100_output_utf8(struct wsemul_vt100_emuldata *edp, u_char c,
++	int kernel)
++{
++	struct vt100base_data *vd = &edp->bd;
++	u_int dc;
++
++	if (edp->utf8_left > 0) {
++		if ((c & 0xc0) == 0x80) {
++			edp->utf8_cp = (edp->utf8_cp << 6) | (c & 0x3f);
++			if (--edp->utf8_left > 0)
++				return;
++		} else {
++			/* abandon the sequence, take this byte afresh */
++			edp->utf8_left = 0;
++			wsemul_vt100_output_utf8(edp, c, kernel);
++			return;
++		}
++	} else if (c >= 0xc2 && c <= 0xdf) {
++		edp->utf8_cp = c & 0x1f;
++		edp->utf8_left = 1;
++		return;
++	} else if (c >= 0xe0 && c <= 0xef) {
++		edp->utf8_cp = c & 0x0f;
++		edp->utf8_left = 2;
++		return;
++	} else if (c >= 0xf0 && c <= 0xf4) {
++		edp->utf8_cp = c & 0x07;
++		edp->utf8_left = 3;
++		return;
++	} else {
++		/* a stray continuation or an invalid lead byte */
++		return;
++	}
++
++	if ((*vd->emulops->mapchar)(vd->emulcookie, edp->utf8_cp, &dc) == 0)
++		dc = '?';
++	wsemul_vt100_putchar(edp, dc,
++	    (dc & WSFONT_FLAGS_MASK) == WSFONT_FLAG_WIDE, kernel);
++}
++
+ static void
+ wsemul_vt100_output_c0c1(struct wsemul_vt100_emuldata *edp, u_char c,
+ 	int kernel)
+@@ -636,6 +715,8 @@ wsemul_vt100_output_esc(struct wsemul_vt100_emuldata *edp, u_char c)
+ 		return VT100_EMUL_STATE_SCS96;
+ 	case '#':
+ 		return VT100_EMUL_STATE_ESC_HASH;
++	case '%': /* coding system */
++		return VT100_EMUL_STATE_ESC_PERCENT;
+ 	case ' ': /* 7/8 bit */
+ 		return VT100_EMUL_STATE_ESC_SPC;
+ 	case ']': /* OSC operating system command */
+@@ -654,6 +735,33 @@ wsemul_vt100_output_esc(struct wsemul_vt100_emuldata *edp, u_char c)
+ 	return VT100_EMUL_STATE_NORMAL;
+ }
+ 
++/*
++ * ISO 2022 coding system selection.  ESC % G switches the input to
++ * UTF-8 (ESC % 8 is the older spelling), ESC % @ back to the character
++ * sets.  Nothing else resets it: it is a property of what the
++ * applications write, like the keyboard encoding.
++ */
++static u_int
++wsemul_vt100_output_esc_percent(struct wsemul_vt100_emuldata *edp, u_char c)
++{
++	switch (c) {
++	case 'G':
++	case '8':
++		edp->utf8 = 1;
++		break;
++	case '@':
++		edp->utf8 = 0;
++		break;
++	default:
++#ifdef VT100_PRINTUNKNOWN
++		printf("%s: ESC%%%c unknown\n", __func__, c);
++#endif
++		break;
++	}
++	edp->utf8_left = 0;
++	return VT100_EMUL_STATE_NORMAL;
++}
++
+ static u_int
+ wsemul_vt100_output_scs94(struct wsemul_vt100_emuldata *edp, u_char c)
+ {
+@@ -1017,6 +1125,11 @@ wsemul_vt100_output(void *cookie, const u_char *data, u_int count, int kernel)
+ 		(*vd->emulops->cursor)(vd->emulcookie, 0,
+ 					vd->crow, vd->ccol << vd->dw);
+ 	for (; count > 0; data++, count--) {
++		if (edp->utf8 && !kernel && (*data & 0x80) != 0 &&
++		    edp->state == VT100_EMUL_STATE_NORMAL) {
++			wsemul_vt100_output_utf8(edp, *data, kernel);
++			continue;
++		}
+ 		if ((*data & 0x7f) < 0x20) {
+ 			wsemul_vt100_output_c0c1(edp, *data, kernel);
+ 			continue;
+diff --git a/sys/dev/wscons/wsemul_vt100var.h b/sys/dev/wscons/wsemul_vt100var.h
+index a643320..922ee66 100644
+--- a/sys/dev/wscons/wsemul_vt100var.h
++++ b/sys/dev/wscons/wsemul_vt100var.h
+@@ -44,6 +44,10 @@ struct wsemul_vt100_emuldata {
+ 
+ 	int designating;	/* substate in VT100_EMUL_STATE_SCS* */
+ 
++	int utf8;		/* ESC % G: input is UTF-8 */
++	u_int utf8_cp;		/* code point being assembled */
++	int utf8_left;		/* continuation bytes still to come */
++
+ 	u_int savedcursor_row, savedcursor_col;
+ 	long savedattr, savedbkgdattr;
+ 	int savedattrflags, savedfgcol, savedbgcol;
+diff --git a/sys/dev/wsfont/files.wsfont b/sys/dev/wsfont/files.wsfont
+index 137c6ac..1041bc4 100644
+--- a/sys/dev/wsfont/files.wsfont
++++ b/sys/dev/wsfont/files.wsfont
+@@ -9,6 +9,7 @@ file	dev/wsfont/wsfont.c	(wsfont_glue & rasops_rotation) |
+ 
+ defflag	opt_wsfont.h		FONT_BOLD8x16
+ 				FONT_BOLD16x32
++				FONT_SHNMK16x16
+ 				FONT_COMIC12x25
+ 				FONT_COMIC16x34
+ 				FONT_GLASS10x19
+diff --git a/sys/dev/wsfont/wsfont.c b/sys/dev/wsfont/wsfont.c
+index 5080f6d..ae79e7f 100644
+--- a/sys/dev/wsfont/wsfont.c
++++ b/sys/dev/wsfont/wsfont.c
+@@ -210,6 +210,20 @@ __KERNEL_RCSID(0, "$NetBSD: wsfont.c,v 1.83 2025/03/25 10:50:12 macallan Exp $")
+ #include <dev/wsfont/Comic_Mono_16x34.h>
+ #endif
+ 
++/*
++ * A JIS X 0208 font holds no ASCII and is drawn two cells wide, so it
++ * is never a console's only font and does not set HAVE_FONT.  They all
++ * share one Unicode table, which comes in with the first of them.
++ */
++#ifdef FONT_SHNMK16x16
++#define HAVE_JISX0208 1
++#include <dev/wsfont/shnmk16.h>
++#endif
++
++#ifdef HAVE_JISX0208
++#include <dev/wsfont/jisx0208.h>
++#endif
++
+ /* Make sure we always have at least one bitmap font. */
+ #ifndef HAVE_FONT
+ #define HAVE_FONT 1
+@@ -340,6 +354,9 @@ static struct font builtin_fonts[] = {
+ #endif
+ #ifdef FONT_COMIC16x34
+ 	{ { NULL, NULL }, &Comic_Mono_16x34, 0, 0, WSFONT_STATIC | WSFONT_BUILTIN },
++#endif
++#ifdef FONT_SHNMK16x16
++	{ { NULL, NULL }, &shnmk16, 0, 0, WSFONT_STATIC | WSFONT_BUILTIN },
+ #endif
+ 	{ { NULL, NULL }, NULL, 0, 0, 0 },
+ };
+@@ -615,6 +632,16 @@ wsfont_matches(struct wsdisplay_font *font, const char *name,
+ {
+ 	int score = 20000;
+ 
++	/*
++	 * A wide font has no ASCII, so it must never win the search for
++	 * a text font, and a search for a wide one wants nothing else.
++	 */
++	if ((flags & WSFONT_FIND_WIDE) != 0) {
++		if (font->encoding != WSDISPLAY_FONTENC_JISX0208)
++			return (0);
++	} else if (font->encoding == WSDISPLAY_FONTENC_JISX0208)
++		return (0);
++
+ 	/* first weed out fonts the caller doesn't claim support for */
+ 	if (FONT_IS_ALPHA(font)) {
+ 		if (flags & WSFONT_PREFER_ALPHA)
+@@ -1070,6 +1097,32 @@ static const struct wsfont_level1_glyphmap encodings[] = {
+ };
+ 
+ 
++/*
++ * Unicode to the ku/ten glyph index of a JIS X 0208 font.  Glyphs are
++ * stored dense in ku/ten order, so the one table indexes every font of
++ * that encoding.
++ */
++static int
++wsfont_map_jisx0208(int c)
++{
++#ifdef HAVE_JISX0208
++	int lo = 0, hi = JISX0208_NUCS - 1, mid;
++
++	if (c < 0x100 || c > 0xffff)
++		return (-1);
++	while (lo <= hi) {
++		mid = (lo + hi) / 2;
++		if (jisx0208_ucs[mid] == c)
++			return (jisx0208_glyph[mid]);
++		if (jisx0208_ucs[mid] < c)
++			lo = mid + 1;
++		else
++			hi = mid - 1;
++	}
++#endif
++	return (-1);
++}
++
+ /*
+  * Remap Unicode character to glyph
+  */
+@@ -1080,6 +1133,9 @@ wsfont_map_unichar(struct wsdisplay_font *font, int c)
+ 	const struct wsfont_level2_glyphmap *map2;
+ 	int hi, lo;
+ 
++	if (font->encoding == WSDISPLAY_FONTENC_JISX0208)
++		return wsfont_map_jisx0208(c);
++
+ 	if (font->encoding < 0 || font->encoding >= __arraycount(encodings))
+ 		return (-1);
+ 
+diff --git a/sys/dev/wsfont/wsfont.h b/sys/dev/wsfont/wsfont.h
+index 737d789..0f4ac1e 100644
+--- a/sys/dev/wsfont/wsfont.h
++++ b/sys/dev/wsfont/wsfont.h
+@@ -34,6 +34,7 @@
+ 
+ #define WSFONT_FLAGS_MASK	0x7f000000
+ #define WSFONT_FLAG_OPT		0x01000000	/* use alternate font */
++#define WSFONT_FLAG_WIDE	0x02000000	/* glyph takes two cells */
+ #define WSFONT_GLYPH(c, font)	((uint8_t *)font->data + \
+ 		((c) - font->firstchar) * font->stride * font->fontheight)
+ #define FONT_IS_ALPHA(f) ((f)->fontwidth <= (f)->stride)
+@@ -64,6 +65,7 @@ int	wsfont_matches(struct wsdisplay_font *, const char *, int, int, int, int);
+ int	wsfont_find(const char *, int, int, int, int, int, int);
+ #define WSFONT_FIND_BITMAP	0x01
+ #define WSFONT_FIND_ALPHA	0x02
++#define WSFONT_FIND_WIDE	0x04	/* double width CJK fonts only */
+ #define WSFONT_FIND_ALL		0xff
+ #define WSFONT_FIND_BESTWIDTH	0x1000
+ #define WSFONT_PREFER_ALPHA	0x2000
