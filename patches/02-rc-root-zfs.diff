@@ -1,0 +1,30 @@
+diff --git a/etc/rc.d/root b/etc/rc.d/root
+index b1ba01449..bfd1ec910 100755
+--- a/etc/rc.d/root
++++ b/etc/rc.d/root
+@@ -15,7 +15,24 @@ stop_cmd=":"
+ root_start()
+ {
+ 	umount -a >/dev/null 2>&1
+-	mount /
++
++	# A root file system on ZFS was mounted read/write by the boot
++	# ramdisk already, and mount_zfs(8) can not update a mount.
++	root_fstype=
++	while read fs_spec fs_file fs_vfstype fs_rest
++	do
++		case "${fs_spec}" in
++		\#*|'') continue ;;
++		esac
++		if [ "${fs_file}" = / ]; then
++			root_fstype=${fs_vfstype}
++			break
++		fi
++	done < /etc/fstab
++	if [ "${root_fstype}" != zfs ]; then
++		mount /
++	fi
++
+ 	rm -f /fastboot
+ }
+ 

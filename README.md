@@ -29,12 +29,15 @@ so `init` starts inside the ZFS file system.  The boot partition is in
 `fstab` as `/altroot` (`noauto`); mount it before updating the kernel
 or modules.
 
-## The sysinst patch
+## The patches
 
-[patches/sysinst-zfs-root.diff](patches/sysinst-zfs-root.diff) applies
-to `usr.sbin/sysinst` on the `netbsd-11` branch (the exact revision it
-was made against is in [patches/SRC_REV](patches/SRC_REV)).  It adds one
-entry to the partition layout question:
+[patches/](patches/) holds three diffs against the `netbsd-11` branch
+(the revision they were made against is in
+[patches/SRC_REV](patches/SRC_REV)); `ci/build-iso.sh` applies them
+in name order.
+
+[03-sysinst-zfs-root.diff](patches/03-sysinst-zfs-root.diff) adds one
+entry to sysinst's partition layout question:
 
     a: Set sizes of NetBSD partitions
     b: Use default partition sizes
@@ -47,11 +50,29 @@ before anything is written.  sysinst then creates the pool, extracts the
 sets into it, fetches `ramdisk-zfsroot.fs` from `installation/ramdisk`
 next to the sets (from the CD or the same ftp/http server), copies the
 kernel and the two modules to the boot partition, writes its `boot.cfg`
-and installs the bootstrap there.
+and installs the bootstrap there.  Upgrading such a system works too:
+sysinst imports the pool, mounts `rpool/ROOT` and the boot partition,
+and after the sets are in refreshes the kernel, the modules, the
+ramdisk and the bootstrap in the boot partition.  The KASLR kernel is
+not offered with a ZFS root, because the `zfs` module is built with
+`KDTRACE_HOOKS` and `GENERIC_KASLR` without, so it cannot be loaded
+there.
 
-What it does not do: upgrades of a ZFS root, MBR/disklabel disks (the
-ramdisk finds the pool with `zpool import`, which on NetBSD only scans
-whole disks and wedges), and the KASLR kernel.
+[02-rc-root-zfs.diff](patches/02-rc-root-zfs.diff) makes `rc.d/root`
+leave a ZFS root alone: the boot ramdisk already mounted it read/write
+and `mount_zfs` cannot update a mount.  With the `noauto` entry sysinst
+writes for `/`, `fsck_root` and `mountall` are quiet as well.
+
+[01-libzfs-import-union-dev.diff](patches/01-libzfs-import-union-dev.diff)
+has `zpool import` open the candidates in `/dev` by full path instead
+of `openat(2)` relative to the directory: on the install CD `/dev` is a
+union-mounted tmpfs, and there `openat` on such a directory does not
+find the entries, so the pool was never found.  (That looks like a
+kernel bug in its own right.)
+
+Not covered: MBR/disklabel disks, because the ramdisk finds the pool
+with `zpool import`, which on NetBSD only scans whole disks and wedges,
+and GENERIC does not turn disklabel partitions into wedges.
 
 ## Using the results
 

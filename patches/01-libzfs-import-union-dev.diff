@@ -1,0 +1,68 @@
+diff --git a/external/cddl/osnet/dist/lib/libzfs/common/libzfs_import.c b/external/cddl/osnet/dist/lib/libzfs/common/libzfs_import.c
+index e3f48a70a..8b0bc0b45 100644
+--- a/external/cddl/osnet/dist/lib/libzfs/common/libzfs_import.c
++++ b/external/cddl/osnet/dist/lib/libzfs/common/libzfs_import.c
+@@ -922,6 +922,9 @@ zpool_read_label(int fd, nvlist_t **config)
+ typedef struct rdsk_node {
+ 	char *rn_name;
+ 	int rn_dfd;
++#ifdef __NetBSD__
++	const char *rn_dir;	/* directory of rn_dfd, with trailing slash */
++#endif
+ 	libzfs_handle_t *rn_hdl;
+ 	nvlist_t *rn_config;
+ 	avl_tree_t *rn_avl;
+@@ -1057,7 +1060,22 @@ zpool_open_func(void *arg)
+ 
+ 	if (rn->rn_nozpool)
+ 		return;
+-	if ((fd = openat64(rn->rn_dfd, rn->rn_name, O_RDONLY)) < 0) {
++#ifdef __NetBSD__
++	/*
++	 * Open the node by its full path rather than relative to the
++	 * directory: openat(2) does not find entries below a directory
++	 * mounted with -o union (the /dev of the install media is one),
++	 * while a lookup of the full path does.
++	 */
++	char fullpath[MAXPATHLEN];
++
++	(void) snprintf(fullpath, sizeof (fullpath), "%s%s", rn->rn_dir,
++	    rn->rn_name);
++	fd = open64(fullpath, O_RDONLY);
++#else
++	fd = openat64(rn->rn_dfd, rn->rn_name, O_RDONLY);
++#endif
++	if (fd < 0) {
+ 		/* symlink to a device that's no longer there */
+ 		if (errno == ENOENT)
+ 			nozpool_all_slices(rn->rn_avl, rn->rn_name);
+@@ -1118,8 +1136,9 @@ zpool_open_func(void *arg)
+ 		char raw_name[MAXPATHLEN];
+ 
+ 		/* eg. dk0 -> rdk0 */
+-		snprintf(raw_name, sizeof(raw_name), "r%s", rn->rn_name);
+-		int raw_fd = openat64(rn->rn_dfd, raw_name, O_RDONLY);
++		snprintf(raw_name, sizeof(raw_name), "%sr%s", rn->rn_dir,
++		    rn->rn_name);
++		int raw_fd = open64(raw_name, O_RDONLY);
+ 		if (raw_fd >= 0) {
+ 			struct stat64 raw_statbuf;
+ 
+@@ -1334,6 +1353,7 @@ zpool_find_import_impl(libzfs_handle_t *hdl, importargs_t *iarg)
+ 				slice->rn_name = zfs_strdup(hdl, name);
+ 				slice->rn_avl = &slice_cache;
+ 				slice->rn_dfd = dfd;
++				slice->rn_dir = rdsk;
+ 				slice->rn_hdl = hdl;
+ 				slice->rn_nozpool = B_FALSE;
+ 				avl_add(&slice_cache, slice);
+@@ -1357,6 +1377,9 @@ zpool_find_import_impl(libzfs_handle_t *hdl, importargs_t *iarg)
+ 			slice->rn_name = zfs_strdup(hdl, name);
+ 			slice->rn_avl = &slice_cache;
+ 			slice->rn_dfd = dfd;
++#ifdef __NetBSD__
++			slice->rn_dir = rdsk;
++#endif
+ 			slice->rn_hdl = hdl;
+ 			slice->rn_nozpool = B_FALSE;
+ 			avl_add(&slice_cache, slice);

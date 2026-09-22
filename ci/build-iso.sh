@@ -1,7 +1,7 @@
 #!/bin/sh
 #
-# Build the NetBSD/amd64 release and install ISO with the sysinst
-# patch applied.  Runs on a Linux or macOS host with the NetBSD src
+# Build the NetBSD/amd64 release and install ISO with the patches in
+# patches/ applied, in name order.  Runs on a Linux or macOS host with the NetBSD src
 # tree checked out at $SRC (netbsd-11 branch, see patches/SRC_REV).
 #
 #   sh ci/build-iso.sh [release|iso-image ...]
@@ -23,14 +23,16 @@ VARS="-V MKDEBUG=no -V MKDEBUGLIB=no -V MKHTML=no -V MKCOMPAT=no
 targets=${*:-"release iso-image"}
 
 cd "$SRC"
-if git apply --check "$TOP/patches/sysinst-zfs-root.diff" 2>/dev/null; then
-	git apply "$TOP/patches/sysinst-zfs-root.diff"
-elif git apply --check -R "$TOP/patches/sysinst-zfs-root.diff" 2>/dev/null; then
-	echo "sysinst patch already applied"
-else
-	echo "sysinst patch does not apply to $(git rev-parse HEAD)" >&2
-	exit 1
-fi
+for d in "$TOP"/patches/*.diff; do
+	if git apply --check "$d" 2>/dev/null; then
+		git apply "$d"
+	elif git apply --check -R "$d" 2>/dev/null; then
+		echo "$(basename "$d") already applied"
+	else
+		echo "$(basename "$d") does not apply to $(git rev-parse HEAD)" >&2
+		exit 1
+	fi
+done
 
 for t in $targets; do
 	./build.sh -U -u -m amd64 -j"$JOBS" \

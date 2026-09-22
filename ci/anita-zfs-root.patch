@@ -1,30 +1,54 @@
 Only in anita-2.18: __pycache__
 diff -ru anita-2.18.orig/anita anita-2.18/anita
 --- anita-2.18.orig/anita	2026-09-21 18:05:57
-+++ anita-2.18/anita	2026-09-21 18:05:57
-@@ -77,6 +77,8 @@
++++ anita-2.18/anita	2026-09-21 21:39:28
+@@ -77,6 +77,10 @@
                        type="string", metavar='SCHEME')
      parser.add_option("--no-entropy", help='do not seed the installed system with entropy',
                        action="store_true")
 +    parser.add_option("--zfs-root", help='choose the "root on ZFS" partition layout',
 +                      action="store_true")
++    parser.add_option("--upgrade", help='in install mode, upgrade the existing installation instead',
++                      action="store_true")
  
      (options, args) = parser.parse_args()
  
-@@ -120,7 +122,8 @@
+@@ -120,7 +124,9 @@
          machine = options.machine,
          network_config = options.network_config,
          partitioning_scheme = options.partitioning_scheme,
 -        no_entropy = options.no_entropy
 +        no_entropy = options.no_entropy,
-+        zfs_root = options.zfs_root
++        zfs_root = options.zfs_root,
++        upgrade = options.upgrade
          ) as a:
  
          status = 0
+@@ -133,7 +139,11 @@
+             sys.stdout.flush()
+ 
+         if mode == 'install':
+-            a.install()
++            if options.upgrade:
++                a.dist.set_workdir(a.workdir)
++                a._install()
++            else:
++                a.install()
+         elif mode == 'boot':
+             a.boot()
+             if options.run:
 diff -ru anita-2.18.orig/anita.py anita-2.18/anita.py
 --- anita-2.18.orig/anita.py	2026-09-21 18:05:57
-+++ anita-2.18/anita.py	2026-09-21 18:47:54
-@@ -773,6 +773,14 @@
++++ anita-2.18/anita.py	2026-09-22 15:49:43
+@@ -575,6 +575,7 @@
+     sets = make_set_dict_list([
+       # In all version but not in all ports (missing from evmips-mips64eb)
+       [ 'kern-GENERIC', r'Kernel (GENERIC)', 1, 1 ],
++      [ 'kern-GENERIC_KASLR', r'Kernel \(GENERIC_KASLR\)', 0, 1 ],
+       [ 'kern-GENERIC.NOACPI', r'Kernel \(GENERIC\.NOACPI\)', 0, 1 ],
+       [ 'modules', r'Kernel [Mm]odules', 1, 1 ],
+       # Must match the end of the label here so we don't accidentally
+@@ -773,6 +774,14 @@
                  ["installation", "cdrom", bootcd],
                  True)
  
@@ -39,24 +63,83 @@ diff -ru anita-2.18.orig/anita.py anita-2.18/anita.py
          # For netbooting/noemu
          if self.arch() in ['i386', 'amd64']:
              # Must be optional so that we can still install NetBSD 4.0
-@@ -1076,7 +1084,7 @@
+@@ -1076,7 +1085,7 @@
          structured_log = None, structured_log_file = None, no_install = False,
          tests = 'atf', dtb = '', xen_type = 'pv', image_format = 'dense',
          machine = None, network_config = None, partitioning_scheme = None,
 -        no_entropy = False):
-+        no_entropy = False, zfs_root = False):
++        no_entropy = False, zfs_root = False, upgrade = False):
          self.dist = dist
          if workdir:
              self.workdir = workdir
-@@ -1162,6 +1170,7 @@
+@@ -1162,6 +1171,8 @@
          self.machine = machine or self.get_arch_vmm_prop('machine_default')
          self.partitioning_scheme = partitioning_scheme
          self.no_entropy = no_entropy
 +        self.zfs_root = zfs_root
++        self.upgrade = upgrade
  
          self.is_logged_in = False
          self.halted = False
-@@ -2377,7 +2386,13 @@
+@@ -1591,7 +1602,10 @@
+         # Build the runtime boot ISO if needed
+         if self.dist.arch() == 'macppc':
+             self.dist.make_runtime_boot_iso()
+-        if self.vmm != 'noemu':
++        if self.upgrade:
++            # Upgrading the system already on the disk image
++            pass
++        elif self.vmm != 'noemu':
+             print("Creating hard disk image...", end=' ')
+             sys.stdout.flush()
+             make_image(self.wd0_path(), parse_size(self.disk_size),
+@@ -1897,16 +1911,24 @@
+ 
+         # i386 and amd64 ask for keyboard type here; sparc doesn't.
+         # vax may ask for the date.
++        main_menu_answered = False
+         while True:
+             r = child.expect([
+                 r"Keyboard type",
+                 r"a: Install NetBSD to hard disk",
+-                r"Shall we continue",
++                r"Shall we continue|Do you really want to upgrade",
+                 r"Please .* date and time",
+             ])
+-            if r == 0 or r == 1:
+-                # Keyboard type or Install NetBSD
++            if r == 0:
++                # Keyboard type
+                 child.send("\n")
++            elif r == 1:
++                # Install NetBSD to hard disk (or upgrade it).  The
++                # menu may be matched again on a redraw; a second
++                # answer would land in the next menu.
++                if not main_menu_answered:
++                    child.send("b\n" if self.upgrade else "\n")
++                    main_menu_answered = True
+             elif r == 2:
+                 # Shall we continue
+                 child.expect(r"([a-z]): Yes")
+@@ -1926,7 +1948,7 @@
+         while True:
+             r = child.expect([r'not enough entropy|if a small random seed',
+                               r'Hit enter to continue',
+-                              r'On which disk do you want to install'])
++                              r'On which disk do you want to (install|upgrade)'])
+             if r == 0:
+                 self.provide_entropy(child)
+             elif r == 1:
+@@ -2198,6 +2220,8 @@
+                 r'Changing local password for root',
+                 # 40
+                 r'(Accept partition sizes)|(Go on)',
++                # 41
++                r'The upgrade to NetBSD.* is now complete',
+                 ], 10800)
+ 
+             if child.match.group(0) == prevmatch:
+@@ -2377,7 +2401,13 @@
                  child.send("0\n")
              elif r == 24:
                  # "(([a-z]): Set sizes of NetBSD partitions)"
@@ -71,3 +154,21 @@ diff -ru anita-2.18.orig/anita.py anita-2.18/anita.py
              elif r == 25:
                  raise AssertionError
              elif r == 26:
+@@ -2455,6 +2485,17 @@
+                     # Use the default ANSI cursor-down escape sequence
+                     cursor_down = b"\033[B"
+                 child.send(cursor_down * 8 + b"\n")
++            elif r == 41:
++                # The upgrade is complete.  The boot blocks are
++                # updated after this message, so the console
++                # question may still come before the main menu.
++                child.expect(r"Hit enter to continue")
++                child.send("\n")
++                r2 = child.expect([r"b: Use serial port com0",
++                                   r"x: Exit Install System"])
++                if r2 == 0:
++                    child.send("bx\n")
++                break
+             else:
+                 raise AssertionError
+ 

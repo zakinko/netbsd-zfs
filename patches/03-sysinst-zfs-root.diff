@@ -28,10 +28,29 @@ index 6444df560..9afe5f834 100644
  CPPFLAGS+=	-DBOOTSEL -DWSKBD
  
 diff --git a/usr.sbin/sysinst/arch/i386/md.c b/usr.sbin/sysinst/arch/i386/md.c
-index 1078e76ed..fe72be937 100644
+index 1078e76ed..5cecf7236 100644
 --- a/usr.sbin/sysinst/arch/i386/md.c
 +++ b/usr.sbin/sysinst/arch/i386/md.c
-@@ -236,9 +236,10 @@ static int
+@@ -102,6 +102,18 @@ md_init_set_status(int flags)
+ 
+ 	/* Default to install same type of kernel as we are running */
+ 	set_kernel_set(get_bootmodel());
++
++#if defined(__amd64__) && defined(HAVE_ZFS_ROOT)
++	/*
++	 * The zfs module from the modules set is built with
++	 * KDTRACE_HOOKS and GENERIC_KASLR is built without, so it can
++	 * not be loaded there; a ZFS root needs the GENERIC kernel.
++	 */
++	if (zfs_root_mounted()) {
++		set_unavailable_set(SET_KERNEL_2);
++		set_kernel_set(SET_KERNEL_1);
++	}
++#endif
+ }
+ 
+ bool
+@@ -236,9 +248,10 @@ static int
  update_bios_boot(struct install_partition_desc *install, bool use_target_files)
  {
  	int ret;
@@ -43,7 +62,7 @@ index 1078e76ed..fe72be937 100644
  	/*
  	 * XXX - this code retains a lot of cruft from when we went
  	 * to great pains to exclude installboot from the ramdisk
-@@ -282,10 +283,17 @@ update_bios_boot(struct install_partition_desc *install, bool use_target_files)
+@@ -282,10 +295,17 @@ update_bios_boot(struct install_partition_desc *install, bool use_target_files)
  			return 0;
  	}
  
@@ -63,7 +82,7 @@ index 1078e76ed..fe72be937 100644
  	if (ret)
  		return ret;
  	if (pm && pm->no_part)
-@@ -298,11 +306,11 @@ update_bios_boot(struct install_partition_desc *install, bool use_target_files)
+@@ -298,11 +318,11 @@ update_bios_boot(struct install_partition_desc *install, bool use_target_files)
  	} else {
  	        bootxx_filename = p;
  	}
@@ -78,27 +97,29 @@ index 1078e76ed..fe72be937 100644
  		    rdev, sizeof rdev, NULL, raw_dev_name, true, true);
  
  		snprintf(boot_options, sizeof boot_options,
-@@ -455,12 +463,63 @@ md_post_newfs(struct install_partition_desc *install)
+@@ -455,12 +475,75 @@ md_post_newfs(struct install_partition_desc *install)
  	    : md_post_newfs_bios(install);
  }
  
 +#ifdef HAVE_ZFS_ROOT
 +/*
-+ * Fill the boot partition of a ZFS root and write a boot.cfg that
-+ * loads the zfs modules and the root ramdisk from it.  The boot.cfg
-+ * the etc set put on the ZFS root is out of the boot loader's reach.
++ * Write a boot.cfg into the boot partition of a ZFS root that loads
++ * the zfs modules and the root ramdisk from there.  The boot.cfg the
++ * etc set put on the ZFS root is out of the boot loader's reach.
++ * The modules are named by their full path, so nothing depends on
++ * the loader working out the module directory from the kernel.
 + */
 +static int
 +zfs_root_boot_cfg(struct install_partition_desc *install)
 +{
-+	static const char zfs_boot[] =
-+	    "load solaris;load zfs;fs /" ZFS_ROOT_RAMDISK ";boot";
++	char zfs_boot[STRSIZE], moddir[STRSIZE];
 +	FILE *f;
-+	int ret;
 +
-+	ret = zfs_root_post_extract(install);
-+	if (ret != 0)
-+		return ret;
++	if (!zfs_root_module_dir(moddir, sizeof moddir))
++		return 1;
++	snprintf(zfs_boot, sizeof zfs_boot,
++	    "load %s/solaris/solaris.kmod;load %s/zfs/zfs.kmod;"
++	    "fs /" ZFS_ROOT_RAMDISK ";boot", moddir, moddir);
 +
 +	f = target_fopen(ZFS_BOOT_MOUNT "/boot.cfg", "w");
 +	if (f == NULL)
@@ -130,12 +151,22 @@ index 1078e76ed..fe72be937 100644
  		update_boot_code(install, true);
  
 +#ifdef HAVE_ZFS_ROOT
-+	if (!upgrade && zfs_boot_part(install) != NULL) {
++	/*
++	 * A ZFS root boots from its boot partition; put the new kernel
++	 * and modules there, and on a fresh install the boot.cfg (an
++	 * upgrade keeps the existing one, like everywhere else).
++	 */
++	if (zfs_boot_part(install) != NULL) {
 +		int ret;
 +
-+		ret = zfs_root_boot_cfg(install);
++		ret = zfs_root_post_extract(install);
 +		if (ret)
 +			return ret;
++		if (!upgrade) {
++			ret = zfs_root_boot_cfg(install);
++			if (ret)
++				return ret;
++		}
 +	}
 +#endif
 +
@@ -358,7 +389,7 @@ index a9af942ee..2ff14cdff 100644
  	return md_check_partitions(install);
  }
 diff --git a/usr.sbin/sysinst/defs.h b/usr.sbin/sysinst/defs.h
-index 484902af8..35da20e12 100644
+index 484902af8..af7ea3750 100644
 --- a/usr.sbin/sysinst/defs.h
 +++ b/usr.sbin/sysinst/defs.h
 @@ -116,6 +116,7 @@ enum layout_type {
@@ -369,7 +400,7 @@ index 484902af8..35da20e12 100644
  	LY_USEFULL,		/* use full disk for NetBSD */
  	LY_USENONE,		/* start with empty partitions, manual mode */
  	LY_ERROR		/* used for "abort" in menu */
-@@ -739,11 +740,37 @@ void	set_swap(struct install_partition_desc *);
+@@ -739,11 +740,39 @@ void	set_swap(struct install_partition_desc *);
  void	clear_swap(void);
  int	check_swap(const char *, int);
  char *bootxx_name(struct install_partition_desc *);
@@ -393,13 +424,15 @@ index 484902af8..35da20e12 100644
 +#ifndef DEFZFSBOOTSIZE
 +#define	DEFZFSBOOTSIZE	256	/* MB for kernel, modules and ramdisk */
 +#endif
-+extern bool zfs_root_install;
 +bool	zfs_root_available(void);
 +bool	zfs_root_scheme_ok(const struct disk_partitions *);
 +struct part_usage_info *zfs_root_part(struct install_partition_desc *);
 +struct part_usage_info *zfs_boot_part(struct install_partition_desc *);
 +bool	zfs_root_check_partitions(struct install_partition_desc *);
 +int	zfs_root_setup(struct part_usage_info *, const char *);
++bool	zfs_root_mounted(void);
++bool	zfs_root_module_dir(char *, size_t);
++int	zfs_root_mount_existing(struct install_partition_desc *);
 +int	zfs_root_get_ramdisk(void);
 +int	zfs_root_post_extract(struct install_partition_desc *);
 +#endif
@@ -407,15 +440,24 @@ index 484902af8..35da20e12 100644
  /* from label.c */
  /*
   * Bits valid for "flags" in get_last_mounted.
-@@ -801,6 +828,7 @@ bool	get_label_geom(const char *, struct disklabel *);
+@@ -801,6 +830,8 @@ bool	get_label_geom(const char *, struct disklabel *);
  extern int network_up;
  extern char net_namesvr[STRSIZE];
  int	get_via_ftp(unsigned int);
 +int	ftp_fetch_file(const char *, const char *);
++bool	sets_fetched_via_ftp(void);
  int	get_via_nfs(void);
  int	config_network(int force);
  void	mnt_net_config(void);
-@@ -1002,7 +1030,8 @@ daddr_t parse_disk_pos(
+@@ -873,6 +904,7 @@ void	show_cur_distsets(void);
+ void	make_ramdisk_dir(const char *);
+ void    set_kernel_set(unsigned int);
+ void    set_noextract_set(unsigned int);
++void    set_unavailable_set(unsigned int);
+ unsigned int    get_kernel_set(void);
+ unsigned int    set_X11_selected(void);
+ int 	get_and_unpack_sets(int, msg, msg, msg);
+@@ -1002,7 +1034,8 @@ daddr_t parse_disk_pos(
  
  /* flags whether to offer the respective options (depending on helper
     programs available on install media */
@@ -426,7 +468,7 @@ index 484902af8..35da20e12 100644
  void check_available_binaries(void);
  
 diff --git a/usr.sbin/sysinst/disks.c b/usr.sbin/sysinst/disks.c
-index 196c47c2c..c7654cbe5 100644
+index 196c47c2c..294626b29 100644
 --- a/usr.sbin/sysinst/disks.c
 +++ b/usr.sbin/sysinst/disks.c
 @@ -1329,6 +1329,17 @@ make_filesystems(struct install_partition_desc *install)
@@ -447,7 +489,7 @@ index 196c47c2c..c7654cbe5 100644
  		opts[0] = 0;
  		switch (ptn->fs_type) {
  		case FS_APPLEUFS:
-@@ -1582,6 +1593,15 @@ make_fstab(struct install_partition_desc *install)
+@@ -1582,6 +1593,20 @@ make_fstab(struct install_partition_desc *install)
  			fstype = "sysvbfs";
  			make_target_dir("/stand");
  			break;
@@ -455,15 +497,52 @@ index 196c47c2c..c7654cbe5 100644
 +		case FS_ZFS:
 +			if (strcmp(mp, "/") != 0)
 +				continue;
-+			/* the ramdisk mounts it before init runs */
-+			scripting_fprintf(f, "# %s/%s\t/\tzfs\trw\t\t 0 0\n",
++			/*
++			 * The ramdisk mounts it before init runs, and
++			 * mount_zfs can not update a mount, so noauto;
++			 * the entry is there for fsck_root and friends.
++			 */
++			scripting_fprintf(f,
++			    "%s/%s\t\t/\tzfs\trw,noauto\t 0 0\n",
 +			    ZFS_ROOT_POOL, ZFS_ROOT_FS);
 +			continue;
 +#endif
  		default:
  			fstype = "???";
  			s = "# ";
-@@ -2204,31 +2224,47 @@ check_swap(const char *disk, int remove_swap)
+@@ -1957,6 +1982,7 @@ mount_disks(struct install_partition_desc *install)
+ 	char devdev[PATH_MAX];
+ 	size_t i, num_fs_types, num_entries;
+ 	struct lookfor *fstabbuf, *l;
++	bool root_in_fstab = true;
+ 
+ 	if (install->cur_system)
+ 		return 0;
+@@ -2051,6 +2077,13 @@ mount_disks(struct install_partition_desc *install)
+ 		error = mount_root(devdev, true, false, install);
+ 		if (error != 0 && error != EBUSY)
+ 			return -1;
++#ifdef HAVE_ZFS_ROOT
++	} else if ((error = zfs_root_mount_existing(install)) <= 0) {
++		if (error < 0)
++			return -1;
++		/* the ramdisk mounts it, fstab does not list it */
++		root_in_fstab = false;
++#endif
+ 	} else {
+ 		for (i = 0; i < install->num; i++) {
+ 			if (is_root_part_mount(install->infos[i].mount))
+@@ -2093,7 +2126,8 @@ mount_disks(struct install_partition_desc *install)
+ 	 * We unmount the read-only root again, so we can mount it
+ 	 * with proper options from /etc/fstab
+ 	 */
+-	umount_root();
++	if (root_in_fstab)
++		umount_root();
+ 
+ 	/*
+ 	 * Now do all entries in /etc/fstab and mount them if required
+@@ -2204,34 +2238,49 @@ check_swap(const char *disk, int remove_swap)
  }
  
  #ifdef HAVE_BOOTXX_xFS
@@ -518,22 +597,25 @@ index 196c47c2c..c7654cbe5 100644
 +bootxx_name(struct install_partition_desc *install)
 +{
 +	size_t i;
-+	int fstype = -1;
 +	const char *bootxxname;
 +	char *bootxx;
 +
 +	i = bootxx_partition(install);
-+	if (i < install->num)
-+		fstype = install->infos[i].fs_type;
++	if (i >= install->num)
++		return NULL;
  
  	/* check we have boot code for the root partition type */
- 	switch (fstype) {
+-	switch (fstype) {
++	switch (install->infos[i].fs_type) {
+ #if defined(BOOTXX_FFSV1) || defined(BOOTXX_FFSV2)
+ 	case FS_BSDFFS:
+ 		if (install->infos[i].fs_version >= 2) {
 diff --git a/usr.sbin/sysinst/disks_zfs.c b/usr.sbin/sysinst/disks_zfs.c
 new file mode 100644
-index 000000000..8707076dd
+index 000000000..d52f800f4
 --- /dev/null
 +++ b/usr.sbin/sysinst/disks_zfs.c
-@@ -0,0 +1,286 @@
+@@ -0,0 +1,363 @@
 +/*	$NetBSD$	*/
 +
 +/*
@@ -574,18 +656,13 @@ index 000000000..8707076dd
 + * stays reachable from the installed system as ZFS_BOOT_MOUNT.
 + */
 +
++#include <sys/mount.h>
++#include <sys/statvfs.h>
 +#include <sys/sysctl.h>
 +#include <string.h>
 +
 +#include "defs.h"
 +#include "msg_defs.h"
-+
-+/*
-+ * Set once the root pool has been created, so the code that runs
-+ * after the sets are extracted (and no longer has the partition
-+ * description at hand) knows to fetch the ramdisk.
-+ */
-+bool zfs_root_install;
 +
 +static const char zfs_ramdisk_subdir[] = "installation/ramdisk";
 +static const char zfs_sets_subdir[] = "binary/sets";
@@ -703,7 +780,7 @@ index 000000000..8707076dd
 +		    ZFS_ROOT_POOL, ZFS_ROOT_FS);
 +		if (error != 0)
 +			return error;
-+		ptn->instflags &= ~PUIINST_NEWFS;
++		ptn->instflags &= ~(unsigned int)PUIINST_NEWFS;
 +	}
 +
 +	if (partman_go == 0 && (ptn->instflags & PUIINST_MOUNT)) {
@@ -719,8 +796,80 @@ index 000000000..8707076dd
 +		}
 +	}
 +
-+	zfs_root_install = true;
 +	return 0;
++}
++
++/*
++ * For an upgrade: if this disk carries a ZFS root, import the pool,
++ * mount the root and the boot partition on the target, and mark both
++ * in the install description the way a fresh install would have, so
++ * the boot code and the kernel end up in the right place.
++ * Returns 1 if this is not a ZFS root, 0 when mounted, -1 on error.
++ */
++int
++zfs_root_mount_existing(struct install_partition_desc *install)
++{
++	struct part_usage_info *root = NULL, *boot = NULL;
++	char fs[STRSIZE], dev[STRSIZE];
++	size_t i;
++
++	for (i = 0; i < install->num; i++) {
++		if (install->infos[i].type != PT_root)
++			continue;
++		if (install->infos[i].fs_type == FS_ZFS && root == NULL)
++			root = &install->infos[i];
++		else if (install->infos[i].fs_type == FS_BSDFFS &&
++		    strcmp(install->infos[i].mount, ZFS_BOOT_MOUNT) == 0)
++			boot = &install->infos[i];
++	}
++	if (root == NULL || boot == NULL)
++		return 1;
++	if (!zfs_root_available())
++		return 1;
++
++	/* the pool may already be imported (e.g. after a failed attempt) */
++	if (run_program(RUN_SILENT | RUN_ERROR_OK,
++	    "/sbin/zpool list %s", ZFS_ROOT_POOL) != 0 &&
++	    run_program(RUN_DISPLAY | RUN_PROGRESS,
++	    "/sbin/zpool import -f -N %s", ZFS_ROOT_POOL) != 0)
++		return 1;
++	snprintf(fs, sizeof fs, "%s/%s", ZFS_ROOT_POOL, ZFS_ROOT_FS);
++	if (run_program(RUN_SILENT | RUN_ERROR_OK,
++	    "/sbin/zfs list %s", fs) != 0)
++		return 1;
++
++	strlcpy(root->mount, "/", sizeof root->mount);
++	root->instflags |= PUIINST_MOUNT;
++	boot->instflags |= PUIINST_MOUNT | PUIINST_BOOT;
++
++	if (target_mount("-t zfs", fs, "/") != 0) {
++		msg_display_subst(MSG_mountfail, 2, fs, "/");
++		hit_enter_to_continue(NULL, NULL);
++		return -1;
++	}
++	if (!boot->parts->pscheme->get_part_device(boot->parts,
++	    boot->cur_part_id, dev, sizeof dev, NULL, plain_name, true, true))
++		return -1;
++	if (target_mount("", dev, ZFS_BOOT_MOUNT) != 0) {
++		msg_display_subst(MSG_mountfail, 2, dev, ZFS_BOOT_MOUNT);
++		hit_enter_to_continue(NULL, NULL);
++		return -1;
++	}
++	return 0;
++}
++
++/*
++ * Is the target root mounted from ZFS?  Asked after the sets are in,
++ * when the partition description is no longer at hand.
++ */
++bool
++zfs_root_mounted(void)
++{
++	struct statvfs sv;
++
++	if (statvfs(target_expand("/"), &sv) != 0)
++		return false;
++	return strcmp(sv.f_fstypename, MOUNT_ZFS) == 0;
 +}
 +
 +/*
@@ -756,7 +905,7 @@ index 000000000..8707076dd
 +
 +	snprintf(dest, sizeof dest, "%s/%s", ZFS_BOOT_MOUNT, ZFS_ROOT_RAMDISK);
 +
-+	if (fetch_fn != NULL) {
++	if (sets_fetched_via_ftp()) {
 +		if (!zfs_ramdisk_dir(dir, sizeof dir, set_dir_bin) ||
 +		    ftp_fetch_file(dir, ZFS_ROOT_RAMDISK) != SET_OK)
 +			goto missing;
@@ -781,17 +930,28 @@ index 000000000..8707076dd
 +}
 +
 +/*
++ * Where the modules set put the kernel modules, e.g.
++ * /stand/amd64/11.0/modules.  The kernel we run is the one we
++ * install, so it knows.
++ */
++bool
++zfs_root_module_dir(char *buf, size_t len)
++{
++
++	return sysctlbyname("kern.module.path", buf, &len, NULL, 0) == 0;
++}
++
++/*
 + * After the sets are in: the boot loader needs the kernel and the two
 + * modules on the boot partition, the rest of the modules are loaded
-+ * from the ZFS root once init has chrooted there.  The kernel we run
-+ * is the one we install, so it knows where the modules set put them.
++ * from the ZFS root once init has chrooted there.
 + */
 +int
 +zfs_root_post_extract(struct install_partition_desc *install)
 +{
 +	static const char *modules[] = { "solaris", "zfs" };
 +	char modbase[STRSIZE], moddir[STRSIZE], src[STRSIZE], dest[STRSIZE];
-+	size_t i, len;
++	size_t i;
 +	int error;
 +
 +	if (zfs_boot_part(install) == NULL)
@@ -801,8 +961,7 @@ index 000000000..8707076dd
 +	if (error != 0)
 +		return error;
 +
-+	len = sizeof modbase;
-+	if (sysctlbyname("kern.module.path", modbase, &len, NULL, 0) != 0)
++	if (!zfs_root_module_dir(modbase, sizeof modbase))
 +		return 1;
 +
 +	for (i = 0; i < __arraycount(modules); i++) {
@@ -821,7 +980,7 @@ index 000000000..8707076dd
 +	return 0;
 +}
 diff --git a/usr.sbin/sysinst/gpt.c b/usr.sbin/sysinst/gpt.c
-index 77cde14aa..1075cc361 100644
+index 77cde14aa..bf0bf8719 100644
 --- a/usr.sbin/sysinst/gpt.c
 +++ b/usr.sbin/sysinst/gpt.c
 @@ -142,6 +142,7 @@ struct gpt_part_entry {
@@ -848,7 +1007,7 @@ index 77cde14aa..1075cc361 100644
 +	if (info->flags & PTI_BOOT)
 +		p->gp_flags |= GPEF_BOOT;
 +	else
-+		p->gp_flags &= ~GPEF_BOOT;
++		p->gp_flags &= ~(uint)GPEF_BOOT;
  
  	if ((p->gp_flags & GPEF_ON_DISK)) {
  		if (info->start != p->gp_start) {
@@ -1125,7 +1284,7 @@ index b3344a213..4b5a1a86f 100644
   *  $0 = partitioning name		Master Boot Record (MBR)
   *  $1 = short version of $0		MBR
 diff --git a/usr.sbin/sysinst/net.c b/usr.sbin/sysinst/net.c
-index ce8a17cee..80bc163e0 100644
+index ce8a17cee..fffe700e7 100644
 --- a/usr.sbin/sysinst/net.c
 +++ b/usr.sbin/sysinst/net.c
 @@ -979,8 +979,13 @@ pkgsrc_fetch(const char *set_name)
@@ -1158,7 +1317,7 @@ index ce8a17cee..80bc163e0 100644
  
  	if (remove_target_resolv)
  		unlink(target_expand("/etc/resolv.conf"));
-@@ -1016,6 +1020,27 @@ do_ftp_fetch(const char *set_name, bool force_tgz, struct ftpinfo *f, bool in_ch
+@@ -1016,6 +1020,37 @@ do_ftp_fetch(const char *set_name, bool force_tgz, struct ftpinfo *f, bool in_ch
  	return rval ? SET_RETRY : SET_OK;
  }
  
@@ -1183,11 +1342,21 @@ index ce8a17cee..80bc163e0 100644
 +	return do_ftp_fetch_file(dir, file, &ftp, false);
 +}
 +
++/*
++ * Do the sets come from an ftp/http server (as opposed to a mounted
++ * medium or directory, where ext_dir_bin is a local path)?
++ */
++bool
++sets_fetched_via_ftp(void)
++{
++	return fetch_fn == ftp_fetch;
++}
++
  
  // XXX: check MSG_netnotup_continueanyway and MSG_netnotup
  
 diff --git a/usr.sbin/sysinst/util.c b/usr.sbin/sysinst/util.c
-index 2e938d213..8e9bc1da9 100644
+index 2e938d213..ebc1272ea 100644
 --- a/usr.sbin/sysinst/util.c
 +++ b/usr.sbin/sysinst/util.c
 @@ -194,7 +194,7 @@ static bool have_warned_compat_missing;
@@ -1199,7 +1368,25 @@ index 2e938d213..8e9bc1da9 100644
  
  int console_tty = -1;	/* tty where console is currently redirected */
  
-@@ -1561,6 +1561,15 @@ get_and_unpack_sets(int update, msg setupdone_msg, msg success_msg, msg failure_
+@@ -798,6 +798,17 @@ set_noextract_set(unsigned int set)
+ 	set_status[set] |= SET_NO_EXTRACT;
+ }
+ 
++/*
++ * Withdraw a set from the menu, e.g. a kernel that can not work with
++ * the setup chosen so far.
++ */
++void
++set_unavailable_set(unsigned int set)
++{
++
++	set_status[set] &= (uint8_t)~(SET_VALID | SET_SELECTED);
++}
++
+ static int
+ set_toggle(menudesc *menu, void *arg)
+ {
+@@ -1561,6 +1572,15 @@ get_and_unpack_sets(int update, msg setupdone_msg, msg success_msg, msg failure_
  	MD_SET_EXTRACT_FINALIZE(update);
  #endif
  
@@ -1208,14 +1395,14 @@ index 2e938d213..8e9bc1da9 100644
 +	 * The root ramdisk is not a set, but it comes from the same
 +	 * place and this is the last moment that place is reachable.
 +	 */
-+	if (!update && zfs_root_install)
++	if (zfs_root_mounted())
 +		zfs_root_get_ramdisk();
 +#endif
 +
  	if (tarstats.nerror == 0 && tarstats.nsuccess == tarstats.nselected) {
  		msg_display(MSG_endtarok);
  		/* Give user a chance to see the success message */
-@@ -2468,6 +2477,7 @@ check_available_binaries(void)
+@@ -2468,6 +2488,7 @@ check_available_binaries(void)
  	have_lvm = binary_available("lvm");
  	have_gpt = binary_available("gpt");
  	have_dk = binary_available("dkctl");
