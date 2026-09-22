@@ -1,0 +1,2545 @@
+diff --git a/distrib/sets/lists/base/md.amd64 b/distrib/sets/lists/base/md.amd64
+index 5d8ef33..9fa1322 100644
+--- a/distrib/sets/lists/base/md.amd64
++++ b/distrib/sets/lists/base/md.amd64
+@@ -68,4 +68,5 @@
+ ./usr/share/sysinst/catalog/sysinstmsgs.de	base-util-share
+ ./usr/share/sysinst/catalog/sysinstmsgs.es	base-util-share
+ ./usr/share/sysinst/catalog/sysinstmsgs.fr	base-util-share
++./usr/share/sysinst/catalog/sysinstmsgs.ja	base-util-share
+ ./usr/share/sysinst/catalog/sysinstmsgs.pl	base-util-share
+diff --git a/usr.bin/menuc/menu_sys.def b/usr.bin/menuc/menu_sys.def
+index fcfe0dd..7b0448d 100644
+--- a/usr.bin/menuc/menu_sys.def
++++ b/usr.bin/menuc/menu_sys.def
+@@ -49,6 +49,17 @@
+ #define MAX(x,y) ((x)>(y)?(x):(y))
+ #define MIN(x,y) ((x)<(y)?(x):(y))
+ 
++/*
++ * Menus are sized in columns, not bytes; a UTF-8 message catalog has
++ * more of the latter.  msgc's runtime does the counting where the
++ * program has one, which is how sysinst gets here.
++ */
++#ifdef MSG_DEFS_H
++#define	MENU_STRWIDTH(s, len)	msg_strnwidth((s), (len))
++#else
++#define	MENU_STRWIDTH(s, len)	((int)(len))
++#endif
++
+ /* Initialization state. */
+ static int __menu_init = 0;
+ static int max_lines = 0, max_cols = 0;
+@@ -157,12 +168,12 @@ init_menu(menudesc *m)
+ 	if (title && title[0] != 0) {
+ 		/* Allow multiple line titles */
+ 		for (tp = title; (ep = strchr(tp, '\n')); tp = ep + 1) {
+-			i = ep - tp;
++			i = MENU_STRWIDTH(tp, ep - tp);
+ 			wmax = MAX(wmax, i);
+ 			hadd++;
+ 		}
+ 		hadd++;
+-		i = strlen(tp);
++		i = MENU_STRWIDTH(tp, strlen(tp));
+ 		wmax = MAX(wmax, i);
+ 		if (i != 0)
+ 			hadd++;
+@@ -230,7 +241,7 @@ init_menu(menudesc *m)
+ #endif
+ 			if (tp == NULL)
+ 				continue;
+-			l = strlen(tp);
++			l = MENU_STRWIDTH(tp, strlen(tp));
+ 			wmax = MAX(wmax, l);
+ 		}
+ 		w = wmax;
+diff --git a/usr.bin/msgc/msg_sys.def b/usr.bin/msgc/msg_sys.def
+index 54dbc72..e129baf 100644
+--- a/usr.bin/msgc/msg_sys.def
++++ b/usr.bin/msgc/msg_sys.def
+@@ -37,7 +37,7 @@ static char *cbuffer;
+ static size_t cbuffersize;
+ 
+ static int last_i_was_nl, last_i_was_space;
+-static int last_o_was_punct, last_o_was_space;
++static int last_o_was_punct, last_o_was_space, last_o_was_mb;
+ 
+ static void	_msg_beep(void);
+ static int	_msg_vprintf(int, const char *, va_list);
+@@ -52,6 +52,39 @@ static unsigned int msgmapcount;
+ 
+ /* Routines */
+ 
++/*
++ * Columns a string takes on the screen.  A catalog in UTF-8 has more
++ * bytes than columns, so strlen() overestimates and boxes come out too
++ * wide; when the string does not convert in the current locale, fall
++ * back to it.
++ */
++int
++msg_strnwidth(const char *s, size_t len)
++{
++	wchar_t wc;
++	mbstate_t st;
++	size_t n;
++	int w, cw;
++
++	memset(&st, 0, sizeof(st));
++	for (w = 0; len > 0; s += n, len -= n, w += cw) {
++		n = mbrtowc(&wc, s, len, &st);
++		if (n == (size_t)-1 || n == (size_t)-2 || n == 0)
++			return w + len;
++		cw = wcwidth(wc);
++		if (cw < 0)
++			cw = 1;
++	}
++	return w;
++}
++
++int
++msg_strwidth(const char *s)
++{
++
++	return msg_strnwidth(s, strlen(s));
++}
++
+ static void
+ _msg_beep(void)
+ {
+@@ -240,8 +273,15 @@ _msg_vprintf(int auto_fill, const char *fmt, va_list ap)
+ 		 * characters.  wstart is now the start of the word,
+ 		 * afterw is the next character after the end.
+ 		 */
+-		wordlen = afterw - wstart;
++		wordlen = msg_strnwidth(wstart, afterw - wstart);
+ 		nspaces = last_o_was_space ? 0 : (last_o_was_punct ? 2 : 1);
++		/*
++		 * A line break between two multibyte characters is not a
++		 * word boundary: Japanese text is wrapped in the catalog
++		 * without spaces, and joining the lines must not add any.
++		 */
++		if (last_o_was_mb && (*wstart & 0x80))
++			nspaces = 0;
+ 		if ((getcurx(msg_win) + nspaces + wordlen) >=
+ 		      getmaxx(msg_win) &&
+ 		    wordlen < (getmaxx(msg_win) / 3)) {
+@@ -253,7 +293,7 @@ _msg_vprintf(int auto_fill, const char *fmt, va_list ap)
+ 		/* output the word, preceded by spaces if necessary */
+ 		while (nspaces-- > 0)
+ 			waddch(msg_win, ' ');
+-		waddbytes(msg_win, wstart, wordlen);
++		waddbytes(msg_win, wstart, afterw - wstart);
+ 
+ 		/* set up the 'last' state for the next time around */
+ 		switch (afterw[-1]) {
+@@ -267,6 +307,7 @@ _msg_vprintf(int auto_fill, const char *fmt, va_list ap)
+ 			break;
+ 		}
+ 		last_o_was_space = 0;
++		last_o_was_mb = (afterw[-1] & 0x80) != 0;
+ 
+ 		/* ... and do it all again! */
+ 	}
+@@ -525,8 +566,15 @@ msg_fmt_prompt_win(msg msg_no, int x, int y, int w, int h,
+ 	maxx = getmaxx(msg_win);
+ 	maxy = getmaxy(msg_win);
+ 	if (w == 0) {
++		char *pbuf;
++
+ 		va_start(ap, fmt);
+-		w = vsnprintf(NULL, 0, fmtcheck(msg_string(msg_no), fmt), ap);
++		if (vasprintf(&pbuf, fmtcheck(msg_string(msg_no), fmt), ap) < 0)
++			w = 0;
++		else {
++			w = msg_strwidth(pbuf);
++			free(pbuf);
++		}
+ 		va_end(ap);
+ 		if (def != NULL && *def != 0 && w + (int)val_buf_len * 2 < maxx) 		{
+ 			w += 2 + strlen(def) + 1;
+diff --git a/usr.bin/msgc/msgdb.c b/usr.bin/msgc/msgdb.c
+index 8e0160c..75b33d6 100644
+--- a/usr.bin/msgc/msgdb.c
++++ b/usr.bin/msgc/msgdb.c
+@@ -151,6 +151,7 @@ write_msg_file ()
+ 		"#include <stdarg.h>\n"
+ 		"#include <stdint.h>\n"
+ 		"#include <curses.h>\n"
++		"#include <wchar.h>\n"
+ 		"#include <sys/mman.h>\n"
+ 		"\n"
+ 		"typedef const char *msg;\n"
+@@ -159,6 +160,8 @@ write_msg_file ()
+ 		"WINDOW *msg_window(WINDOW *window);\n"
+ 		"const char *msg_string(msg msg_no);\n"
+ 		"int msg_file(const char *);\n"
++		"int msg_strwidth(const char *);\n"
++		"int msg_strnwidth(const char *, size_t);\n"
+ 		"void msg_clear(void);\n"
+ 		"void msg_standout(void);\n"
+ 		"void msg_standend(void);\n"
+diff --git a/usr.sbin/sysinst/Makefile.inc b/usr.sbin/sysinst/Makefile.inc
+index d32ec2f..a479fda 100644
+--- a/usr.sbin/sysinst/Makefile.inc
++++ b/usr.sbin/sysinst/Makefile.inc
+@@ -27,7 +27,7 @@ SRCS+=partutil.c
+ DPSRCS+= defs.h
+ 
+ SYSINSTLANG?=	en
+-LANGUAGES?=	de en es fr pl
++LANGUAGES?=	de en es fr ja pl
+ 
+ MENUS_MI=	menus.mi
+ MENUS_MI+=	${NOPARTMAN:D:Umenus.pm}
+diff --git a/usr.sbin/sysinst/arch/i386/msg.md.ja b/usr.sbin/sysinst/arch/i386/msg.md.ja
+new file mode 100644
+index 0000000..138fc5d
+--- /dev/null
++++ b/usr.sbin/sysinst/arch/i386/msg.md.ja
+@@ -0,0 +1,159 @@
++/*	$NetBSD$	*/
++
++/*
++ * Copyright 1997 Piermont Information Systems Inc.
++ * All rights reserved.
++ *
++ * Written by Philip A. Nelson for Piermont Information Systems Inc.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ * 3. The name of Piermont Information Systems Inc. may not be used to endorse
++ *    or promote products derived from this software without specific prior
++ *    written permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY PIERMONT INFORMATION SYSTEMS INC. ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL PIERMONT INFORMATION SYSTEMS INC. BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ *
++ */
++
++/* i386 machine dependent messages, japanese */
++
++
++message md_hello
++{
++}
++
++message md_may_remove_boot_medium
++{
++}
++
++message Keyboard_type {キーボードの種類}
++message kb_default {Japanese}
++
++message dobad144
++{不良ブロックテーブルをインストールしています ...
++}
++
++message getboottype
++{通常のブートブロックとシリアルのブートブロックのどちらを
++インストールしますか?
++通常のブートブロックは BIOS のコンソールデバイス (通常はモニタと
++キーボード) をコンソールとして使います。シリアルのブートブロックは
++選択したシリアルポートをコンソールとして使います。
++選択中のブートブロック: }
++
++message console_PC {BIOS コンソール}
++message console_com {シリアルポート com%d、%d ボー}
++message console_unchanged {変更しない}
++
++message Bootblocks_selection
++{ブートブロックの選択}
++message Use_normal_bootblocks	{BIOS コンソールを使う}
++message Use_serial_com0		{シリアルポート com0 を使う}
++message Use_serial_com1		{シリアルポート com1 を使う}
++message Use_serial_com2		{シリアルポート com2 を使う}
++message Use_serial_com3		{シリアルポート com3 を使う}
++message serial_baud_rate	{シリアルのボーレートを設定}
++message Use_existing_bootblocks	{既存のブートブロックを使う}
++
++message dobootblks
++{%s にブートブロックをインストールしています....
++}
++
++message onebiosmatch
++{このディスクは次の BIOS ディスクに対応します:
++}
++
++message onebiosmatch_header
++{BIOS # シリンダ  ヘッド  セクタ   総セクタ数    GB 
++------ --------- ----- ------- ------------- ---- 
++}
++
++message onebiosmatch_row
++{%#6x %9d %5d %7d %13u %3u\n}
++
++message This_is_the_correct_geometry
++{これが正しいジオメトリです}
++
++message Set_the_geometry_by_hand
++{ジオメトリを手で設定する}
++
++message Use_one_of_these_disks
++{これらのディスクのどれかを使う}
++
++message biosmultmatch
++{このディスクは次の BIOS ディスクに対応します:
++}
++
++message biosmultmatch_header
++{   BIOS # シリンダ  ヘッド  セクタ   総セクタ数    GB 
++   ------ --------- ----- ------- ------------- ---- 
++}
++
++message biosmultmatch_row
++{%-1d: %#6x %9d %5d %7d %13u %3u\n}
++
++message biosgeom_advise
++{
++注: sysinst は選択したディスクを BIOS の認識するディスクと一意に
++対応付けられたので、上に示した値はほぼ確実に正しく、変更すべきでは
++ありません (シリンダ、ヘッド、セクタの値はおそらく 1023、255、63 で、
++これは正しい値です)。
++BIOS が誤った値を報告していると分かっている場合にだけ、ジオメトリを
++変更してください。
++}
++
++message pickdisk
++{ディスクを選択: }
++
++message partabovechs
++{ディスクの NetBSD 部分は、このマシンの BIOS がアクセスできる範囲の
++外にあります。
++そこから起動することはできないかもしれません。
++本当にこのままでよいですか?
++('いいえ' と答えるとパーティション編集メニューに戻ります。)}
++
++message missing_bootmenu_text
++{このディスクには複数のオペレーティングシステムがありますが、
++アクティブなパーティションにも、これからインストールする NetBSD
++パーティションにも 'bootmenu' が指定されていません。
++パーティションを編集し直してブートメニュー項目を加えますか?}
++
++message no_extended_bootmenu
++{拡張パーティションをブートメニューに含めるよう指定されました。
++しかし、このシステムの BIOS は、そのブートメニューコードが使う
++読み込みコマンドに対応していないようです。
++本当にこのままでよいですか?
++('いいえ' と答えるとパーティション編集メニューに戻ります。)}
++
++message installbootsel
++{この設定では、使うオペレーティングシステムを選ぶために NetBSD の
++ブートセレクトコードが必要です。
++現在はインストールされていません。今インストールしますか?}
++
++message installmbr
++{マスターブートレコードのブートコードが正しくないようです。
++NetBSD のブートコードをインストールしますか?}
++
++message updatembr
++{マスターブートレコードのブートコードを最新の NetBSD ブートコードに
++更新しますか?}
++
++message set_kernel_1	{カーネル (GENERIC)}
++message set_kernel_2	{カーネル (GENERIC_KASLR)}
+diff --git a/usr.sbin/sysinst/main.c b/usr.sbin/sysinst/main.c
+index c851998..6a121e3 100644
+--- a/usr.sbin/sysinst/main.c
++++ b/usr.sbin/sysinst/main.c
+@@ -92,6 +92,7 @@ char dist_tgz_postfix[SSTRSIZE];
+ WINDOW *mainwin;
+ 
+ static void select_language(const char*);
++static void reopen_screen(void);
+ __dead static void usage(void);
+ __dead static void miscsighandler(int);
+ static void ttysighandler(int);
+@@ -444,6 +445,25 @@ select_language(const char *msg_cat_path)
+ 	if (found.num_lang <= 1)
+ 		goto done;
+ 
++	/*
++	 * Sort the catalogs by file name, so that the menu comes out in
++	 * the same order on every medium; readdir() order does not.  The
++	 * built-in language stays first.
++	 */
++	for (lang = 2; lang < found.num_lang; lang++) {
++		char *fname = found.fnames[lang];
++		char *lmsg = found.lang_msg[lang];
++		int i;
++
++		for (i = lang;
++		    i > 1 && strcmp(found.fnames[i - 1], fname) > 0; i--) {
++			found.fnames[i] = found.fnames[i - 1];
++			found.lang_msg[i] = found.lang_msg[i - 1];
++		}
++		found.fnames[i] = fname;
++		found.lang_msg[i] = lmsg;
++	}
++
+ 	opt = calloc(found.num_lang, sizeof *opt);
+ 	if (!opt)
+ 		goto done;
+@@ -477,7 +497,73 @@ select_language(const char *msg_cat_path)
+ 	if (cp) {
+ 		setlocale(LC_CTYPE, cp);
+ 		setenv("LC_CTYPE", cp, 1);
++		/*
++		 * A UTF-8 catalog needs the terminal to decode UTF-8 as
++		 * well.  wscons(4) only does so after ESC % G (ISO 2022);
++		 * other terminals ignore or already honour it.
++		 */
++		if (strstr(cp, "UTF-8") != NULL) {
++			reopen_screen();
++			write(STDOUT_FILENO, "\033%G", 3);
++		}
++	}
++}
++
++/*
++ * Start curses over on a fresh stdout stream.
++ *
++ * A stream keeps the multibyte state of the locale it first wrote a
++ * wide character in, and curses drew the language menu in the C
++ * locale.  Once LC_CTYPE is UTF-8, wcrtomb() with that state fails
++ * with EILSEQ and curses drops the character, so the catalog would
++ * come out as its ASCII parts only.  Only a new FILE clears it, and
++ * curses takes one at newterm(), hence the new screen.
++ */
++static void
++reopen_screen(void)
++{
++	FILE *out;
++	SCREEN *scr, *old;
++
++	if (!isatty(STDOUT_FILENO))
++		return;
++	out = fdopen(dup(STDOUT_FILENO), "w");
++	if (out == NULL)
++		return;
++	endwin();
++	scr = newterm(NULL, out, stdin);
++	if (scr == NULL) {
++		/* carry on with the screen we have */
++		fclose(out);
++		refresh();
++		return;
++	}
++	delwin(mainwin);
++	old = set_term(scr);
++	cbreak();
++	noecho();
++	mainwin = newwin(getmaxy(stdscr) - 2, getmaxx(stdscr) - 2, 1, 1);
++	if (has_colors()) {
++		start_color();
++		do_coloring(clr_arg.fg, clr_arg.bg);
+ 	}
++	msg_window(mainwin);
++	/*
++	 * What the old screen drew is still on the display and the new
++	 * one has no idea of it, so ask for the whole thing to be drawn
++	 * again.  Without this, cells it believes are already right keep
++	 * the old text, and the wide characters of the new one land in
++	 * the middle of it.
++	 */
++	clearok(curscr, TRUE);
++	touchwin(stdscr);
++	refresh();
++	/*
++	 * delscreen(old) after set_term() crashes inside libcurses; the
++	 * old screen is a few kB and this happens once, so it is left
++	 * allocated.
++	 */
++	(void)old;
+ }
+ 
+ #ifndef md_may_remove_boot_medium
+diff --git a/usr.sbin/sysinst/msg.entropy.ja b/usr.sbin/sysinst/msg.entropy.ja
+new file mode 100644
+index 0000000..238b817
+--- /dev/null
++++ b/usr.sbin/sysinst/msg.entropy.ja
+@@ -0,0 +1,100 @@
++/*	$NetBSD$	*/
++
++/*
++ * Copyright (c) 2020 The NetBSD Foundation, Inc.
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE NETBSD FOUNDATION, INC. AND CONTRIBUTORS
++ * ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
++ * TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE FOUNDATION OR CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++/* entropy Message catalog -- japanese, machine independent */
++
++message Configure_entropy	{エントロピーを設定}
++message continue_without_entropy	{今はしない、続ける!}
++message not_enough_entropy
++{このシステムには暗号学的に強い擬似乱数生成器がないようです。
++安全な鍵 (ssh のホスト鍵など) を作るのに十分なエントロピーが
++ありません。
++ 
++このインストールを本番用途に使い、たとえば ssh のホスト鍵を
++生成するつもりなら、今ここでエントロピーの設定を済ませることを
++強くお勧めします!
++ 
++別のコンピュータで生成した乱数データをここに読み込むことも、
++手で乱数の文字を入力することもできます。
++ 
++USB の乱数デバイスがあれば、今接続して「再検査」を選んでください。}
++message entropy_add_manually		{乱数の文字を手で入力}
++message entropy_download_raw		{生のバイナリ乱数データを読み込む}
++message	entropy_download_seed		{NetBSD のエントロピーファイルを取り込む}
++message entropy_retry			{再検査}
++message entropy_enter_manual1
++{乱数の文字を一行入力してください。}
++message entropy_enter_manual2
++{少なくとも 256 ビット分のランダム性が必要です。コイン投げ 256 回、
++6 面サイコロ 100 回、ランダムな 16 進数 64 桁、あるいは (別のマシンの
++出力をこのインストーラに貼り付けられるなら) 信頼できる別のマシンで
++次のコマンドを実行した出力などです:}
++message entropy_enter_manual3
++{どんな長さと内容の行でも受け付け、少なくとも 256 ビットの
++ランダム性を含むものとみなします。実際にはそれより少ない場合、
++インストールしたシステムは安全でないかもしれません。}
++message entropy_select_file
++{乱数データファイルをこのマシンへどう転送するか
++選んでください:}
++message entropy_add_download_ftp
++{ftp でダウンロード}
++message entropy_add_download_http
++{http でダウンロード}
++message download_entropy
++{ダウンロード開始}
++message entropy_add_nfs
++{NFS 共有から読み込む}
++message entropy_add_local
++{ローカルファイルシステム (USB デバイスなど) から読み込む}
++message entropy_file
++{パス/ファイル}
++message load_entropy
++{乱数データを読み込む}
++message set_entropy_file
++{乱数データファイルのパス}
++message entropy_via_nfs
++{$0 を読み込むサーバー、共有、ファイルパスを選んでください。}
++message entropy_via_download
++{このシステムには十分なエントロピーがないため、すべての暗号操作は
++リプレイ攻撃を受けるおそれがあります。
++信頼できるローカルネットワークだけを使ってください。}
++message entropy_data
++{乱数データのバイナリファイル}
++message entropy_data_hdr
++{暗号学的に強い擬似乱数生成器のあるシステムでは、次のようにして
++バイナリ乱数データのファイルを作れます:}
++message entropy_seed
++{NetBSD のエントロピーシードファイル}
++message entropy_seed_hdr
++{暗号学的に強い擬似乱数生成器のある NetBSD システムでは、
++次のようにしてエントロピーのスナップショットを作れます:}
++message entropy_path_and_file
++{パスとファイル名}
++message entropy_localfs
++{乱数データのある、マウントされていないローカルデバイスと
++そのデバイス上のディレクトリを入力してください。}
+diff --git a/usr.sbin/sysinst/msg.mbr.ja b/usr.sbin/sysinst/msg.mbr.ja
+new file mode 100644
+index 0000000..31ac0d3
+--- /dev/null
++++ b/usr.sbin/sysinst/msg.mbr.ja
+@@ -0,0 +1,142 @@
++/*	$NetBSD$	*/
++
++/*
++ * Copyright 1997 Piermont Information Systems Inc.
++ * All rights reserved.
++ *
++ * Written by Philip A. Nelson for Piermont Information Systems Inc.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ * 3. The name of Piermont Information Systems Inc. may not be used to endorse
++ *    or promote products derived from this software without specific prior
++ *    written permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY PIERMONT INFORMATION SYSTEMS INC. ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL PIERMONT INFORMATION SYSTEMS INC. BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ *
++ */
++
++/* MBR Message catalog -- japanese, machine independent */
++
++/* Called with: 			Example
++ *  $0 = partitioning name		Master Boot Record (MBR)
++ *  $1 = short version of $0		MBR
++ */
++message mbr_part_header_1	{種類}
++message mbr_part_header_2	{マウント}
++.if BOOTSEL
++message mbr_part_header_3	{ブートメニュー}
++.endif
++
++message noactivepart
++{アクティブなパーティションが指定されていません。システムが正しく
++起動しないかもしれません。}
++
++message fixactivepart
++{
++ディスクの NetBSD パーティションをアクティブにしますか?}
++
++message setbiosgeom
++{
++ジオメトリを入力してください。
++BIOS がこのディスクにアクセスするときのトラックあたりのセクタ数
++(最大 63) とヘッド数 (最大 256) を入力してください。
++シリンダ数はディスクの大きさから計算します。
++}
++
++message nobiosgeom
++{sysinst はディスクの BIOS ジオメトリを自動的に判定できませんでした。
++物理ジオメトリは %d シリンダ %d セクタ %d ヘッドです\n}
++
++message biosguess
++{ディスク上にある情報から推測すると、BIOS ジオメトリはおそらく
++%d シリンダ %d セクタ %d ヘッドです\n}
++
++message realgeom
++{実ジオメトリ: %d cyl, %d heads, %d sec  (注: 比較用)\n}
++
++message biosgeom
++{BIOS ジオメトリ: %d cyl, %d heads, %d sec\n}
++
++message ptn_active
++{アクティブ}
++.if BOOTSEL
++message bootmenu
++{ブートメニュー}
++message boot_dflt
++{既定}
++.endif
++
++message mbr_get_ptn_id {パーティションの種類 (0..255)}
++message Only_one_extended_ptn {拡張パーティションは一つしか作れません}
++
++message mbr_flags	{ad}
++message mbr_flag_desc
++.if BOOTSEL
++{, (a) アクティブ, (d) 既定の起動}
++.else
++{, (a) アクティブ}
++.endif
++
++/* Called with:				Example
++ *  $0 = device name			wd0
++ *  $1 = outer partitioning name	Master Boot Record (MBR)
++ *  $2 = short version of $1		MBR
++ */
++message dofdisk
++{$2 パーティションテーブルを $0 に書き込んでいます...
++}
++
++message wmbrfail
++{MBR の書き換えに失敗しました。続行できません。}
++
++message mbr_inside_ext
++{パーティションは拡張パーティションの中から始まる必要があります}
++
++message mbr_ext_nofit
++{拡張パーティションは、含まれるすべてのパーティションを収められる
++必要があります}
++
++message mbr_ext_not_empty
++{空でない拡張パーティションは削除できません!}
++
++message mbr_no_free_primary_have_ext
++{このパーティションは拡張パーティションの中になく、
++基本ブートレコードにも空きがありません}
++
++message mbr_no_free_primary_no_ext
++{基本ブートブロックに空きがありません。
++パーティションを一つ削除して拡張パーティションを作り、
++削除したものを作り直すことを検討してください}
++
++.if 0
++.if BOOTSEL
++message Set_timeout_value
++{タイムアウト値を設定}
++
++message bootseltimeout
++{ブートメニューのタイムアウト: %d\n}
++
++.endif
++.endif
++
++message parttype_mbr {マスターブートレコード (MBR)}
++message parttype_mbr_short {MBR}
++
++message mbr_type_invalid	{不正なパーティション種類 (0 .. 255)}
+diff --git a/usr.sbin/sysinst/msg.mi.ja b/usr.sbin/sysinst/msg.mi.ja
+new file mode 100644
+index 0000000..bca795e
+--- /dev/null
++++ b/usr.sbin/sysinst/msg.mi.ja
+@@ -0,0 +1,1594 @@
++/*	$NetBSD$	*/
++
++/*
++ * Copyright 1997 Piermont Information Systems Inc.
++ * All rights reserved.
++ *
++ * Written by Philip A. Nelson for Piermont Information Systems Inc.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ * 3. The name of Piermont Information Systems Inc. may not be used to endorse
++ *    or promote products derived from this software without specific prior
++ *    written permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY PIERMONT INFORMATION SYSTEMS INC. ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL PIERMONT INFORMATION SYSTEMS INC. BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ *
++ */
++
++/* MI Message catalog -- english, machine independent */
++/* MI Message catalog -- japanese, machine independent */
++
++/*
++ * Shown in the language menu before the locale and the console are
++ * switched to UTF-8, so it has to be ASCII.
++ */
++message sysinst_message_language
++{Installation messages in Japanese}
++
++message sysinst_message_locale
++{ja_JP.UTF-8}
++
++message	out_of_memory	{メモリが足りません!}
++message Yes {はい}
++message No {いいえ}
++message All {すべて}
++message Some {一部}
++message None {なし}
++message none {なし}
++message OK {OK}
++message ok {ok}
++message On {オン}
++message Off {オフ}
++message unchanged {変更しない}
++message Delete {削除しますか?}
++
++message install
++{インストール}
++
++message reinstall
++{セットの再インストール:}
++
++message upgrade
++{アップグレード}
++
++message hello
++{NetBSD/@@MACHINE@@ @@VERSION@@
++
++このメニュー形式のツールは、NetBSD をハードディスクへインストールする、
++あるいは既存の NetBSD システムをアップグレードする作業を、なるべく手間を
++かけずに行うためのものです。
++以下のメニューでは、項目の参照文字 (a, b, c, ...) を入力して選ぶか、
++CTRL+N/CTRL+P で次/前の項目に移動します。
++矢印キーや Page-up/Page-down も使えます。
++選んだ項目は Enter キーで実行されます。
++}
++
++message thanks
++{NetBSD をお使いいただきありがとうございます!
++}
++
++message installusure
++{ハードディスクへ NetBSD をインストールすることを選びました。これにより
++ハードディスク上の情報が書き換えられます。この作業に入る前に完全な
++バックアップを取っておいてください! この作業では次のことを行います:
++	a) ディスクのパーティション分割
++	b) 新しい BSD ファイルシステムの作成
++	c) 配布セットの読み込みとインストール
++	d) システムの初期設定
++
++(パーティション情報を入力したあと、ディスクが書き換えられる前に、
++この作業を中止する機会があります。)
++
++続けますか?
++}
++
++message upgradeusure
++{では、ハードディスク上の NetBSD をアップグレードします。これも同様に
++ハードディスク上の情報を書き換えます。この作業に入る前に完全なバックアップを
++取っておいてください! 本当に NetBSD をアップグレードしますか?
++(これがディスクの変更を始める前の最後の警告です。)
++}
++
++message reinstallusure
++{では、NetBSD の配布セットを起動可能なハードディスクへ展開します。
++この作業は、すでにパーティション分割された起動可能なディスクへセットを
++取得して展開するだけです。ディスクラベルの書き込み、ブートブロックの更新、
++既存の設定情報の保存は行いません。(それらが必要なら、中止して
++「インストール」か「アップグレード」を選んでください。) この作業を始める
++前に、「インストール」か「アップグレード」を済ませておく必要があります!
++
++本当に NetBSD の配布セットを再インストールしますか?
++(これがディスクの変更を始める前の最後の警告です。)
++}
++
++message mount_failed
++{%s のマウントに失敗しました。続けますか?
++}
++
++message nodisk
++{NetBSD で使えるハードディスクが見つかりません。
++元のメニューに戻ります。
++}
++
++message onedisk
++{ディスクは %s の一つだけ見つかりました。
++このディスクに NetBSD を%sするものとします。
++}
++
++message ask_disk
++{どのディスクに NetBSD を%sしますか?
++よくあるディスクの種類:
++	- wd: SATA、ATA、IDE
++	- sd: SCSI または取り外し可能な USB ディスク
++	- ld: NVMe (M.2 カードなど)、SD/MMC カード、仮想ディスク
++}
++
++message Available_disks
++{使えるディスク}
++
++message Available_wedges	{既存の "wedge"}
++
++message heads
++{ヘッド}
++
++message sectors
++{セクタ}
++
++message mountpoint
++{マウントポイント (または '-')}
++
++message cylname
++{cyl}
++
++message secname
++{sec}
++
++message megname
++{MB}
++
++message gigname
++{GB}
++
++/* Called with:				Example
++ *  $0 = device name			wd0
++ *  $1 = partitioning scheme name	Guid Partition Table
++ *  $2 = short version of $1		GPT
++ *  $3 = disk size for NetBSD		3TB
++ *  $4 = full install size min.		127M
++ *  $5 = install with X min.		427M
++ */
++message	layout_prologue_none
++{簡単なエディタで NetBSD パーティションの大きさを決めることも、
++既定のパーティションの大きさと内容をそのまま使うこともできます。}
++
++/* Called with:				Example
++ *  $0 = device name			wd0
++ *  $1 = partitioning scheme name	Guid Partition Table
++ *  $2 = short version of $1		GPT
++ *  $3 = disk size for NetBSD		3TB
++ *  $4 = full install size min.		127M
++ *  $5 = install with X min.		427M
++ */
++
++message	layout_prologue_existing
++{既存のパーティションを使わないのであれば、簡単なエディタで
++NetBSD パーティションの大きさを決めることも、既存のものを消して
++既定のパーティションの大きさを使うこともできます。}
++
++/* Called with:				Example
++ *  $0 = device name			wd0
++ *  $1 = partitioning scheme name	Guid Partition Table
++ *  $2 = short version of $1		GPT
++ *  $3 = disk size for NetBSD		3TB
++ *  $4 = full install size min.		127M
++ *  $5 = install with X min.		427M
++ */
++message layout_main
++{
++
++その後で、各パーティションの詳細を変更する機会があります。
++
++ディスク ($0) の NetBSD 用 (または空き) 部分は $3 です。
++
++フルインストールには X なしで最低 $4、
++X のセットを含める場合は最低 $5 必要です。}
++
++message Choose_your_size_specifier
++{メガバイトまたはギガバイトを選ぶと、指定に近い大きさで、シリンダ境界に
++揃えたパーティションになります。
++セクタを選ぶと、より正確に大きさを指定できます。
++ほとんどのディスクでは、シリンダに揃えても得られるものはほとんど
++ありません。とても古いディスクでは、実際のシリンダの大きさの
++ちょうど倍数になるパーティションの大きさを選ぶのが最も効率的です。
++
++大きさの単位を選んでください}
++
++message ptnsizes
++{ここでシステムパーティションの大きさを変更できます。既定では
++すべての領域をルートファイルシステムに割り当てます。しかし、
++/usr (追加のシステムファイル)、/var (ログファイルなど)、
++/home (ユーザーのホームディレクトリ) を別のファイルシステムに
++したい場合もあるでしょう。
++
++空き領域は '+' の付いたパーティションに加えられます。}
++
++/* Called with: 			Example
++ *  $0 = list of marker explanations	'=' existining, '@' external
++ */
++message ptnsizes_markers		{その他の印: $0 パーティション。}
++message ptnsizes_mark_existing		{'=' 既存の}
++message ptnsizes_mark_external		{'@' 外部の}
++
++message ptnheaders_size 	{大きさ}
++message ptnheaders_filesystem	{ファイルシステム}
++
++message askfsmount
++{マウントポイント (空ならキャンセル)?}
++
++message askfssize
++{%s の大きさ (%s 単位)?}
++
++message askunits
++{入力単位を変更 (セクタ/シリンダ/MB/GB)}
++
++message NetBSD_partition_cant_change
++{NetBSD パーティション}
++
++message Whole_disk_cant_change
++{ディスク全体}
++
++message Boot_partition_cant_change
++{ブートパーティション}
++
++message add_another_ptn
++{ユーザー定義のパーティションを追加}
++
++/* Called with: 			Example
++ *  $0 = free space			1.4
++ *  $1 = size unit			GB
++ */
++message fssizesok
++{続ける。空き領域 $0 $1。}
++
++/* Called with: 			Example
++ *  $0 = missing space			1.4
++ *  $1 = size unit			GB
++ */
++message fssizesbad
++{中止。領域が足りません、$0 $1 不足!}
++
++message startoutsidedisk
++{指定した開始位置はディスクの終わりを越えています。
++}
++
++message endoutsidedisk
++{この値ではパーティションの終わりがディスクの終わりを越えます。
++パーティションの大きさを切り詰めました。}
++
++/* Called with:				Example
++ *  $0 = device name			wd0
++ *  $1 = partitioning scheme name	Master Boot Record (MBR)
++ *  $2 = short version of $1		MBR
++ *  $3 = disk size			3TB
++ *  $4 = size limit			2TB
++ */
++message toobigdisklabel
++{
++このディスク ($0) は $2 パーティションテーブルには大きすぎます
++($3、上限 $4)。そのためディスクの先頭部分しか使えません。
++}
++
++message cvtscheme_hdr		{既存のパーティションをどうしますか?}
++message cvtscheme_keep		{残す (ディスクの一部だけを使う)}
++message cvtscheme_delete	{削除する (すべてのデータが失われます!)}
++message cvtscheme_convert	{別のパーティション方式に変換する}
++message cvtscheme_abort		{中止}
++message cvtscheme_error
++{すべてのパーティションを変換できませんでした}
++
++/* Called with:				Example
++ *  $0 = device name			wd0
++ *  $1 = partitioning scheme name	BSD disklabel
++ *  $2 = short version of $1		disklabel
++ *  $3 = optional install flag          (I)nstall,
++ *  $4 = additional flags description	(B)ootable
++ *  $5 = total size			2TB
++ *  $6 = free size			244MB
++ */
++message fspart
++{$0 の $2 パーティションは以下のとおりです。
++変更できるのはこれが最後です。
++
++フラグ: $3(N)ewfs$4。  全体: $5、空き: $6}
++
++message ptnheaders_start	{開始}
++message ptnheaders_end		{終了}
++message ptnheaders_fstype	{FS 種別}
++
++message partition_sizes_ok
++{パーティションの大きさはこれでよい}
++
++message edfspart
++{このパーティションの現在の値を以下に示します。
++
++変更する項目を選んでください:}
++
++message ptn_newfs		{newfs}
++message ptn_mount		{マウント}
++message ptn_mount_options	{マウントオプション}
++message ptn_mountpt		{マウントポイント}
++
++message toggle
++{切り替え}
++
++message restore
++{元の値に戻す}
++
++message Select_the_type
++{種別を選んでください}
++
++message other_types
++{その他の種別}
++
++/* Called with:				Example
++ *  $0 = valid partition shortcuts	a-e
++ *  $1 = maximum allowed		4292098047
++ *  $2 = size unit			MB
++ */
++message label_size_head
++{大きさには次の特別な値も入力できます:
++    -1:   終わりまで使う}
++
++/* Called with:				Example
++ *  $0 = valid partition shortcuts	a-e
++ *  $1 = maximum allowed		4292098047
++ *  $2 = size unit			MB
++ */
++message label_size_part_hint
++{   $0:   指定したパーティションの手前まで使う}
++
++
++/* Called with:				Example
++ *  $0 = valid partition shortcuts	a-e
++ *  $1 = maximum allowed		4292098047
++ *  $2 = size unit			MB
++ */
++message label_size_tail			{大きさ (最大 $1 $2)}
++
++/* Called with:				Example
++ *  $0 = valid partition shortcuts	a-e
++ *  $1 = valid free space shortcuts	f-h
++ *  $2 = size unit			MB
++ */
++message label_offset_head
++{開始位置には次の特別な値も入力できます:
++    -1:   先頭から始める}
++
++/* Called with:				Example
++ *  $0 = valid partition shortcuts	a-e
++ *  $1 = valid free space shortcuts	f-h
++ *  $2 = size unit			MB
++ */
++message label_offset_part_hint
++{   $0:   指定したパーティションの終わりから始める}
++
++/* Called with:				Example
++ *  $0 = valid partition shortcuts	a-e
++ *  $1 = valid free space shortcuts	f-h
++ *  $2 = size unit			MB
++ */
++message label_offset_space_hint
++{   $1:   指定した空き領域の先頭から始める}
++
++/* Called with:				Example
++ *  $0 = valid partition shortcuts	a-e
++ *  $1 = valid free space shortcuts	f-h
++ *  $2 = size unit			MB
++ */
++message label_offset_tail		{開始 ($2)}
++
++message invalid_sector_number
++{数値の形式が正しくありません}
++
++message packname
++{NetBSD ディスクの名前を入力してください}
++
++message lastchance
++{では、ハードディスク (%s) へ NetBSD をインストールする準備ができました。
++まだ何も書き込んでいません。何かが変更される前にこの作業を中止できるのは
++これが最後です。
++
++続けますか?
++}
++
++message disksetupdone
++{作業の前半が終わりました。sysinst は対象ディスクにディスクラベルを
++書き込み、指定された新しいパーティションに newfs と fsck を
++行いました。
++}
++
++message disksetupdoneupdate
++{作業の前半が終わりました。sysinst は対象ディスクにディスクラベルを
++書き込み、指定された新しいパーティションに fsck を行いました。
++}
++
++message openfail
++{%s を開けませんでした。エラーメッセージ: %s。
++}
++
++/* Called with:				Example
++ *  $0 = device name			/dev/wd0a
++ *  $1 = mount path			/usr
++ */
++message mountfail
++{デバイス $0 の $1 へのマウントに失敗しました。
++}
++
++message extractcomplete
++{NetBSD-@@VERSION@@ の選択したセットの展開が完了しました。
++システムは選択したハードディスクから起動できるようになっています。
++インストールを完了する前に、sysinst でいくつかの基本的な設定を
++行うことができます。
++}
++
++message instcomplete
++{NetBSD-@@VERSION@@ のインストールが完了しました。システムは
++ハードディスクから起動できるはずです。システムの最終的な設定については
++INSTALL 文書の指示に従ってください。afterboot(8) マニュアルページも
++読むことをお勧めします。最初の完全な起動のあとに確認すべきことの一覧が
++あります。
++
++少なくとも、/etc/rc.conf を必要に応じて編集してください。既定値は
++/etc/defaults/rc.conf にあります。
++}
++
++message upgrcomplete
++{NetBSD-@@VERSION@@ へのアップグレードが完了しました。システムを
++状況に合わせて設定し直すために、INSTALL 文書の指示に従ってください。
++前回のアップグレード以降に新しい項目が加わっているかもしれないので、
++afterboot(8) マニュアルページも読み直してください。
++}
++
++
++message unpackcomplete
++{NetBSD-@@VERSION@@ の追加のリリースセットの展開が完了しました。
++システムを状況に合わせて設定し直すために、INSTALL 文書の指示に
++従ってください。
++afterboot(8) マニュアルページも役に立つでしょう。
++
++etc セットを展開した場合、マルチユーザーシステムにするには
++/etc/rc.conf の編集が必要です。少なくとも rc_configured=NO を
++rc_configured=YES に変える必要があります。
++}
++
++message distmedium
++{ディスクはカーネルと配布セットをインストールできる状態になりました。
++INSTALL 文書にあるように、いくつかの選択肢があります。ftp や nfs を
++使うには、目的のマシンにアクセスできるネットワークに接続されている
++必要があります。
++
++選択したセット %d、処理済み %d、次のセット %s。
++
++}
++
++message distset
++{NetBSD の配布物はいくつかの配布セットに分かれています。すべての
++インストールに必要な基本的なセットと、任意で選べるセットがあります。
++基本セットだけ (最小インストール)、すべて (フルインストール)、
++または好きな組み合わせ (カスタムインストール) を選べます。
++}
++
++/* Called with: 			Example
++ *  $0 = sets suffix			.tgz
++ *  $1 = URL protocol used		ftp
++ */
++message ftpsource
++{以下の $1 サイト、ディレクトリ、ユーザー、パスワードを使います。
++「ユーザー」が "ftp" の場合、パスワードは不要です。
++
++}
++
++message email
++{メールアドレス}
++
++message dev
++{デバイス}
++
++/* Called with: 			Example
++ *  $0 = sets suffix			.tgz
++ */
++message nfssource
++{配布物のある nfs ホストとサーバーのディレクトリを入力してください。
++そのディレクトリには $0 ファイルがあり、nfs でマウントできる
++必要があります。
++
++}
++
++message floppysource
++{使うフロッピーデバイスと、対象ファイルシステム上の転送用ディレクトリを
++入力してください。セットのファイルはフロッピーのルートディレクトリに
++なければなりません。
++
++}
++
++/* Called with: 			Example
++ *  $0 = sets suffix			.tgz
++ */
++message cdromsource
++{使う CDROM デバイスと、配布物のある CDROM 上のディレクトリを
++入力してください。
++そのディレクトリには $0 ファイルがなければなりません。
++
++}
++
++message No_cd_found
++{配布セットの入った CD 媒体がどのドライブにも見つかりません!
++正しい値を手で入力するか、ディスクを入れてやり直してください。
++}
++
++message abort_install
++{インストールを中止}
++
++message source_sel_retry
++{入手元の選択に戻ってやり直す}
++
++message Available_cds
++{使える CD }
++
++message ask_cd
++{CD が複数見つかりました。インストール CD の入っているものを選んでください。}
++
++message cd_path_not_found
++{この CD の既定の場所にインストールセットが見つかりません。
++デバイスとパス名を確認してください。}
++
++/* Called with: 			Example
++ *  $0 = sets suffix			.tgz
++ */
++message localfssource
++{マウントされていないローカルデバイスと、配布物のあるそのデバイス上の
++ディレクトリを入力してください。
++そのディレクトリには $0 ファイルがなければなりません。
++
++}
++
++/* Called with: 			Example
++ *  $0 = sets suffix			.tgz
++ */
++message localdir
++{配布物のある、マウント済みのローカルディレクトリを入力してください。
++そのディレクトリには $0 ファイルがなければなりません。
++
++}
++
++message filesys
++{ファイルシステム}
++
++message nonet
++{NetBSD で使えるネットワークインターフェースが見つかりません。
++前のメニューに戻ります。
++}
++
++message netup
++{次のネットワークインターフェースが有効です: %s
++このうちのどれかが目的のサーバーにつながっていますか?}
++
++message asknetdev
++{どのネットワークデバイスを使いますか?}
++
++message netdevs
++{使えるインターフェース}
++
++message netinfo
++{ネットワークを使うために、次のことを教えてください:
++
++}
++
++message net_domain
++{DNS ドメイン}
++
++message net_host
++{ホスト名}
++
++message net_ip
++{IPv4 アドレス}
++
++message net_srv_ip
++{サーバーの IPv4 アドレス}
++
++message net_mask
++{IPv4 ネットマスク}
++
++message net_namesrv
++{ネームサーバー}
++
++message net_defroute
++{IPv4 ゲートウェイ}
++
++message net_media
++{ネットワークメディアの種類 (空なら自動設定)}
++
++message net_ssid
++{Wi-Fi の SSID?}
++
++message net_passphrase
++{Wi-Fi のパスフレーズ?}
++
++message netok
++{入力された値は以下のとおりです。
++
++DNS ドメイン:		%s 
++ホスト名:		%s 
++ネームサーバー:		%s 
++主インターフェース:	%s 
++メディアの種類:		%s 
++ホスト IP:		%s 
++ネットマスク:		%s 
++IPv4 ゲートウェイ:	%s 
++}
++
++message netok_slip
++{入力された値は以下のとおりです。これでよいですか?
++
++DNS ドメイン:		%s 
++ホスト名:		%s 
++ネームサーバー:		%s 
++主インターフェース:	%s 
++メディアの種類:		%s 
++ホスト IP:		%s 
++サーバー IP:		%s 
++ネットマスク:		%s 
++IPv4 ゲートウェイ:	%s 
++}
++
++message netokv6
++{IPv6 自動設定:		%s 
++}
++
++message netok_ok
++{これでよいですか?}
++
++message wait_network
++{
++ネットワークインターフェースが上がるのを待っています。
++}
++
++message resolv
++{/etc/resolv.conf を作れませんでした。インストールを中止します。
++}
++
++/* Called with: 			Example
++ *  $0 = target prefix			/target
++ *  $1 = error message			No such file or directory
++ */
++message realdir
++{ディレクトリ $0 に移動できませんでした: $1。
++インストールを中止します。}
++
++message delete_xfer_file
++{インストール後に削除}
++
++/* Called with: 			Example
++ *  $0 = set name			base
++ */
++message notarfile
++{リリースセット $0 がありません。}
++
++.if HAVE_DVD_IMAGE
++/* Called with: 			Example
++ *  $0 = set name			base
++ */
++message opt_set_not_found
++{セット "$0" は任意のもので、この配布媒体には含まれていません。
++
++これは重大な問題ではなく、インストールは続行します。
++このセットは後から、たとえば NetBSD の CDN から https で
++ダウンロードして追加できます。
++
++任意のセット:
++ debug/debug32 デバッグ情報
++ base32 64 ビットアーキテクチャで 32 ビットのコードを動かすための
++        サポート
++ test 自動テストプログラム
++ manhtml HTML 形式のマニュアルページ
++
++アーキテクチャによっては CD と DVD で別の ISO イメージがあり、
++DVD イメージは完全ですべてのセットを含みます。
++}
++.endif
++
++message endtarok
++{選択した配布セットはすべて正常に展開されました。}
++
++message endtar
++{配布セットの展開で問題がありました。
++インストールは不完全です。
++
++%d 個の配布セットを選択しました。%d 個が見つからず、
++%d 個がエラーのあとスキップされました。試みた %d 個のうち、
++%d 個はエラーなしで、%d 個はエラーありで展開されました。
++
++配布物の入手元を確認し直し、メインメニューからセットの再インストールを
++検討してください。}
++
++message abort_inst {インストールを中止しました。}
++message abort_part {パーティション分割を中止しました。}
++
++message abortinst
++{配布物を正しく読み込めませんでした。続きは手作業で行う必要があります。
++インストールを中止しました。
++}
++
++message abortupgr
++{配布物を正しく読み込めませんでした。続きは手作業で行う必要があります。
++アップグレードを中止しました。
++}
++
++message abortunpack
++{追加セットの展開に失敗しました。続きは手作業で行うか、
++リリースセットの別の入手元を選んでやり直してください。
++}
++
++message createfstab
++{大きな問題が起きました! /mnt/etc/fstab を作れません。中断します!
++}
++
++
++message noetcfstab
++{困りました! 対象ディスク %s に /etc/fstab がありません。
++アップグレードを中止します。
++}
++
++message badetcfstab
++{困りました! 対象ディスク %s の /etc/fstab を解釈できません。
++アップグレードを中止します。
++}
++
++message X_oldexists
++{対象ディスクにすでに %s/bin/X.old があるため、%s/bin/X を
++%s/bin/X.old として保存できません。続ける前にこれを
++解決してください。
++
++一つの方法は、ユーティリティメニューからシェルを起動し、対象の
++%s/bin/X と %s/bin/X.old を調べることです。
++%s/bin/X.old が完了したアップグレードのものなら、
++%s/bin/X.old を rm -f して再開できます。%s/bin/X.old が
++最近の未完了のアップグレードのものなら、%s/bin/X を rm -f して
++%s/bin/X.old を %s/bin/X に mv してください
++
++アップグレードを中止します。}
++
++message netnotup
++{ネットワークの設定で問題がありました。ゲートウェイかネームサーバーに
++ping が届きません。ネットワークを設定し直しますか?
++(「いいえ」を選ぶと、そのまま続けるかインストールを中止するかを
++選べます。)
++}
++
++message netnotup_continueanyway
++{ネットワークは動いているものとして、このままインストールを
++続けますか? (「いいえ」を選ぶとインストールを中止します。)
++}
++
++message makedev
++{デバイスノードを作成しています ...
++}
++
++/* Called with:				Example
++ *  $0 = device name			/dev/rwd0a
++ *  $1 = file system type		ffs
++ *  $2 = error return code form fsck	8
++ */
++message badfs
++{$0 は $1 ファイルシステムではないか、fsck が失敗したようです。
++それでもマウントしてみますか? (エラー番号 $2。)
++}
++
++message rootmissing
++{ 対象のルートに %s がありません。
++}
++
++message badroot
++{完成した新しいルートファイルシステムが基本的な検査に通りません。
++必要なセットをすべてインストールしましたか?
++}
++
++message fd_type
++{フロッピーのファイルシステム種別}
++
++message fdnotfound
++{フロッピーにそのファイルが見つかりません。
++}
++
++message fdremount
++{フロッピーを正しくマウントできませんでした。
++}
++
++message fdmount
++{"%s.%s" という名前のファイルの入ったフロッピーを入れてください。
++
++このセットにこれ以上のディスクがなければ、「セット終了」を選んで
++セットをインストールします。
++「取得を中止」を選ぶとインストール媒体の選択メニューに戻ります。
++}
++
++message mntnetconfig
++{入力したネットワーク情報はこのマシンの通常運用時のものとして正しく、
++/etc にインストールしますか? }
++
++message cur_distsets
++{使う配布セットの一覧は以下のとおりです。
++
++}
++
++message cur_distsets_header
++{   配布セット                         選択
++   ---------------------------------- --------
++}
++
++message set_base
++{基本}
++
++message set_base32
++{基本 32 ビット互換ライブラリ}
++
++message set_base64
++{基本 64 ビット互換ライブラリ}
++
++message set_system
++{設定ファイル (/etc)}
++
++message set_compiler
++{コンパイラツール}
++
++message set_dtb
++{Devicetree ハードウェア記述}
++
++message set_games
++{ゲーム}
++
++message set_gpufw
++{グラフィックドライバのファームウェア}
++
++message set_man_pages
++{マニュアルページ}
++
++message set_man_pages_html
++{マニュアルページ (HTML)}
++
++message set_misc
++{その他}
++
++message set_modules
++{カーネルモジュール}
++
++message set_rescue
++{復旧ツール}
++
++message set_tests
++{テストプログラム}
++
++message set_text_tools
++{テキスト処理ツール}
++
++message set_X11
++{X11 セット}
++
++message set_X11_base
++{X11 基本とクライアント}
++
++message set_X11_etc
++{X11 設定}
++
++message set_X11_fonts
++{X11 フォント}
++
++message set_X11_servers
++{X11 サーバー}
++
++message set_X11_prog
++{X11 プログラミング}
++
++message set_source
++{ソースとデバッグのセット}
++
++message set_syssrc
++{カーネルソース}
++
++message set_src
++{基本ソース}
++
++message set_sharesrc
++{share ソース}
++
++message set_gnusrc
++{GNU ソース}
++
++message set_xsrc
++{X11 ソース}
++
++message set_debug
++{デバッグシンボル}
++
++message set_debug32
++{デバッグシンボル (32 ビット)}
++
++message set_debug64
++{デバッグシンボル (64 ビット)}
++
++message set_xdebug
++{X11 デバッグシンボル}
++
++message select_all
++{上のセットをすべて選択}
++
++message select_none
++{上のセットをすべて選択解除}
++
++message install_selected_sets
++{選択したセットをインストール}
++
++message tarerror
++{ファイル %s の展開でエラーがありました。一部のファイルが正しく
++展開されておらず、システムは不完全になります。
++
++セットの展開を続けますか?}
++
++/* Called with: 			Example
++ *  $0 = partitioning name		Master Boot Record (MBR)
++ *  $1 = short version of $0		MBR
++ */
++message must_be_one_root
++{'/' にマウントするパーティションがちょうど一つ必要です。}
++
++/* Called with: 			Example
++ *  $0 = first partition description	70 - 90 MB, MSDOS
++ *  $1 = second partition description	80 - 1500 MB, 4.2BSD
++ */
++message partitions_overlap
++{パーティション $0 と $1 が重なっています。}
++
++message No_Bootcode
++{ルートパーティションの FS 種別に対応するブートコードがありません}
++
++message cannot_ufs2_root
++{残念ながら、このポートのブートローダーが対応していないため、ルート
++ファイルシステムを FFSv2 にはできません。}
++
++message zfs_root_unavailable
++{このインストール媒体では ZFS が使えないため、ルートファイルシステムを
++ZFS に置くことはできません。}
++
++message zfs_root_no_boot_part
++{ZFS 上のルートファイルシステムには、カーネル、zfs モジュール、起動用
++ramdisk を置くための、/altroot にマウントする FFS ブートパーティションが
++必要です。「root on ZFS」のパーティション構成を選んでください。}
++
++message zfs_root_needs_gpt
++{ZFS 上のルートファイルシステムにはプール用の GPT パーティションが
++必要です。起動用 ramdisk はディスク全体と wedge だけを走査して
++プールを探すためです。}
++
++/* Called with:				Example
++ *  $0 = ramdisk file name		ramdisk-zfsroot.fs
++ */
++message zfs_root_no_ramdisk
++{セットと同じ場所の installation/ramdisk に $0 が見つかりません。
++ブートパーティションにコピーするまでシステムは起動しません。}
++
++message edit_partitions_again
++{
++
++パーティションテーブルを手で編集するか、あきらめてメインメニューに
++戻ることができます。
++
++パーティションテーブルをもう一度編集しますか?}
++
++/* Called with: 			Example
++ *  $0 = missing file			/some/path
++ */
++message config_open_error
++{設定ファイル $0 を開けませんでした}
++
++message choose_timezone
++{以下の一覧から最も合うタイムゾーンを選んでください。
++RETURN で項目を選択します。
++'x' に続けて RETURN でタイムゾーンの選択を終えます。
++
++ 既定:		%s 
++ 選択:		%s 
++ 現地時刻: 	%s %s 
++}
++
++message tz_back
++{ タイムゾーン一覧の先頭に戻る}
++
++message swapactive
++{選択したディスクには、システムのメモリが少ない場合に現在使われている
++可能性のあるスワップパーティションがあります。このディスクを
++パーティション分割し直すので、このスワップパーティションは今から
++無効にします。これによりスワップ不足のエラーが起きるかもしれないことに
++注意してください。そのようなエラーが起きたら、システムを再起動して
++やり直してください。}
++
++message swapdelfailed
++{インストール用に選択したディスクのスワップパーティションを sysinst が
++無効にできませんでした。再起動してやり直してください。}
++
++message rootpw
++{新しくインストールしたシステムの root パスワードはまだ設定されておらず、
++空になっています。今ここでシステムの root パスワードを設定しますか?}
++
++message force_rootpw
++{新しくインストールしたシステムの root パスワードはまだ設定されて
++いません。
++ 
++パスワードを設定したくなければ、空行を入力してください。}
++
++message rootsh
++{root ユーザーが使うシェルを選べます。既定は /bin/sh ですが、
++別のものにすることもできます。}
++
++message no_root_fs
++{
++ルートファイルシステムが定義されていません。少なくとも一つ、
++マウントポイントが "/" のものを定義する必要があります。
++
++<return> を押すと続けます。
++}
++
++message slattach {
++slattach のフラグを入力してください
++}
++
++message Pick_an_option {オン/オフにする項目を選んでください。}
++message Scripting {スクリプト記録}
++message Logging {ログ記録}
++
++message Status  { 状態: }
++message Command {コマンド: }
++message Running {実行中}
++message Finished {終了}
++message Command_failed {コマンドが失敗しました}
++message Command_ended_on_signal {コマンドがシグナルで終了しました}
++
++message NetBSD_VERSION_Install_System {NetBSD-@@VERSION@@ インストールシステム}
++message Exit_Install_System {インストールシステムを終了}
++message Install_NetBSD_to_hard_disk {ハードディスクへ NetBSD をインストール}
++message Upgrade_NetBSD_on_a_hard_disk {ハードディスク上の NetBSD をアップグレード}
++message Re_install_sets_or_install_additional_sets {セットの再インストールまたは追加セットのインストール}
++message Reboot_the_computer {コンピュータを再起動}
++message Utility_menu {ユーティリティメニュー}
++message Config_menu {設定メニュー}
++message exit_utility_menu {メインメニューに戻る}
++message exit_menu_generic {終了}
++message NetBSD_VERSION_Utilities {NetBSD-@@VERSION@@ ユーティリティ}
++message Run_bin_sh {/bin/sh を実行}
++message Set_timezone {タイムゾーンを設定}
++message Configure_network {ネットワークを設定}
++message Partition_a_disk {ディスクをパーティション分割}
++message Logging_functions {ログ記録機能}
++message Halt_the_system {システムを停止}
++message yes_or_no {はい/いいえ?}
++message Hit_enter_to_continue {Enter を押すと続けます}
++message Choose_your_installation {インストール方法を選んでください}
++
++/* Called with:				Example
++ *  $0 = partitioning name		Master Boot Record (MBR)
++ *  $1 = short version of $0		MBR
++ */
++message Keep_existing_partitions
++{既存の $1 パーティションを使う}
++
++/* Called with:				Example
++ *  $0 = partitioning name		Master Boot Record (MBR)
++ *  $1 = short version of $0		MBR
++ */
++message Set_Sizes {NetBSD パーティションの大きさを決める}
++
++/* Called with:				Example
++ *  $0 = partitioning name		Master Boot Record (MBR)
++ *  $1 = short version of $0		MBR
++ */
++message Use_Default_Parts {既定のパーティションの大きさを使う}
++
++/* Called with:				Example
++ *  $0 = partitioning name		Master Boot Record (MBR)
++ *  $1 = short version of $0		MBR
++ */
++message Use_Default_Parts_ZFS {既定のパーティションの大きさを使い、ルートを ZFS に置く}
++
++/* Called with:				Example
++ *  $0 = partitioning name		Master Boot Record (MBR)
++ *  $1 = short version of $0		MBR
++ */
++message Use_Empty_Parts {パーティションを手で定義する}
++
++/* Called with:				Example
++ *  $0 = current partitioning name	Master Boot Record (MBR)
++ *  $1 = short version of $0		MBR
++ */
++message Use_Different_Part_Scheme
++{すべて削除して別のパーティション方式を使う ($1 以外)}
++
++message Gigabytes {ギガバイト}
++message Megabytes {メガバイト}
++message Bytes {バイト}
++message Cylinders {シリンダ}
++message Sectors {セクタ}
++message Select_medium {インストール元}
++message ftp {FTP}
++message http {HTTP}
++message https {HTTPS}
++message nfs {NFS}
++.if HAVE_INSTALL_IMAGE
++message cdrom {CD-ROM / DVD / インストールイメージ媒体}
++.else
++message cdrom {CD-ROM / DVD}
++.endif
++message floppy {フロッピー}
++message local_fs {マウントされていない fs}
++message local_dir {ローカルディレクトリ}
++message Select_your_distribution {配布物を選んでください}
++message Full_installation {フルインストール}
++message Full_installation_nox {X11 なしのインストール}
++message Minimal_installation {最小インストール}
++message Custom_installation {カスタムインストール}
++message hidden {** 非表示 **}
++message Host {ホスト}
++message Base_dir {基本ディレクトリ}
++message Set_dir_bin {バイナリセットのディレクトリ}
++message Set_dir_src {ソースセットのディレクトリ}
++message Dist_postfix {ファイル拡張子}
++message Xfer_dir {転送用ディレクトリ}
++message transfer_method {ダウンロード方法}
++message User {ユーザー}
++message Password {パスワード}
++message Proxy {プロキシ}
++message Get_Distribution {配布物を取得}
++message Continue {続ける}
++message Prompt_Continue {続けますか?}
++message What_do_you_want_to_do {どうしますか?}
++message Try_again {やり直す}
++message Set_finished {セット終了}
++message Skip_set {セットをスキップ}
++message Skip_group {セットグループをスキップ}
++message Abandon {インストールを放棄}
++message Abort_fetch {取得を中止}
++message Device {デバイス}
++message File_system {ファイルシステム}
++message Select_DNS_server {  DNS サーバーを選択}
++message other {その他 }
++message Perform_autoconfiguration {自動設定を行いますか?}
++message Root_shell {root のシェル}
++message User_shell {ユーザーのシェル}
++message Color_scheme {配色}
++message White_on_black {黒地に白}
++message Black_on_white {白地に黒}
++message White_on_blue {青地に白}
++message Green_on_black {黒地に緑}
++
++.if AOUT2ELF
++message aoutfail
++{古い a.out 共有ライブラリの移動先ディレクトリを作れませんでした。
++すべてのファイルシステムをマウントしたことを確認して、
++アップグレード作業をやり直してください。}
++
++message emulbackup
++{システムの /emul/aout または /emul ディレクトリが、マウントされて
++いないファイルシステムを指すシンボリックリンクでした。これには
++'.old' という拡張子を付けました。アップグレードしたシステムを
++立ち上げたら、新しく作られた /emul/aout ディレクトリと古いものを
++統合する必要があるかもしれません。
++}
++.endif
++
++message oldsendmail
++{Sendmail はこのリリースの NetBSD には含まれておらず、既定の MTA は
++postfix です。/etc/mailer.conf はまだ削除された sendmail を選んで
++います。/etc/mailer.conf を postfix 用に自動的に更新しますか?
++「いいえ」を選んだ場合、メールが正しく配送されるよう、自分で
++/etc/mailer.conf を更新する必要があります。}
++
++message license
++{ネットワークインターフェース %s を使うには、ファイル %s にある
++ライセンスに同意する必要があります。今このファイルを見るには、^Z を
++押してファイルの内容を確認し、"fg" と入力して戻ってください。}
++
++message binpkg
++{バイナリパッケージシステムを設定するために、パッケージを取得する
++ネットワーク上の場所を選んでください。システムが立ち上がったら、
++'pkgin' で追加のパッケージをインストールしたり削除したりできます。}
++
++message pkgpath
++{pkgin でバイナリパッケージを使えるようにするには、リポジトリの設定が
++必要です。以下のホスト、ディレクトリ、ユーザー、パスワードを使います。
++「ユーザー」が "ftp" の場合、パスワードは不要です。
++
++}
++message rcconf_backup_failed {rc.conf のバックアップに失敗しました。続けますか?}
++message rcconf_backup_succeeded {rc.conf のバックアップを %s に保存しました。}
++message rcconf_restore_failed {rc.conf のバックアップの復元に失敗しました。}
++message rcconf_delete_failed {古い %s の項目の削除に失敗しました。}
++message Pkg_dir {パッケージディレクトリ}
++message configure_prior {既存のインストールを設定:}
++message configure {設定}
++message change {変更}
++message password_set {パスワード設定済み}
++message YES {はい}
++message NO {いいえ}
++message DONE {完了}
++message abandoned {放棄}
++message empty {***空***}
++message timezone {タイムゾーン}
++message change_rootpw {root パスワードを変更}
++message enable_binpkg {バイナリパッケージのインストールを有効にする}
++message enable_sshd {sshd (Secure Shell デーモン) を有効にする}
++message enable_ntpd {ntpd を有効にしてネットワーク経由で時刻を同期する}
++message run_ntpdate {起動時に ntpdate でネットワーク経由で時刻を合わせる}
++message enable_mdnsd {マルチキャスト DNS を有効にする}
++message enable_xdm {xdm (X ディスプレイマネージャ) を有効にする}
++message enable_cgd {cgd (暗号化ディスク) を有効にする}
++message enable_lvm {lvm (論理ボリュームマネージャ) を有効にする}
++message enable_raid {raidframe を有効にする}
++message add_a_user {ユーザーを追加}
++message configmenu {必要に応じて追加の項目を設定してください。}
++message doneconfig {設定を終了}
++message Install_pkgin {pkgin をインストールしてパッケージ一覧を更新}
++message binpkg_installed
++{バイナリパッケージのインストールに pkgin を使うよう設定されました。
++パッケージをインストールするには、root のシェルから
++
++pkgin install <パッケージ名>
++
++を実行します。詳しくは pkgin(1) マニュアルページを読んでください。}
++message Install_pkgsrc {pkgsrc を取得して展開}
++message pkgsrc
++{pkgsrc のインストールには、ネットワーク経由で取得したアーカイブの
++展開が必要です。以下のホスト、ディレクトリ、ユーザー、パスワードを
++使います。「ユーザー」が "ftp" の場合、パスワードは不要です。
++
++}
++message Pkgsrc_dir {pkgsrc ディレクトリ}
++message get_pkgsrc {pkgsrc を取得して展開}
++message retry_pkgsrc_network {ネットワークの設定に失敗しました。やり直しますか?}
++message quit_pkgsrc {pkgsrc をインストールせずに終了}
++message quit_pkgs_install {バイナリパッケージのインストールを終了}
++message pkgin_failed
++{pkgin のインストールに失敗しました。バイナリパッケージが存在しないの
++かもしれません。パッケージのパスを確認してやり直してください。}
++message failed {失敗}
++
++message askfsmountadv {マウントポイント (または 'raid'、'cgd'、'lvm')?}
++message partman {拡張パーティション設定 (ソフトウェア RAID など)}
++message editpart {パーティションを編集}
++message selectwedge {設定済みの "wedge" dk(4)}
++
++message fremove {削除}
++message remove {削除}
++message add {追加}
++message auto {自動}
++
++message removepartswarn {ディスク上のすべてのパーティションが削除されます!}
++message saveprompt {終了する前に変更を保存しますか?}
++message cantsave {変更を保存できません。}
++message noroot {ルートパーティションが定義されていません。続行できません\n}
++
++message addusername {追加するユーザー名 (8 文字まで)}
++message addusertowheel {このユーザーを wheel グループに加えますか?
++加えると 'su' でスーパーユーザーになれるようになります。}
++
++message Delete_partition
++{パーティションを削除}
++
++message No_filesystem_newfs
++{選択したパーティションには有効なファイルシステムがないようです。
++newfs (フォーマット) しますか?}
++
++message swap_display	{スワップ}
++
++/* Called with: 			Example
++ *  $0 = parent device name		sd0
++ *  $1 = swap partition name		my_swap
++ */
++message Auto_add_swap_part
++{$0 にスワップパーティション ($1) が
++あるようです。
++これを使いますか?}
++
++message parttype_disklabel {BSD ディスクラベル}
++message parttype_disklabel_short {disklabel}
++/*
++ * This is used on architectures with MBR above disklabel when there is
++ * no MBR on a disk.
++ */
++message parttype_only_disklabel {disklabel (NetBSD のみ)}
++
++message select_part_scheme
++{このディスクはまだパーティション分割されていないようです。
++以下の選択肢からパーティション方式を選んでください。 }
++
++message select_other_partscheme
++{以下の選択肢から別のパーティション方式を選んでください。 }
++
++message select_part_limit
++{方式によっては大きさに上限があり、巨大なディスクでは先頭部分にしか
++使えません。上限を以下に示します。}
++
++/* Called with: 			Example
++ *  $0 = device name			ld0
++ *  $1 = size				3 TB
++ */
++message part_limit_disksize
++{このデバイス ($0) の大きさは $1 です。}
++
++message size_limit	{上限:}
++
++message	addpart		{パーティションを追加}
++message	nopart		{      (パーティションは定義されていません)}
++message	custom_type	{不明}
++
++message dl_type_invalid	{ファイルシステム種別コードが不正です (0 .. 255)}
++
++message	cancel		{キャンセル}
++
++message	out_of_range	{不正な値}
++message	invalid_guid	{不正な GUID}
++
++message	reedit_partitions	{編集し直す}
++message abort_installation	{インストールを中止}
++
++message dl_get_custom_fstype {ファイルシステム種別コード (255 まで)}
++
++message err_too_many_partitions	{パーティションが多すぎます}
++
++/* Called with: 			Example
++ *  $0 = mount point			/home
++ */
++message	mp_already_exists	{$0 はすでに定義されています!}
++
++message ptnsize_replace_existing
++{これはすでに存在するパーティションです。
++大きさを変えるには、いったん削除してあとで作り直す必要があります。
++このパーティションのデータはすべて失われます。
++
++このパーティションを削除して続けますか?}
++
++message part_not_deletable	{削除できないシステムパーティション}
++
++message ptn_type		{種別}
++message ptn_start		{開始}
++message ptn_size		{大きさ}
++message ptn_end			{終了}
++
++message ptn_bsize		{ブロックサイズ}
++message ptn_fsize		{フラグメントサイズ}
++message ptn_isize		{平均ファイルサイズ}
++
++/* Called with: 			Example
++ *  $0 = avg file size in byte		1200
++ */
++message ptn_isize_bytes {$0 バイト (inode 数の計算用)}
++message ptn_isize_dflt	{4 フラグメント}
++
++message Select_file_system_block_size
++{ファイルシステムのブロックサイズを選んでください}
++
++message Select_file_system_fragment_size
++{ファイルシステムのフラグメントサイズを選んでください}
++
++message ptn_isize_prompt
++{平均ファイルサイズ (バイト)}
++
++message No_free_space {空き領域がありません}
++message Invalid_numeric {不正な数値です!}
++message Too_large {大きすぎます!}
++
++/* Called with:				Example
++ *  $0 = start of free space		500
++ *  $1 = end of free space		599
++ *  $2 = size of free space		100
++ *  $3 = unit in use			MB
++ */
++message free_space_line {空き $0..$1 $3 (大きさ $2 $3)\n}
++
++message	fs_type_ffsv2	{FFSv2}
++message	fs_type_ffsv2ea	{FFSv2ea}
++message	fs_type_ffs	{FFS}
++message	fs_type_efi_sp	{EFI システムパーティション}
++message fs_type_ext2old	{Linux Ext2 (旧)}
++message	other_fs_type	{その他の種別}
++
++message	editpack	{ディスクの名前を編集}
++message	edit_disk_pack_hdr
++{ディスクの名前は自由に付けられます。
++複数のディスクを区別するのに役立ちます。
++このディスクの dk(4) "wedge" を自動作成するときにも使われます。
++
++ディスク名を入力してください}
++
++
++/* Called with:				Example
++ *  $0 = outer partitioning name	Master Boot Record (MBR)
++ *  $1 = short version of $0		MBR
++ */
++message reeditpart
++{$1 パーティションを編集し直しますか?}
++
++
++/* Called with:				Example
++ *  $0 = device name			wd0
++ *  $1 = outer partitioning name	Master Boot Record (MBR)
++ *  $2 = inner partitioning name	BSD disklabel
++ *  $3 = short version of $1		MBR
++ *  $4 = short version of $2		disklabel
++ *  $5 = size needed for NetBSD		250M
++ *  $6 = size needed to build NetBSD	15G
++ */
++message fullpart
++{これからディスク $0 に NetBSD をインストールします。
++
++NetBSD には、ディスクの $1 パーティションテーブルの中に
++一つのパーティションが必要で、それが $2 でさらに分割されます。
++NetBSD は他の $3 パーティションのファイルシステムも使えます。
++
++「ディスク全体を使う」を選ぶと、ディスクの以前の内容は上書きされ、
++ディスク全体を占める一つの $3 パーティションが使われます。
++複数のオペレーティングシステムをインストールしたい場合は、
++$3 パーティションテーブルを編集して NetBSD 用のパーティションを
++作ってください。
++
++基本的なインストールには $5 ほどで足りますが、追加のソフトウェアや
++ユーザーのファイルのために余裕を持たせてください。
++NetBSD 自体をビルドするなら最低 $6 は確保してください。}
++
++message Select_your_choice
++{どうしますか?}
++
++/* Called with:				Example
++ *  $0 = partitioning name		Master Boot Record (MBR)
++ *  $1 = short version of $0		MBR
++ */
++message Use_only_part_of_the_disk
++{$1 パーティションテーブルを編集する}
++
++/* Called with:				Example
++ *  $0 = partitioning name		Master Boot Record (MBR)
++ *  $1 = short version of $0		MBR
++ */
++message Use_the_entire_disk
++{ディスク全体を使う}
++
++/* Called with:				Example
++ *  $0 = device name			wd0
++ *  $1 = total disk size		3000 GB
++ *  $2 = unallocated space		1.2 GB
++ */
++message part_header
++{   $0 の全体の大きさは $1、空き: $2}
++message part_header_col_start	{開始}
++message part_header_col_size	{大きさ}
++message part_header_col_flag	{フラグ}
++
++message Partition_table_ok
++{パーティションテーブルはこれでよい}
++
++message Dont_change
++{変更しない}
++message Other_kind
++{その他}
++
++/* Called with:				Example
++ *  $0 = outer partitioning name	Master Boot Record (MBR)
++ *  $1 = short version of $0		MBR
++ */
++message nobsdpart
++{$1 に NetBSD パーティションがありません。}
++
++/* Called with:				Example
++ *  $0 = outer partitioning name	Master Boot Record (MBR)
++ *  $1 = short version of $0		MBR
++ */
++message multbsdpart
++{$1 に NetBSD パーティションが複数あります。
++使いたいものに 'install' フラグを付けてください。}
++
++message ovrwrite
++{ディスクには現在 NetBSD 以外のパーティションがあります。本当に
++そのパーティションを NetBSD で上書きしますか?
++}
++
++message Partition_OK
++{パーティションはこれでよい}
++
++/* Called with:				Example
++ *  $0 = device name			wd0
++ *  $1 = outer partitioning name	Master Boot Record (MBR)
++ *  $2 = short version of $1		MBR
++ *  $3 = other flag options		d = bootselect default, a = active
++ */
++message editparttable
++{$0 の現在の $2 パーティションテーブルを以下に示します。
++フラグ: (I) ここにインストール$3。
++変更するパーティションを選んでください:
++
++}
++
++message install_flag	{I}
++message newfs_flag	{N}
++
++message clone_flag	{C}
++message clone_flag_desc	{, (C) 複製}
++
++message ptn_install	{install}
++message ptn_instflag_desc	{(I) インストール, }
++
++.if HAVE_GPT
++message parttype_gpt {GUID パーティションテーブル (GPT)}
++message parttype_gpt_short {GPT}
++.endif
++
++message	ptn_label	{ラベル}
++message ptn_uuid	{UUID}
++message	ptn_gpt_type	{GPT 種別}
++message	ptn_boot	{ブート}
++
++/* Called with:				Example
++ *  $0 = outer partitioning name	Master Boot Record (MBR)
++ *  $1 = short version of $0		MBR
++ */
++message use_partitions_anyway
++{このパーティションをそのまま使う}
++
++.if HAVE_GPT
++message	gpt_flags	{B}
++message	gpt_flag_desc	{, (B) 起動可能}
++.endif
++
++/* Called with:				Example
++ *  $0 = file system type		FFSv2
++ */
++message size_ptn_not_mounted		{(その他: $0)}
++
++message running_system			{現在のシステム}
++
++message clone_from_elsewhere		{外部のパーティションを複製}
++message select_foreign_part
++{複製元の外部パーティションを選んでください:}
++message select_source_hdr
++{現在選択している複製元パーティション:}
++message clone_with_data			{データごと複製}
++message	select_source_add		{別のパーティションを追加}
++message clone_target_end		{末尾に追加}
++message clone_target_hdr
++{複製したパーティションをこの前に挿入:}
++message clone_target_disp		{複製したパーティション}
++message clone_src_done
++{複製元の選択を終えて複製先の選択へ進む}
++
++message network_ok
++{ネットワークは正しく動いているようです。
++設定を省略して、このままネットワークを
++使いますか?}
++
++.if HAVE_GPT
++message resize_gpt
++{ディスクの大きさが GPT の記録より大きくなっています。修正しますか?}
++.endif
+diff --git a/usr.sbin/sysinst/msg.pm.ja b/usr.sbin/sysinst/msg.pm.ja
+new file mode 100644
+index 0000000..85c1571
+--- /dev/null
++++ b/usr.sbin/sysinst/msg.pm.ja
+@@ -0,0 +1,164 @@
++/*	$NetBSD$	*/
++
++/*
++ * Copyright 1997 Piermont Information Systems Inc.
++ * All rights reserved.
++ *
++ * Written by Philip A. Nelson for Piermont Information Systems Inc.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ * 3. The name of Piermont Information Systems Inc. may not be used to endorse
++ *    or promote products derived from this software without specific prior
++ *    written permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY PIERMONT INFORMATION SYSTEMS INC. ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL PIERMONT INFORMATION SYSTEMS INC. BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ *
++ */
++
++/* extended partition manager message catalog -- japanese, machine independent */
++
++message fillzeros {ゼロで埋める}
++message fillrandom {乱数で埋める}
++message raid0 {0 - パリティなし、単純なストライピング。}
++message raid1 {1 - ミラーリング。パリティがミラーになります。}
++message raid4 {4 - 最後のコンポーネントにパリティを置くストライピング。}
++message raid5 {5 - 分散パリティのストライピング。}
++
++message wannaunblock {
++デバイスはブロックされています。編集すると問題が起きるかもしれません。
++強制的にブロックを解除して続けますか?}
++message wannatry {試してみますか?}
++message create_cgd {暗号化ボリューム (CGD) を作成}
++message create_vnd {仮想ディスクイメージ (VND) を作成}
++message create_vg {ボリュームグループ (LVM VG) を作成}
++message create_lv {論理ボリュームを作成}
++message create_raid {ソフトウェア RAID を作成}
++message updpmlist {デバイス一覧を更新}
++message savepm {変更を保存}
++message pmblocked {ブロック}
++message pmunchanged {変更なし}
++message pmused {使用中}
++message pmmounted {(マウント済み)}
++message pmunused {(未使用)}
++message pmgptdisk {GPT ラベルのディスク}
++message finishpm {パーティション設定を終了}
++message limitcount {デバイス数の上限に達しました!}
++message invaliddev {不正なデバイスです!}
++message avdisks {使えるディスク:}
++message nofreedev {デバイスノードを割り当てられません!}
++message partman_header
++{これは拡張パーティションマネージャです。すべてのディスク、
++パーティションなどを以下に示します。RAID、LVM、CGD を使うには:
++1) 適切な種別のパーティションを作る; 2) それらのパーティションで
++RAID/LVM VG/CGD を作る; 3) 変更を保存する; 4) RAID/CGD 上の
++パーティション、または LVM の論理ボリュームを作る。}
++message	pm_menu_on {オン}
++
++/* Called with: 			Example
++ *  $0 = device name			raid0
++ *  $1 = raid level			       1
++ */
++message raid_menufmt {$0 (レベル $1)}
++message raid_err_menufmt {空の RAID!}
++message raid_disks_fmt {ディスク}
++message raid_spares_fmt {スペア}
++message raid_level_fmt {RAID レベル}
++message raid_numrow_fmt {numRow}
++message raid_numcol_fmt {numCol}
++message raid_numspare_fmt {numSpare}
++message raid_sectpersu_fmt {sectPerSU}
++message raid_superpar_fmt {SUsPerParityUnit}
++message raid_superrec_fmt {SUsPerReconUnit}
++message raid_nomultidim {多次元配列には対応していません!}
++message raid_numrow_ask {numRow?}
++message raid_numcol_ask {numCol?}
++message raid_numspare_ask {numSpare?}
++message raid_sectpersu_ask {sectPerSU?}
++message raid_superpar_ask {SUsPerParityUnit?}
++message raid_superrec_ask {SUsPerReconUnit?}
++message raid_disks {RAID 内のディスク:}
++message vnd_err_menufmt {パスが未定義!}
++message vnd_assign {割り当て}
++message vnd_path_fmt {ファイルパス}
++message vnd_assign_fmt {新しいイメージを作成}
++message vnd_size_fmt {大きさ}
++message vnd_ro_fmt {読み込み専用}
++message vnd_geom_fmt {ジオメトリを手で設定}
++message vnd_bps_fmt {セクタあたりのバイト数}
++message vnd_spt_fmt {トラックあたりのセクタ数}
++message vnd_tpc_fmt {シリンダあたりのトラック数}
++message vnd_cyl_fmt {シリンダ数}
++message vnd_path_ask {ファイルパス?}
++message vnd_size_ask {大きさ (MB)?}
++message vnd_bps_ask {セクタあたりのバイト数?}
++message vnd_spt_ask {トラックあたりのセクタ数?}
++message vnd_tpc_ask {シリンダあたりのトラック数?}
++message vnd_cyl_ask {シリンダ数?}
++message cgd_err_menufmt {ディスクが未定義!}
++message cgd_dev_fmt {元デバイス}
++message cgd_enc_fmt {暗号方式}
++message cgd_key_fmt {鍵長}
++message cgd_iv_fmt {IV アルゴリズム}
++message cgd_keygen_fmt {鍵生成}
++message cgd_verif_fmt {検証方法}
++message lvm_disks {VG 内のディスク}
++message lvm_err_menufmt {空の VG!}
++message lvm_disks_fmt {PV}
++message lvm_name_fmt {名前}
++message lvm_maxlv_fmt {MaxLogicalVolumes}
++message lvm_maxpv_fmt {MaxPhysicalVolumes}
++message lvm_extsiz_fmt {PhysicalExtentSize}
++message lvm_name_ask {名前?}
++message lvm_maxlv_ask {MaxLogicalVolumes?}
++message lvm_maxpv_ask {MaxPhysicalVolumes?}
++message lvm_extsiz_ask {PhysicalExtentSize?}
++message lvmlv_menufmt {論理ボリューム}
++message lvmlv_name_fmt {名前}
++message lvmlv_size_fmt {大きさ}
++message lvmlv_ro_fmt {読み込み専用}
++message lvmlv_cont_fmt {連続}
++message lvmlv_extnum_fmt {LogicalExtentsNumber}
++message lvmlv_minor_fmt {マイナー番号}
++message lvmlv_mirrors_fmt {ミラー}
++message lvmlv_regsiz_fmt {MirrorLogRegionSize}
++message lvmlv_pers_fmt {固定マイナー番号}
++message lvmlv_readahsect_fmt {ReadAheadSectors}
++message lvmlv_stripes_fmt {ストライプ}
++message lvmlv_stripesiz_fmt {StripeSize}
++message lvmlv_zero_fmt {先頭 KB のゼロ埋め}
++message lvmlv_name_ask {名前?}
++message lvmlv_size_ask {大きさ (MB)?}
++message lvmlv_extnum_ask {LogicalExtentsNumber?}
++message lvmlv_minor_ask {マイナー番号?}
++message lvmlv_mirrors_ask {ミラー?}
++message lvmlv_regsiz_ask {MirrorLogRegionSize?}
++message lvmlv_readahsect_ask {ReadAheadSectors?}
++message lvmlv_stripes_ask {ストライプ?}
++message notsupported {対応していない操作です!}
++message edit_parts {パーティションを編集}
++message switch_parts {パーティション方式を切り替え}
++message fmtasraid {RAID としてフォーマット}
++message fmtaslvm {LVM PV としてフォーマット}
++message encrypt {暗号化 (CGD)}
++message erase {安全な消去}
++message undo {変更を取り消し}
++message unconfig {設定解除}
++message edit {編集}
++message doumount {強制 umount}
+diff --git a/usr.sbin/sysinst/util.c b/usr.sbin/sysinst/util.c
+index ebc1272..dbdcb19 100644
+--- a/usr.sbin/sysinst/util.c
++++ b/usr.sbin/sysinst/util.c
+@@ -252,12 +252,13 @@ init_set_status(int flags)
+ 	msg_none = msg_string(MSG_None);
+ 
+ 	/* Find longest and use it to determine width of selection menu */
+-	len = strlen(msg_no); longest = msg_no;
+-	i = strlen(msg_yes); if (i > len) {len = i; longest = msg_yes; }
+-	i = strlen(msg_all); if (i > len) {len = i; longest = msg_all; }
+-	i = strlen(msg_some); if (i > len) {len = i; longest = msg_some; }
+-	i = strlen(msg_none); if (i > len) {len = i; longest = msg_none; }
+-	select_menu_width = snprintf(NULL, 0, "%-40s %s", "", longest);
++	/* in columns, for the sake of the translations - see set_label() */
++	len = msg_strwidth(msg_no); longest = msg_no;
++	i = msg_strwidth(msg_yes); if (i > len) {len = i; longest = msg_yes; }
++	i = msg_strwidth(msg_all); if (i > len) {len = i; longest = msg_all; }
++	i = msg_strwidth(msg_some); if (i > len) {len = i; longest = msg_some; }
++	i = msg_strwidth(msg_none); if (i > len) {len = i; longest = msg_none; }
++	select_menu_width = 40 + 1 + msg_strwidth(longest);
+ 
+ 	/* Give the md code a chance to choose the right kernel, etc. */
+ 	md_init_set_status(flags);
+@@ -864,7 +865,7 @@ set_label(menudesc *menu, int opt, void *arg)
+ 	distinfo *dist = distp[opt];
+ 	const char *selected;
+ 	const char *desc;
+-	int nested;
++	int nested, pad;
+ 
+ 	desc = dist->desc;
+ 
+@@ -897,7 +898,15 @@ set_label(menudesc *menu, int opt, void *arg)
+ 		}
+ 	}
+ 
+-	wprintw(menu->mw, "%-40s %s", msg_string(desc), selected);
++	/*
++	 * Pad to the column, in columns rather than bytes: a translation
++	 * in UTF-8 has more of the latter and the right hand side would
++	 * come out ragged.
++	 */
++	wprintw(menu->mw, "%s", msg_string(desc));
++	for (pad = msg_strwidth(msg_string(desc)); pad < 40; pad++)
++		waddch(menu->mw, ' ');
++	wprintw(menu->mw, " %s", selected);
+ }
+ 
+ static int set_sublist(menudesc *menu, void *arg);

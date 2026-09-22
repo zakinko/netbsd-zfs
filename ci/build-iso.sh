@@ -34,6 +34,9 @@ for d in "$TOP"/patches/*.diff; do
 	fi
 done
 
+# the kanji font the wscons patch compiles into the kernel
+sh "$TOP/ci/mkfont.sh" "$SRC"
+
 for t in $targets; do
 	./build.sh -U -u -m amd64 -j"$JOBS" \
 	    -O "$WORK/obj" -D "$WORK/dest" -T "$WORK/tools" -R "$WORK/rel" \
