@@ -404,6 +404,48 @@ indirect_span(const dnode_phys_t *dn)
 }
 
 /*
+ * Is this dnode one the reader can use?
+ *
+ * Everything below is [S] §3.1: data blocks are 512 bytes to 128KB, so
+ * dn_datablkszsec is 1 to 256 and dn_indblkshift is 9 to 17; there are
+ * "between one and three" block pointers; and there are at most six
+ * levels of indirection.
+ *
+ * The check is here rather than at each use because the fields are read
+ * off a disk and every one of them is a shift count or an index:
+ *
+ *   - dn_indblkshift is shifted by, so 71 or more is undefined and
+ *     anything under 7 makes indirect_span shift by a negative number,
+ *     which is undefined as well.  The guard that used to stand in
+ *     dnode_read_block computed "1 << dn_indblkshift" in order to
+ *     compare it, so the check was itself the undefined operation.
+ *   - dn_nblkptr indexes dn_blkptr[], which is three long.  A dnode
+ *     claiming two hundred sends the reader off the end of the
+ *     structure, which is a read of the caller's stack.
+ *   - dn_nlevels bounds a loop whose product is a divisor.
+ *
+ * A bad dnode here means a corrupt or hostile pool, not a bug, so it is
+ * refused rather than fixed up.
+ */
+static int
+dnode_valid(const dnode_phys_t *dn)
+{
+
+	if (dn->dn_datablkszsec == 0 ||
+	    dn->dn_datablkszsec > ZFS_MAXBLOCKSIZE / 512)
+		return (0);
+	if (dn->dn_nblkptr < 1 || dn->dn_nblkptr > SPA_DVAS_PER_BP)
+		return (0);
+	if (dn->dn_nlevels < 1 || dn->dn_nlevels > DN_MAX_LEVELS)
+		return (0);
+	if (dn->dn_nlevels > 1 &&
+	    (dn->dn_indblkshift < SPA_MINBLOCKSHIFT ||
+	    dn->dn_indblkshift > SPA_MAXBLOCKSHIFT))
+		return (0);
+	return (1);
+}
+
+/*
  * Read level 0 block blkid of an object.
  *
  * [S] §3.1 works its example the wrong way round: for 128K indirect
@@ -462,10 +504,12 @@ dnode_read_block(struct zfs_pool *pool, const dnode_phys_t *dn,
 	size_t datasize;
 	int level, err;
 
+	if (!dnode_valid(dn))
+		return (EINVAL);
 	datasize = (size_t)dn->dn_datablkszsec << SPA_MINBLOCKSHIFT;
 	if (buflen < datasize)
 		return (EINVAL);
-	if (dn->dn_nlevels == 0 || blkid > dn->dn_maxblkid)
+	if (blkid > dn->dn_maxblkid)
 		return (EINVAL);
 
 	/*
@@ -482,12 +526,9 @@ dnode_read_block(struct zfs_pool *pool, const dnode_phys_t *dn,
 	bp = dn->dn_blkptr[idx];
 	blkid %= span;
 
-	if (dn->dn_nlevels > 1) {
-		if ((size_t)1 << dn->dn_indblkshift > ZFS_MAXBLOCKSIZE)
-			return (EINVAL);
-		if ((ind = zfs_scratch_get(ZFS_MAXBLOCKSIZE)) == NULL)
-			return (ENOMEM);
-	}
+	if (dn->dn_nlevels > 1 &&
+	    (ind = zfs_scratch_get(ZFS_MAXBLOCKSIZE)) == NULL)
+		return (ENOMEM);
 
 	for (level = dn->dn_nlevels - 1; level > 0; level--) {
 		if (bp_is_hole(&bp)) {
@@ -535,9 +576,9 @@ zfs_read_dnode(struct zfs_pool *pool, const dnode_phys_t *metadnode,
 	uint64_t off;
 	int err;
 
-	datasize = (size_t)metadnode->dn_datablkszsec << SPA_MINBLOCKSHIFT;
-	if (datasize == 0 || datasize > ZFS_MAXBLOCKSIZE)
+	if (!dnode_valid(metadnode))
 		return (EINVAL);
+	datasize = (size_t)metadnode->dn_datablkszsec << SPA_MINBLOCKSHIFT;
 	per = datasize / DNODE_SIZE;
 
 	if ((blk = zfs_scratch_get(ZFS_MAXBLOCKSIZE)) == NULL)
@@ -553,7 +594,13 @@ zfs_read_dnode(struct zfs_pool *pool, const dnode_phys_t *metadnode,
 	*out = *(const dnode_phys_t *)(const void *)(blk + off);
 
 	zfs_scratch_put(blk, ZFS_MAXBLOCKSIZE);
-	return (0);
+
+	/*
+	 * Checked on the way out as well as on the way in, so that a
+	 * dnode read off the disk is refused here and not wherever its
+	 * shift counts are first used.
+	 */
+	return (dnode_valid(out) ? 0 : EINVAL);
 }
 
 int

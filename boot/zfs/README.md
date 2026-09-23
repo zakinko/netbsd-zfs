@@ -44,6 +44,14 @@ like the rest.
 A fat ZAP's pointer table is read whether it sits in the object's first
 block or in blocks of its own.
 
+What comes off a disk is checked before it is used as a shift count or
+an index. A dnode carries its own geometry -- `dn_indblkshift`,
+`dn_nblkptr`, `dn_nlevels` -- and [S] §3.1 bounds all three; without
+that check a dnode claiming a shift of 200 is undefined behaviour and
+one claiming two hundred block pointers indexes off the end of an array
+of three. Checksums do not help here: a pool that has been written to
+deliberately recomputes them.
+
 A mirror needs no special handling and none was written. [S] §2.1's
 offset is an offset into the top-level vdev, and a mirror's children
 hold the same bytes at the same offsets, so any one leaf is a whole
@@ -102,6 +110,10 @@ but zeros.
 - zle, on a file of zeros with a byte every 4KB: same SHA-256 as ZFS.
   Zeros alone would not have tested it, because ZFS turns those into
   holes and there is no block left to decompress.
+- The dnode geometry check, over the boundary values and through the
+  door the loader uses, under UBSan. Removing the check makes that test
+  abort with "shift exponent 193 is too large", which is how the test
+  was shown to be looking at the right thing.
 - The all-zeros file found a real bug. ZFS stores it as holes all the
   way up -- the dnode's own block pointer is empty -- and the reader
   only looked for a hole at level 0, so descending read a pointer full

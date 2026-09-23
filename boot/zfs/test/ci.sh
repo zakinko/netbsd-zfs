@@ -28,7 +28,7 @@ cleanup() {
 	zpool destroy testpool 2>/dev/null || true
 	vnconfig -u "$VND" 2>/dev/null || true
 	rm -f "$IMG" out.bin label.bin mkpool.out
-	rm -f t_sha256 t_nv t_walk t_ls t_cat t_bench fuzz_nvlist
+	rm -f t_sha256 t_nv t_walk t_ls t_cat t_bench fuzz_nvlist t_dnode
 }
 trap cleanup EXIT INT TERM
 
@@ -89,6 +89,19 @@ echo
 echo "=== loader sized reads, with and without the block cache"
 ./t_bench "$IMG" 0 $NSEC "" /payload 0
 ./t_bench "$IMG" 0 $NSEC "" /payload 1
+
+echo
+echo "=== the dnode geometry check"
+# This one includes the source rather than linking it, so it is built
+# on its own and not through build.sh.
+cc -std=c99 -Wall -Wextra -O1 -g -I../src -DZFS_SUPPORT_GZIP \
+	-fsanitize=undefined -fno-sanitize-recover=all \
+	../src/sha256.c ../src/fletcher.c ../src/lz4.c ../src/gzip.c \
+	../src/zle.c ../src/scratch.c ../src/nvlist.c t_dnode.c \
+	-o t_dnode -lz
+command -v paxctl >/dev/null 2>&1 && paxctl +a ./t_dnode || true
+./t_dnode
+rm -f t_dnode
 
 echo
 echo "=== the nvlist parser under ASan and UBSan"

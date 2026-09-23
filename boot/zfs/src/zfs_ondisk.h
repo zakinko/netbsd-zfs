@@ -397,6 +397,16 @@ struct zio_eck {
 #define	DNODE_SIZE		512
 #define	DNODE_SHIFT		9
 
+/*
+ * [S] §3.1: "ZFS supports variable data and indirect block sizes ranging
+ * from 512 bytes to 128 Kbytes", and "ZFS provides up to six levels of
+ * indirection".  Both are limits on fields read off the disk that are
+ * then used as shift counts and loop bounds, so they are named here and
+ * checked before use rather than trusted.
+ */
+#define	SPA_MAXBLOCKSHIFT	17
+#define	DN_MAX_LEVELS		6
+
 /* 3.1, Illustration 9. */
 typedef struct {
 	uint8_t		dn_type;
