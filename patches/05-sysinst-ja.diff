@@ -55,7 +55,7 @@ index fcfe0dd..7b0448d 100644
  		}
  		w = wmax;
 diff --git a/usr.bin/msgc/msg_sys.def b/usr.bin/msgc/msg_sys.def
-index 54dbc72..e129baf 100644
+index 54dbc72..e041428 100644
 --- a/usr.bin/msgc/msg_sys.def
 +++ b/usr.bin/msgc/msg_sys.def
 @@ -37,7 +37,7 @@ static char *cbuffer;
@@ -67,7 +67,11 @@ index 54dbc72..e129baf 100644
  
  static void	_msg_beep(void);
  static int	_msg_vprintf(int, const char *, va_list);
-@@ -52,6 +52,39 @@ static unsigned int msgmapcount;
+@@ -49,9 +49,43 @@ static void	_msg_vprompt(const char *, int, const char *, char *,
+ static char *msgmap = MAP_FAILED;
+ static size_t msgmapsz;
+ static unsigned int msgmapcount;
++static int msg_repaint;
  
  /* Routines */
  
@@ -107,7 +111,41 @@ index 54dbc72..e129baf 100644
  static void
  _msg_beep(void)
  {
-@@ -240,8 +273,15 @@ _msg_vprintf(int auto_fill, const char *fmt, va_list ap)
+@@ -139,11 +173,33 @@ void
+ msg_clear(void)
+ {
+ 
++	/*
++	 * A screen of two cell wide characters does not always leave the
++	 * one before it fully covered: where a new line is shorter, the
++	 * cell the old glyph reached into keeps its half, and curses,
++	 * which thinks in characters and not in cells, has nothing to
++	 * write there.  Draw the lot again instead - see
++	 * msg_set_repaint().
++	 */
++	if (msg_repaint)
++		clearok(curscr, TRUE);
++
+ 	wclear(msg_win);
+ 	last_o_was_punct = 0;
+ 	last_o_was_space = 1;
+ }
+ 
++/*
++ * Ask for the whole screen to be drawn again each time it is cleared.
++ * Wanted by catalogs whose characters can take two cells.
++ */
++void
++msg_set_repaint(int on)
++{
++
++	msg_repaint = on;
++}
++
+ void
+ msg_standout(void)
+ {
+@@ -240,8 +296,15 @@ _msg_vprintf(int auto_fill, const char *fmt, va_list ap)
  		 * characters.  wstart is now the start of the word,
  		 * afterw is the next character after the end.
  		 */
@@ -124,7 +162,7 @@ index 54dbc72..e129baf 100644
  		if ((getcurx(msg_win) + nspaces + wordlen) >=
  		      getmaxx(msg_win) &&
  		    wordlen < (getmaxx(msg_win) / 3)) {
-@@ -253,7 +293,7 @@ _msg_vprintf(int auto_fill, const char *fmt, va_list ap)
+@@ -253,7 +316,7 @@ _msg_vprintf(int auto_fill, const char *fmt, va_list ap)
  		/* output the word, preceded by spaces if necessary */
  		while (nspaces-- > 0)
  			waddch(msg_win, ' ');
@@ -133,7 +171,7 @@ index 54dbc72..e129baf 100644
  
  		/* set up the 'last' state for the next time around */
  		switch (afterw[-1]) {
-@@ -267,6 +307,7 @@ _msg_vprintf(int auto_fill, const char *fmt, va_list ap)
+@@ -267,6 +330,7 @@ _msg_vprintf(int auto_fill, const char *fmt, va_list ap)
  			break;
  		}
  		last_o_was_space = 0;
@@ -141,7 +179,7 @@ index 54dbc72..e129baf 100644
  
  		/* ... and do it all again! */
  	}
-@@ -525,8 +566,15 @@ msg_fmt_prompt_win(msg msg_no, int x, int y, int w, int h,
+@@ -525,8 +589,15 @@ msg_fmt_prompt_win(msg msg_no, int x, int y, int w, int h,
  	maxx = getmaxx(msg_win);
  	maxy = getmaxy(msg_win);
  	if (w == 0) {
@@ -159,7 +197,7 @@ index 54dbc72..e129baf 100644
  		if (def != NULL && *def != 0 && w + (int)val_buf_len * 2 < maxx) 		{
  			w += 2 + strlen(def) + 1;
 diff --git a/usr.bin/msgc/msgdb.c b/usr.bin/msgc/msgdb.c
-index 8e0160c..75b33d6 100644
+index 8e0160c..15aa88a 100644
 --- a/usr.bin/msgc/msgdb.c
 +++ b/usr.bin/msgc/msgdb.c
 @@ -151,6 +151,7 @@ write_msg_file ()
@@ -170,12 +208,13 @@ index 8e0160c..75b33d6 100644
  		"#include <sys/mman.h>\n"
  		"\n"
  		"typedef const char *msg;\n"
-@@ -159,6 +160,8 @@ write_msg_file ()
+@@ -159,6 +160,9 @@ write_msg_file ()
  		"WINDOW *msg_window(WINDOW *window);\n"
  		"const char *msg_string(msg msg_no);\n"
  		"int msg_file(const char *);\n"
 +		"int msg_strwidth(const char *);\n"
 +		"int msg_strnwidth(const char *, size_t);\n"
++		"void msg_set_repaint(int);\n"
  		"void msg_clear(void);\n"
  		"void msg_standout(void);\n"
  		"void msg_standend(void);\n"
@@ -194,7 +233,7 @@ index d32ec2f..a479fda 100644
  MENUS_MI+=	${NOPARTMAN:D:Umenus.pm}
 diff --git a/usr.sbin/sysinst/arch/i386/msg.md.ja b/usr.sbin/sysinst/arch/i386/msg.md.ja
 new file mode 100644
-index 0000000..138fc5d
+index 000000000..138fc5d13
 --- /dev/null
 +++ b/usr.sbin/sysinst/arch/i386/msg.md.ja
 @@ -0,0 +1,159 @@
@@ -358,7 +397,7 @@ index 0000000..138fc5d
 +message set_kernel_1	{カーネル (GENERIC)}
 +message set_kernel_2	{カーネル (GENERIC_KASLR)}
 diff --git a/usr.sbin/sysinst/main.c b/usr.sbin/sysinst/main.c
-index c851998..6a121e3 100644
+index c851998..07cde0d 100644
 --- a/usr.sbin/sysinst/main.c
 +++ b/usr.sbin/sysinst/main.c
 @@ -92,6 +92,7 @@ char dist_tgz_postfix[SSTRSIZE];
@@ -395,7 +434,7 @@ index c851998..6a121e3 100644
  	opt = calloc(found.num_lang, sizeof *opt);
  	if (!opt)
  		goto done;
-@@ -477,7 +497,73 @@ select_language(const char *msg_cat_path)
+@@ -477,7 +497,74 @@ select_language(const char *msg_cat_path)
  	if (cp) {
  		setlocale(LC_CTYPE, cp);
  		setenv("LC_CTYPE", cp, 1);
@@ -407,6 +446,7 @@ index c851998..6a121e3 100644
 +		if (strstr(cp, "UTF-8") != NULL) {
 +			reopen_screen();
 +			write(STDOUT_FILENO, "\033%G", 3);
++			msg_set_repaint(1);
 +		}
 +	}
 +}
@@ -471,7 +511,7 @@ index c851998..6a121e3 100644
  #ifndef md_may_remove_boot_medium
 diff --git a/usr.sbin/sysinst/msg.entropy.ja b/usr.sbin/sysinst/msg.entropy.ja
 new file mode 100644
-index 0000000..238b817
+index 000000000..238b81785
 --- /dev/null
 +++ b/usr.sbin/sysinst/msg.entropy.ja
 @@ -0,0 +1,100 @@
@@ -577,7 +617,7 @@ index 0000000..238b817
 +そのデバイス上のディレクトリを入力してください。}
 diff --git a/usr.sbin/sysinst/msg.mbr.ja b/usr.sbin/sysinst/msg.mbr.ja
 new file mode 100644
-index 0000000..31ac0d3
+index 000000000..31ac0d374
 --- /dev/null
 +++ b/usr.sbin/sysinst/msg.mbr.ja
 @@ -0,0 +1,142 @@
@@ -725,7 +765,7 @@ index 0000000..31ac0d3
 +message mbr_type_invalid	{不正なパーティション種類 (0 .. 255)}
 diff --git a/usr.sbin/sysinst/msg.mi.ja b/usr.sbin/sysinst/msg.mi.ja
 new file mode 100644
-index 0000000..bca795e
+index 000000000..bca795e67
 --- /dev/null
 +++ b/usr.sbin/sysinst/msg.mi.ja
 @@ -0,0 +1,1594 @@
@@ -2325,7 +2365,7 @@ index 0000000..bca795e
 +.endif
 diff --git a/usr.sbin/sysinst/msg.pm.ja b/usr.sbin/sysinst/msg.pm.ja
 new file mode 100644
-index 0000000..85c1571
+index 000000000..85c157187
 --- /dev/null
 +++ b/usr.sbin/sysinst/msg.pm.ja
 @@ -0,0 +1,164 @@
