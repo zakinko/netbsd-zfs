@@ -77,6 +77,28 @@ Not covered: MBR/disklabel disks, because the ramdisk finds the pool
 with `zpool import`, which on NetBSD only scans whole disks and wedges,
 and GENERIC does not turn disklabel partitions into wedges.
 
+## The ZFS this is built on
+
+The ZFS in NetBSD's base tree (`external/cddl/osnet`) came from illumos
+by way of FreeBSD around 2016 and has not met OpenZFS since.  Its
+`zfeature_common.c` stops at
+
+    com.delphix:{async_destroy, bookmarks, embedded_data, empty_bpobj,
+                 enabled_txg, extensible_dataset, hole_birth,
+                 spacemap_histogram}
+    com.joyent:{filesystem_limits, multi_vdev_crash_dump}
+    org.illumos:{edonr, lz4_compress, sha512, skein}
+
+which is 16 feature flags against the 49 OpenZFS has today: no
+`large_blocks`, no `device_removal`, no `encryption`, no `zstd`, no
+`draid`.  A pool created elsewhere with any of those enabled will not
+import here.  `SPA_VERSION` is 5000, so a pool that stays inside the
+list above is readable both ways.
+
+Work on a platform layer that would let NetBSD track OpenZFS proper is
+in [zakinko/zfs](https://github.com/zakinko/zfs), branch
+`bsd-platform`.  Nothing in this repository depends on it.
+
 ## Using the results
 
 The disk image: take `netbsd-zfs.img.gz` from a `build` run or a
