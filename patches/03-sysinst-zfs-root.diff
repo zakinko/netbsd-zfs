@@ -1,3 +1,25 @@
+diff --git a/share/man/man7/sysctl.7 b/share/man/man7/sysctl.7
+index 588179220..c5564e991 100644
+--- a/share/man/man7/sysctl.7
++++ b/share/man/man7/sysctl.7
+@@ -868,6 +868,7 @@ The third level names for the settings are described below.
+ .It kern.module.autoload	integer	yes
+ .It kern.module.autounload_unsafe	integer	yes
+ .It kern.module.autotime	integer	yes
++.It kern.module.path	string	no
+ .It kern.module.verbose	boolean	yes
+ .El
+ .Pp
+@@ -888,6 +889,9 @@ and only if they were autoloaded to begin with.
+ An integer that controls the delay before an attempt is made to
+ automatically unload a module that was auto-loaded.
+ Setting this value to zero disables the auto-unload function.
++.It Li kern.module.path
++The directory the kernel loads modules from, as described in
++.Xr module 7 .
+ .It Li kern.module.verbose
+ A boolean that enables or disables verbose
+ debug messages related to kernel modules.
 diff --git a/usr.sbin/sysinst/Makefile.inc b/usr.sbin/sysinst/Makefile.inc
 index ffc79ffd2..d32ec2f84 100644
 --- a/usr.sbin/sysinst/Makefile.inc
@@ -1284,7 +1306,7 @@ index b3344a213..4b5a1a86f 100644
   *  $0 = partitioning name		Master Boot Record (MBR)
   *  $1 = short version of $0		MBR
 diff --git a/usr.sbin/sysinst/net.c b/usr.sbin/sysinst/net.c
-index ce8a17cee..fffe700e7 100644
+index ce8a17cee..34c7c1d97 100644
 --- a/usr.sbin/sysinst/net.c
 +++ b/usr.sbin/sysinst/net.c
 @@ -979,8 +979,13 @@ pkgsrc_fetch(const char *set_name)
@@ -1317,12 +1339,13 @@ index ce8a17cee..fffe700e7 100644
  
  	if (remove_target_resolv)
  		unlink(target_expand("/etc/resolv.conf"));
-@@ -1016,6 +1020,37 @@ do_ftp_fetch(const char *set_name, bool force_tgz, struct ftpinfo *f, bool in_ch
+@@ -1016,6 +1020,38 @@ do_ftp_fetch(const char *set_name, bool force_tgz, struct ftpinfo *f, bool in_ch
  	return rval ? SET_RETRY : SET_OK;
  }
  
 +static int
-+do_ftp_fetch(const char *set_name, bool force_tgz, struct ftpinfo *f, bool in_chroot)
++do_ftp_fetch(const char *set_name, bool force_tgz, struct ftpinfo *f,
++    bool in_chroot)
 +{
 +	char file[STRSIZE];
 +

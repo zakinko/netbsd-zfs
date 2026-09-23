@@ -37,7 +37,10 @@ or modules.
 in name order.
 
 [03-sysinst-zfs-root.diff](patches/03-sysinst-zfs-root.diff) adds one
-entry to sysinst's partition layout question:
+entry to sysinst's partition layout question, and documents in
+`sysctl(7)` the `kern.module.path` it reads to find the modules --
+the sysctl was there but undocumented, and this is its first user
+outside the kernel:
 
     a: Set sizes of NetBSD partitions
     b: Use default partition sizes
