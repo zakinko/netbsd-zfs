@@ -125,11 +125,11 @@ checks that the installed system boots with `/` on ZFS.
 
 ## Reading ZFS from the loader
 
-[`bootzfs/`](bootzfs/) is the other half of that open project: with it
-`bootx64.efi` reads the kernel and the modules out of the pool, so they
-no longer need a partition of their own.  Two scripts fetch the ZFS
-sources and fit them to NetBSD, and the loader builds natively on an
-11.0 host.
+[`boot/zfs/`](boot/zfs/) is the other half of that open project: with
+it `bootx64.efi` reads the kernel and the modules out of the pool, so
+they no longer need a partition of their own.  It is written from the
+ZFS On-Disk Specification rather than carried from another loader, and
+`install.sh` puts it into a NetBSD 11.0 tree.
 
 It does not replace the ramdisk -- the kernel still cannot mount a
 dataset as root -- and it is EFI only: the BIOS `boot` has 192KB of heap
