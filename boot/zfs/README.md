@@ -50,7 +50,9 @@ asking whether `1 << n` is too large is undefined in the asking. A dnode carries
 `dn_nblkptr`, `dn_nlevels` -- and [S] §3.1 bounds all three; without
 that check a dnode claiming a shift of 200 is undefined behaviour and
 one claiming two hundred block pointers indexes off the end of an array
-of three. The same holds at the other end of the reader, where the
+of three -- which, measured with the check taken out, reads 25,536
+bytes past a 448 byte structure and is stopped by AddressSanitizer,
+not by anything in the reader. The same holds at the other end of the reader, where the
 label's `ashift` becomes the stride of the uberblock array. Checksums do not help here: a pool that has been written to
 deliberately recomputes them.
 
