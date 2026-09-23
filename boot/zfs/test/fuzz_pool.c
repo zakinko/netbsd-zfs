@@ -1,7 +1,11 @@
 /*
  * Mutate a pool image and read a file out of it, under ASan and UBSan.
  *
- *	fuzz_pool <image> <start-lba> <path> <iterations> [seed]
+ *	fuzz_pool <image> <start-lba> [dataset:]path <iterations> [seed]
+ *
+ * With no dataset the pool's bootfs is used, as the loader does; a file
+ * in another dataset has to be named, or the run stops at the lookup
+ * and never reaches the read it was meant to test.
  *
  * It counts how far each case got, because "no fault" means nothing if
  * the mutations never reached a dnode: a run where opened and mounted
@@ -57,6 +61,7 @@ struct img { uint8_t *base; size_t len; uint64_t off; };
 
 static long n_opened, n_mounted, n_found, n_read;
 static const char *g_path = "/payload";
+static char g_ds[64];
 
 static int g_corrupt;		/* one in this many reads comes back wrong */
 
@@ -105,7 +110,7 @@ one(uint8_t *image, size_t len, uint64_t base)
 	if (zfs_pool_open(&pool, NULL, 0) != 0)
 		return;
 	n_opened++;
-	if (zfs_mount(&pool, "", &ds) != 0)
+	if (zfs_mount(&pool, g_ds, &ds) != 0)
 		return;
 	n_mounted++;
 	if (zfs_lookup(&ds, g_path, &dn) != 0)
@@ -131,6 +136,15 @@ main(int argc, char **argv)
 	}
 	base = strtoull(argv[2], NULL, 0) * 512;
 	g_path = argv[3];
+	{
+		const char *c = strchr(g_path, ':');
+
+		if (c != NULL && (size_t)(c - g_path) < sizeof(g_ds)) {
+			memcpy(g_ds, g_path, (size_t)(c - g_path));
+			g_ds[c - g_path] = '\0';
+			g_path = c + 1;
+		}
+	}
 	iters = atol(argv[4]);
 	if (argc > 5)
 		st = strtoull(argv[5], NULL, 0);
