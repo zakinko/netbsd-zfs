@@ -101,6 +101,16 @@ A 512MB NetBSD 11.0 image with a GPT and a pool at LBA 16418:
   them verified.
 - SHA-256 against FIPS 180-4's B.1 and B.2 vectors and the one million
   `a` case.
+- The whole read path under ASan and UBSan, with the block checksums
+  taken out of the way so that the mutations reach the parsing rather
+  than being stopped by fletcher4 -- which is the threat model, since
+  whoever writes a disk on purpose recomputes the checksums. It
+  corrupts what the reader reads rather than the image where it sits:
+  four hundred cases mutated by address all read their file unharmed,
+  because ZFS puts metadata where the allocator felt like and a flip in
+  a data block only changes data. Corrupting the device's answers
+  instead found a read sixteen bytes past a dnode in `zfs_size`, which
+  is now fixed.
 - The nvlist parser under ASan and UBSan: 300,000 mutations of a real
   label and every one of its 8,193 truncations. Removing one bound check
   makes that fail within 5,000 cases, which is how the harness was shown

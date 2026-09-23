@@ -223,6 +223,18 @@ block_checksum_ok(const blkptr_t *bp, const void *buf, size_t psize)
 	uint64_t got[4];
 	int i;
 
+#ifdef ZFS_FUZZ_NO_CKSUM
+	/*
+	 * For the fuzzer only, and never for a build that boots
+	 * anything.  The threat this reader is hardened against is a
+	 * disk written on purpose, and whoever writes one recomputes
+	 * the checksums -- so a fuzzer that has to get past them is
+	 * testing fletcher4 rather than the parsing underneath it.
+	 */
+	(void)bp; (void)buf; (void)psize; (void)got; (void)i;
+	return (1);
+#else
+
 	switch (BP_GET_CHECKSUM(bp)) {
 	case ZIO_CHECKSUM_OFF:
 		/*
@@ -258,6 +270,7 @@ block_checksum_ok(const blkptr_t *bp, const void *buf, size_t psize)
 		if (got[i] != bp->blk_cksum.zc_word[i])
 			return (0);
 	return (1);
+#endif
 }
 
 static int

@@ -249,57 +249,85 @@ zfs_lookup(struct zfs_dataset *ds, const char *path, dnode_phys_t *dn)
  * is refused by returning zero, rather than answering with whatever
  * happens to lie at the offset.
  */
+/*
+ * One eight byte field of the bonus buffer, or NULL if it does not lie
+ * inside it.
+ *
+ * Both callers were reading a fixed offset and trusting it to be
+ * within the dnode.  It need not be: dn_nblkptr moves where the bonus
+ * buffer starts, so with three block pointers it starts at 448 and a
+ * znode's zp_size at +88 is sixteen bytes past the end of the dnode.
+ * The fuzzer found exactly that, in zfs_size, as a stack read past the
+ * dnode the caller had on its stack.
+ */
+static const uint8_t *
+bonus_field(const dnode_phys_t *dn, size_t off)
+{
+	const uint8_t *bonus = DN_BONUS(dn);
+	size_t start = (size_t)(bonus - (const uint8_t *)dn);
+
+	if (off + sizeof(uint64_t) > dn->dn_bonuslen)
+		return (NULL);
+	if (start + off + sizeof(uint64_t) > DNODE_SIZE)
+		return (NULL);
+	return (bonus + off);
+}
+
+/*
+ * A field of the system attributes, which [Z] zfs_sa.h put in the
+ * bonus buffer in place of the znode from ZPL version 5 on.
+ *
+ * The header says how long it is, in a six bit field multiplied by
+ * eight, so a bonus buffer written on purpose can claim 504 bytes of
+ * header.  [S] §3.1 bounds the bonus buffer at 320 bytes and the dnode
+ * at 512, and bonus_field holds the field to both.
+ */
 static const uint8_t *
 sa_field(const dnode_phys_t *dn, size_t off)
 {
-	const uint8_t *bonus = DN_BONUS(dn);
-	const sa_hdr_phys_t *hdr = (const void *)bonus;
-	size_t hdrsize, end;
+	const uint8_t *hdrp = bonus_field(dn, 0);
+	const sa_hdr_phys_t *hdr = (const void *)hdrp;
 
-	if (dn->dn_bonustype == DMU_OT_ZNODE)
+	if (dn->dn_bonustype == DMU_OT_ZNODE || hdrp == NULL)
 		return (NULL);
 	if (hdr->sa_magic != SA_MAGIC)
 		return (NULL);
 	if (SA_HDR_LAYOUT(hdr->sa_layout_info) > 3)
 		return (NULL);
+	return (bonus_field(dn, SA_HDR_SIZE(hdr->sa_layout_info) + off));
+}
 
-	/*
-	 * The header says how long it is, in a six bit field that is
-	 * multiplied by eight, so a bonus buffer written on purpose can
-	 * claim 504 bytes of header and send the read past the dnode.
-	 * [S] §3.1 bounds the bonus buffer at 320 bytes and the dnode at
-	 * 512, so the field has to lie inside both.
-	 */
-	hdrsize = SA_HDR_SIZE(hdr->sa_layout_info);
-	end = (size_t)(bonus - (const uint8_t *)dn) + hdrsize + off +
-	    sizeof(uint64_t);
-	if (hdrsize + off + sizeof(uint64_t) > dn->dn_bonuslen)
-		return (NULL);
-	if (end > DNODE_SIZE)
-		return (NULL);
-	return (bonus + hdrsize + off);
+/*
+ * [S] §6.2's znode_phys_t, for a dataset older than that.  A file
+ * whose size cannot be read is treated as empty rather than guessed
+ * at: the alternative is to answer with whatever lies past the dnode.
+ */
+static uint64_t
+znode_field(const dnode_phys_t *dn, size_t off)
+{
+	const uint8_t *p = bonus_field(dn, off);
+
+	return (p == NULL ? 0 : *(const uint64_t *)(const void *)p);
 }
 
 uint64_t
 zfs_mode(const dnode_phys_t *dn)
 {
 	const uint8_t *p = sa_field(dn, SA_MODE_OFFSET);
-	const znode_phys_t *zp = DN_BONUS(dn);
 
 	if (p != NULL)
 		return (*(const uint64_t *)(const void *)p);
-	return (zp->zp_mode);
+	return (znode_field(dn, offsetof(znode_phys_t, zp_mode)));
 }
 
 uint64_t
 zfs_size(const dnode_phys_t *dn)
 {
 	const uint8_t *p = sa_field(dn, SA_SIZE_OFFSET);
-	const znode_phys_t *zp = DN_BONUS(dn);
 
 	if (p != NULL)
 		return (*(const uint64_t *)(const void *)p);
-	return (zp->zp_size);
+	return (znode_field(dn, offsetof(znode_phys_t, zp_size)));
 }
 
 static uint8_t *
