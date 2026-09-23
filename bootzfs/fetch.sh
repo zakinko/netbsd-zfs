@@ -33,9 +33,20 @@ mkdir -p "$dst/sys"
 FB=https://raw.githubusercontent.com/freebsd/freebsd-src/main
 OZ=https://raw.githubusercontent.com/openzfs/zfs/master
 
+# NetBSD's base has ftp(1) and no curl; elsewhere it tends to be the
+# other way round.  ftp(1) here is the NetBSD one, which speaks https.
+if (curl --version) >/dev/null 2>&1; then
+	fetch_to() { curl -sSf -o "$1" "$2"; }
+elif (ftp -h) >/dev/null 2>&1 || test -x /usr/bin/ftp; then
+	fetch_to() { ftp -o "$1" "$2"; }
+else
+	echo "neither curl nor ftp(1) found" >&2
+	exit 1
+fi
+
 get() {
 	echo "  $2"
-	curl -sSf -o "$dst/$2" "$1/$3"
+	fetch_to "$dst/$2" "$1/$3"
 }
 
 echo "FreeBSD sys/cddl/boot/zfs:"
