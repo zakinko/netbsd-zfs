@@ -46,8 +46,8 @@ notices what it has already done.
 
 On a NetBSD/amd64 host the native `make USETOOLS=no` is enough -- no
 cross toolchain, no `build.sh`. The system's own `/usr/share/mk` serves,
-so `syssrc.tgz` alone is nearly enough source; `src.tgz` adds
-`common/dist/zlib`, which gzip decompression needs.
+and `syssrc.tgz` is the whole of the source needed: it carries
+`common/dist/zlib` as well, which gzip decompression wants.
 
 Then point `boot.cfg` at the pool by its GPT label:
 

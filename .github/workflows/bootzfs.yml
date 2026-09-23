@@ -27,8 +27,8 @@ jobs:
 
       # The loader builds natively on a NetBSD host against the system's
       # own /usr/share/mk, so there is no cross toolchain and no
-      # build.sh.  syssrc is nearly enough source on its own; src carries
-      # common/dist/zlib, which gzip decompression needs.
+      # build.sh.  syssrc is the whole of the source needed: it carries
+      # common/dist/zlib too, which gzip decompression wants.
       - name: Fetch, adjust and build the loader
         uses: vmactions/netbsd-vm@v1
         with:
@@ -41,9 +41,7 @@ jobs:
             B=https://cdn.netbsd.org/pub/NetBSD/NetBSD-11.0/source/sets
             mkdir -p "$HOME/nbsrc" && cd "$HOME/nbsrc"
             ftp -o syssrc.tgz $B/syssrc.tgz
-            ftp -o src.tgz $B/src.tgz
             tar xzf syssrc.tgz
-            tar xzf src.tgz usr/src/common
             SRC="$HOME/nbsrc/usr/src"
 
             cd "$GITHUB_WORKSPACE"
