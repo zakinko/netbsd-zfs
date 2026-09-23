@@ -45,11 +45,13 @@ A fat ZAP's pointer table is read whether it sits in the object's first
 block or in blocks of its own.
 
 What comes off a disk is checked before it is used as a shift count or
-an index. A dnode carries its own geometry -- `dn_indblkshift`,
+an index, and the check is on the value rather than on the result --
+asking whether `1 << n` is too large is undefined in the asking. A dnode carries its own geometry -- `dn_indblkshift`,
 `dn_nblkptr`, `dn_nlevels` -- and [S] §3.1 bounds all three; without
 that check a dnode claiming a shift of 200 is undefined behaviour and
 one claiming two hundred block pointers indexes off the end of an array
-of three. Checksums do not help here: a pool that has been written to
+of three. The same holds at the other end of the reader, where the
+label's `ashift` becomes the stride of the uberblock array. Checksums do not help here: a pool that has been written to
 deliberately recomputes them.
 
 A mirror needs no special handling and none was written. [S] §2.1's

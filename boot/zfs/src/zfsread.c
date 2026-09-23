@@ -124,11 +124,18 @@ label_scan(struct zfs_pool *pool, int l, uint32_t ashift,
 	size_t slotsize;
 	int found = 0, err;
 
+	/*
+	 * ashift comes out of the label's name-value pairs, which is to
+	 * say off the disk, and it is about to be a shift count.  A
+	 * label saying 200 is undefined behaviour, and asking whether
+	 * "1 << ashift" is too large is undefined in the asking.  So the
+	 * value is checked, not the result.
+	 */
+	if (ashift < SPA_MINBLOCKSHIFT || ashift > SPA_MAXBLOCKSHIFT)
+		return (0);
 	slotsize = (size_t)1 <<
 	    (ashift > VDEV_UBERBLOCK_SHIFT_MIN ? ashift :
 	    VDEV_UBERBLOCK_SHIFT_MIN);
-	if (slotsize > ZFS_MAXBLOCKSIZE)
-		return (0);
 	if ((slot = zfs_scratch_get(slotsize)) == NULL)
 		return (0);
 
@@ -719,6 +726,9 @@ zfs_pool_open(struct zfs_pool *pool, char *name, size_t namelen)
 			    ZPOOL_CONFIG_ASHIFT, NV_WANT_UINT64, &v) != 0)
 				continue;
 		}
+		if (v.nv_u64 < SPA_MINBLOCKSHIFT ||
+		    v.nv_u64 > SPA_MAXBLOCKSHIFT)
+			continue;
 		pool->pool_ashift = (uint32_t)v.nv_u64;
 
 		if (name != NULL && namelen > 0 &&
