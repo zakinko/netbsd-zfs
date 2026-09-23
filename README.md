@@ -122,3 +122,15 @@ drives sysinst through the install with
 [anita](https://www.gson.org/netbsd/anita/) plus the small
 [patch](ci/anita-zfs-root.patch) that knows the new menu entry, and
 checks that the installed system boots with `/` on ZFS.
+
+## Reading ZFS from the loader
+
+[`bootzfs/`](bootzfs/) is the other half of that open project: with it
+`bootx64.efi` reads the kernel and the modules out of the pool, so they
+no longer need a partition of their own.  Two scripts fetch the ZFS
+sources and fit them to NetBSD, and the loader builds natively on an
+11.0 host.
+
+It does not replace the ramdisk -- the kernel still cannot mount a
+dataset as root -- and it is EFI only: the BIOS `boot` has 192KB of heap
+under the 640KB line, and a vdev label's nvlist alone is 112KB.
