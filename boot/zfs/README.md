@@ -35,6 +35,7 @@ indirection, micro and fat ZAPs, the DSL down to a dataset, ZPL
 directories, and files through either a `znode_phys_t` or the system
 attributes that replaced it.
 
+lz4 and zle are twenty and sixty lines from their own descriptions.
 gzip goes through zlib, which the loader links anyway for gzipped
 kernels; a build without zlib leaves it out and gzip is then refused
 like the rest.
@@ -43,7 +44,7 @@ A fat ZAP's pointer table is read whether it sits in the object's first
 block or in blocks of its own.
 
 It refuses, rather than guessing: gang blocks, more than one top-level
-vdev, zle and zstd, and checksums newer than SHA-256.
+vdev, zstd, and checksums newer than SHA-256.
 
 ## What it was tested against
 
@@ -75,6 +76,9 @@ but zeros.
   (`zt_numblks` 2, `zt_shift` 12, three levels of indirection over the
   ZAP object), and all 400,000 are listed, with lookups at both ends of
   the range and a miss for a name that is not there.
+- zle, on a file of zeros with a byte every 4KB: same SHA-256 as ZFS.
+  Zeros alone would not have tested it, because ZFS turns those into
+  holes and there is no block left to decompress.
 - The all-zeros file found a real bug. ZFS stores it as holes all the
   way up -- the dnode's own block pointer is empty -- and the reader
   only looked for a hole at level 0, so descending read a pointer full
