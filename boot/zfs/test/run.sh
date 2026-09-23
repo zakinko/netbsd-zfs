@@ -44,3 +44,8 @@ cc -std=c99 -g -O1 -I../src -include stdint.h -include stddef.h \
 rm -f label.bin
 
 echo "=== all checks passed"
+#
+# Not covered here, for want of a pool that has them: gang blocks, more
+# than one top-level vdev, an external ZAP pointer table, zle and zstd.
+# Each is refused by name in the reader rather than guessed at.
+#

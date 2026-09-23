@@ -16,6 +16,7 @@
 #include "sha256.h"
 #include "fletcher.h"
 #include "lz4.h"
+#include "gzip.h"
 #include "nvlist.h"
 #include "scratch.h"
 
@@ -271,12 +272,22 @@ block_decompress(const blkptr_t *bp, const void *in, size_t psize,
 		return (0);
 	case ZIO_COMPRESS_LZ4:
 		return (lz4_decompress(in, out, psize, lsize));
+	case ZIO_COMPRESS_GZIP_1:
+	case ZIO_COMPRESS_GZIP_1 + 1:
+	case ZIO_COMPRESS_GZIP_1 + 2:
+	case ZIO_COMPRESS_GZIP_1 + 3:
+	case ZIO_COMPRESS_GZIP_1 + 4:
+	case ZIO_COMPRESS_GZIP_1 + 5:
+	case ZIO_COMPRESS_GZIP_1 + 6:
+	case ZIO_COMPRESS_GZIP_1 + 7:
+	case ZIO_COMPRESS_GZIP_9:
+		return (gzip_decompress(in, out, psize, lsize));
 	default:
 		/*
 		 * [S] §2.5, Table 6 has only lzjb; [Z] zio_compress.h
-		 * adds gzip, zle and zstd.  None of them appear on a pool
-		 * NetBSD writes with its defaults, so they are refused
-		 * until there is something to test against.
+		 * adds zle and zstd besides the gzip levels above.
+		 * Neither appears on a pool written with NetBSD's
+		 * defaults, so they are refused rather than guessed at.
 		 */
 		return (ENOTSUP);
 	}
@@ -400,6 +411,43 @@ indirect_span(const dnode_phys_t *dn)
  * therefore the quotient by the span of the level below, and the
  * remainder is what the next step down uses.
  */
+/*
+ * A hole.
+ *
+ * [S] §2.10 says a block pointer's fill count is the number of non-zero
+ * block pointers under it, which is zero for a hole, but a hole is
+ * recognised here by having no DVA at all: nothing was allocated, so
+ * there is nowhere to read from.
+ *
+ * A hole can stand at any level, not only at level 0.  A file written
+ * as nothing but zeros has holes all the way up -- the dnode's own
+ * block pointer is empty -- and descending into one reads a block
+ * pointer full of zeros as if it addressed sector zero.  That is how
+ * this was found: 4MB of zeros came back EIO instead of zeros.
+ */
+static int
+bp_is_hole(const blkptr_t *bp)
+{
+	int i;
+
+	if (BP_IS_EMBEDDED(bp))
+		return (0);
+	for (i = 0; i < SPA_DVAS_PER_BP; i++)
+		if (bp->blk_dva[i].dva_word[0] != 0 ||
+		    bp->blk_dva[i].dva_word[1] != 0)
+			return (0);
+	return (1);
+}
+
+static void
+zero_block(void *buf, size_t len)
+{
+	size_t i;
+
+	for (i = 0; i < len; i++)
+		((uint8_t *)buf)[i] = 0;
+}
+
 static int
 dnode_read_block(struct zfs_pool *pool, const dnode_phys_t *dn,
     uint64_t blkid, void *buf, size_t buflen)
@@ -438,6 +486,11 @@ dnode_read_block(struct zfs_pool *pool, const dnode_phys_t *dn,
 	}
 
 	for (level = dn->dn_nlevels - 1; level > 0; level--) {
+		if (bp_is_hole(&bp)) {
+			zero_block(buf, datasize);
+			zfs_scratch_put(ind, ZFS_MAXBLOCKSIZE);
+			return (0);
+		}
 		err = zfs_read_block(pool, &bp, ind, ZFS_MAXBLOCKSIZE);
 		if (err != 0) {
 			zfs_scratch_put(ind, ZFS_MAXBLOCKSIZE);
@@ -452,15 +505,8 @@ dnode_read_block(struct zfs_pool *pool, const dnode_phys_t *dn,
 	if (ind != NULL)
 		zfs_scratch_put(ind, ZFS_MAXBLOCKSIZE);
 
-	/*
-	 * A hole: [S] §2.10's fill count is zero and there is no DVA.
-	 * The block reads as zeros, which is what a sparse file means.
-	 */
-	if (bp.blk_dva[0].dva_word[0] == 0 && bp.blk_dva[0].dva_word[1] == 0) {
-		size_t i;
-
-		for (i = 0; i < datasize; i++)
-			((uint8_t *)buf)[i] = 0;
+	if (bp_is_hole(&bp)) {
+		zero_block(buf, datasize);
 		return (0);
 	}
 

@@ -9,5 +9,6 @@
 set -e
 S=../src
 CFLAGS="-std=c99 -Wall -Wextra -O2 -I$S -include stdint.h -include stddef.h"
-cc $CFLAGS $S/zfsread.c $S/zap.c $S/zfsfs.c $S/nvlist.c $S/sha256.c \
-	$S/fletcher.c $S/lz4.c $S/scratch.c "$@"
+cc $CFLAGS -DZFS_SUPPORT_GZIP \
+	$S/zfsread.c $S/zap.c $S/zfsfs.c $S/nvlist.c $S/sha256.c \
+	$S/fletcher.c $S/lz4.c $S/gzip.c $S/scratch.c "$@" -lz
