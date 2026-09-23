@@ -1,5 +1,5 @@
 diff --git a/distrib/amd64/cdroms/Makefile.cdrom b/distrib/amd64/cdroms/Makefile.cdrom
-index 4deb06a..58a91ba 100644
+index 4deb06a46..58a91bac0 100644
 --- a/distrib/amd64/cdroms/Makefile.cdrom
 +++ b/distrib/amd64/cdroms/Makefile.cdrom
 @@ -55,4 +55,16 @@ image_md_pre: ${EFIBOOTIMG}
@@ -20,7 +20,7 @@ index 4deb06a..58a91ba 100644
 +	fi
  	${MKDIR} ${MKDIRPERM} cdrom/var
 diff --git a/distrib/amd64/cdroms/installcd/Makefile b/distrib/amd64/cdroms/installcd/Makefile
-index 9884d54..564f99f 100644
+index 9884d544f..564f99ff1 100644
 --- a/distrib/amd64/cdroms/installcd/Makefile
 +++ b/distrib/amd64/cdroms/installcd/Makefile
 @@ -12,6 +12,7 @@ CDRELEASE=	true			# include $RELEASEDIR/$RELEASEMACHINEDIR
@@ -32,7 +32,7 @@ index 9884d54..564f99f 100644
  
  prepare_md_post:
 diff --git a/sys/arch/amd64/conf/GENERIC b/sys/arch/amd64/conf/GENERIC
-index 2404ba7..94b5823 100644
+index 2404ba7ce..94b58235f 100644
 --- a/sys/arch/amd64/conf/GENERIC
 +++ b/sys/arch/amd64/conf/GENERIC
 @@ -1225,6 +1225,7 @@ pseudo-device	wsfont
@@ -44,7 +44,7 @@ index 2404ba7..94b5823 100644
  # pseudo audio device driver
  pseudo-device	pad
 diff --git a/sys/dev/rasops/rasops.c b/sys/dev/rasops/rasops.c
-index f5a104d..4a96b58 100644
+index f5a104d5c..4a96b58f0 100644
 --- a/sys/dev/rasops/rasops.c
 +++ b/sys/dev/rasops/rasops.c
 @@ -226,6 +226,10 @@ static const uint8_t apple4_devcmap[16] = {
@@ -253,7 +253,7 @@ index f5a104d..4a96b58 100644
   * Allocate a color attribute.
   */
 diff --git a/sys/dev/rasops/rasops.h b/sys/dev/rasops/rasops.h
-index 595e097..a12299f 100644
+index 595e09735..a12299f8f 100644
 --- a/sys/dev/rasops/rasops.h
 +++ b/sys/dev/rasops/rasops.h
 @@ -154,8 +154,15 @@ struct rasops_info {
@@ -274,7 +274,7 @@ index 595e097..a12299f 100644
  
  #define CHAR_IN_FONT(c, font)						\
 diff --git a/sys/dev/wscons/wsconsio.h b/sys/dev/wscons/wsconsio.h
-index 0d92f5a..5b4532a 100644
+index 0d92f5a0f..5b4532ae4 100644
 --- a/sys/dev/wscons/wsconsio.h
 +++ b/sys/dev/wscons/wsconsio.h
 @@ -452,6 +452,7 @@ struct wsdisplay_font {
@@ -286,7 +286,7 @@ index 0d92f5a..5b4532a 100644
  #define	WSDISPLAY_MAXFONTSZ	(512*1024)
  	int bitorder, byteorder;
 diff --git a/sys/dev/wscons/wsdisplay_vcons.c b/sys/dev/wscons/wsdisplay_vcons.c
-index 4427993..2645ef0 100644
+index 4427993a6..2645ef06b 100644
 --- a/sys/dev/wscons/wsdisplay_vcons.c
 +++ b/sys/dev/wscons/wsdisplay_vcons.c
 @@ -123,6 +123,13 @@ static void vcons_copyrows_buffer(void *, int, int, int);
@@ -356,7 +356,7 @@ index 4427993..2645ef0 100644
  
  	if (ret)
 diff --git a/sys/dev/wscons/wsemul_vt100.c b/sys/dev/wscons/wsemul_vt100.c
-index 5ee5b9f..02b06bd 100644
+index 5ee5b9f68..fd236714d 100644
 --- a/sys/dev/wscons/wsemul_vt100.c
 +++ b/sys/dev/wscons/wsemul_vt100.c
 @@ -44,6 +44,7 @@ __KERNEL_RCSID(0, "$NetBSD: wsemul_vt100.c,v 1.52 2023/08/02 22:37:02 uwe Exp $"
@@ -413,7 +413,16 @@ index 5ee5b9f..02b06bd 100644
  
  	/* The underlying driver has already allocated a default and simple
  	 * attribute for us, which is stored in defattr.  We try to set the
-@@ -412,16 +422,8 @@ static void
+@@ -360,6 +370,8 @@ wsemul_vt100_reset(struct wsemul_vt100_emuldata *edp)
+ 	edp->chartab0 = 0;
+ 	edp->chartab1 = 2;
+ 	edp->sschartab = 0;
++	edp->utf8 = 0;
++	edp->utf8_left = 0;
+ }
+ 
+ /*
+@@ -412,16 +424,8 @@ static void
  wsemul_vt100_output_normal(struct wsemul_vt100_emuldata *edp, u_char c,
  	int kernel)
  {
@@ -430,7 +439,7 @@ index 5ee5b9f..02b06bd 100644
  	if (c & 0x80) {
  		c &= 0x7f;
  		ct = edp->chartab_G[edp->chartab1];
-@@ -434,19 +436,96 @@ wsemul_vt100_output_normal(struct wsemul_vt100_emuldata *edp, u_char c,
+@@ -434,19 +438,109 @@ wsemul_vt100_output_normal(struct wsemul_vt100_emuldata *edp, u_char c,
  	}
  	dc = (ct ? ct[c] : c);
  
@@ -507,14 +516,17 @@ index 5ee5b9f..02b06bd 100644
 +		}
 +	} else if (c >= 0xc2 && c <= 0xdf) {
 +		edp->utf8_cp = c & 0x1f;
++		edp->utf8_min = 0x80;
 +		edp->utf8_left = 1;
 +		return;
 +	} else if (c >= 0xe0 && c <= 0xef) {
 +		edp->utf8_cp = c & 0x0f;
++		edp->utf8_min = 0x800;
 +		edp->utf8_left = 2;
 +		return;
 +	} else if (c >= 0xf0 && c <= 0xf4) {
 +		edp->utf8_cp = c & 0x07;
++		edp->utf8_min = 0x10000;
 +		edp->utf8_left = 3;
 +		return;
 +	} else {
@@ -522,7 +534,17 @@ index 5ee5b9f..02b06bd 100644
 +		return;
 +	}
 +
-+	if ((*vd->emulops->mapchar)(vd->emulcookie, edp->utf8_cp, &dc) == 0)
++	/*
++	 * A longer form than the code point needs, a UTF-16 surrogate or
++	 * anything past U+10FFFF is not UTF-8.  Show it as unprintable
++	 * rather than decode it: an overlong form of a control character
++	 * must not come out as that character.
++	 */
++	if (edp->utf8_cp < edp->utf8_min || edp->utf8_cp > 0x10ffff ||
++	    (edp->utf8_cp >= 0xd800 && edp->utf8_cp <= 0xdfff))
++		dc = '?';
++	else if ((*vd->emulops->mapchar)(vd->emulcookie, edp->utf8_cp,
++	    &dc) == 0)
 +		dc = '?';
 +	wsemul_vt100_putchar(edp, dc,
 +	    (dc & WSFONT_FLAGS_MASK) == WSFONT_FLAG_WIDE, kernel);
@@ -531,7 +553,7 @@ index 5ee5b9f..02b06bd 100644
  static void
  wsemul_vt100_output_c0c1(struct wsemul_vt100_emuldata *edp, u_char c,
  	int kernel)
-@@ -636,6 +715,8 @@ wsemul_vt100_output_esc(struct wsemul_vt100_emuldata *edp, u_char c)
+@@ -636,6 +730,8 @@ wsemul_vt100_output_esc(struct wsemul_vt100_emuldata *edp, u_char c)
  		return VT100_EMUL_STATE_SCS96;
  	case '#':
  		return VT100_EMUL_STATE_ESC_HASH;
@@ -540,15 +562,15 @@ index 5ee5b9f..02b06bd 100644
  	case ' ': /* 7/8 bit */
  		return VT100_EMUL_STATE_ESC_SPC;
  	case ']': /* OSC operating system command */
-@@ -654,6 +735,33 @@ wsemul_vt100_output_esc(struct wsemul_vt100_emuldata *edp, u_char c)
+@@ -654,6 +750,33 @@ wsemul_vt100_output_esc(struct wsemul_vt100_emuldata *edp, u_char c)
  	return VT100_EMUL_STATE_NORMAL;
  }
  
 +/*
 + * ISO 2022 coding system selection.  ESC % G switches the input to
 + * UTF-8 (ESC % 8 is the older spelling), ESC % @ back to the character
-+ * sets.  Nothing else resets it: it is a property of what the
-+ * applications write, like the keyboard encoding.
++ * sets.  RIS goes back to the character sets as well, so that reset(1)
++ * undoes it and a new session does not inherit it.
 + */
 +static u_int
 +wsemul_vt100_output_esc_percent(struct wsemul_vt100_emuldata *edp, u_char c)
@@ -574,7 +596,7 @@ index 5ee5b9f..02b06bd 100644
  static u_int
  wsemul_vt100_output_scs94(struct wsemul_vt100_emuldata *edp, u_char c)
  {
-@@ -1017,6 +1125,11 @@ wsemul_vt100_output(void *cookie, const u_char *data, u_int count, int kernel)
+@@ -1017,6 +1140,11 @@ wsemul_vt100_output(void *cookie, const u_char *data, u_int count, int kernel)
  		(*vd->emulops->cursor)(vd->emulcookie, 0,
  					vd->crow, vd->ccol << vd->dw);
  	for (; count > 0; data++, count--) {
@@ -587,22 +609,23 @@ index 5ee5b9f..02b06bd 100644
  			wsemul_vt100_output_c0c1(edp, *data, kernel);
  			continue;
 diff --git a/sys/dev/wscons/wsemul_vt100var.h b/sys/dev/wscons/wsemul_vt100var.h
-index a643320..922ee66 100644
+index a6433207c..e43f17d76 100644
 --- a/sys/dev/wscons/wsemul_vt100var.h
 +++ b/sys/dev/wscons/wsemul_vt100var.h
-@@ -44,6 +44,10 @@ struct wsemul_vt100_emuldata {
+@@ -44,6 +44,11 @@ struct wsemul_vt100_emuldata {
  
  	int designating;	/* substate in VT100_EMUL_STATE_SCS* */
  
 +	int utf8;		/* ESC % G: input is UTF-8 */
 +	u_int utf8_cp;		/* code point being assembled */
++	u_int utf8_min;		/* smallest code point that length encodes */
 +	int utf8_left;		/* continuation bytes still to come */
 +
  	u_int savedcursor_row, savedcursor_col;
  	long savedattr, savedbkgdattr;
  	int savedattrflags, savedfgcol, savedbgcol;
 diff --git a/sys/dev/wsfont/files.wsfont b/sys/dev/wsfont/files.wsfont
-index 137c6ac..1041bc4 100644
+index 137c6ace5..1041bc49d 100644
 --- a/sys/dev/wsfont/files.wsfont
 +++ b/sys/dev/wsfont/files.wsfont
 @@ -9,6 +9,7 @@ file	dev/wsfont/wsfont.c	(wsfont_glue & rasops_rotation) |
@@ -614,7 +637,7 @@ index 137c6ac..1041bc4 100644
  				FONT_COMIC16x34
  				FONT_GLASS10x19
 diff --git a/sys/dev/wsfont/wsfont.c b/sys/dev/wsfont/wsfont.c
-index 5080f6d..ae79e7f 100644
+index 5080f6dff..ae79e7f15 100644
 --- a/sys/dev/wsfont/wsfont.c
 +++ b/sys/dev/wsfont/wsfont.c
 @@ -210,6 +210,20 @@ __KERNEL_RCSID(0, "$NetBSD: wsfont.c,v 1.83 2025/03/25 10:50:12 macallan Exp $")
@@ -709,7 +732,7 @@ index 5080f6d..ae79e7f 100644
  		return (-1);
  
 diff --git a/sys/dev/wsfont/wsfont.h b/sys/dev/wsfont/wsfont.h
-index 737d789..0f4ac1e 100644
+index 737d789a4..0f4ac1e1f 100644
 --- a/sys/dev/wsfont/wsfont.h
 +++ b/sys/dev/wsfont/wsfont.h
 @@ -34,6 +34,7 @@
