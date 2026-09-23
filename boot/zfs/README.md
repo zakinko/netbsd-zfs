@@ -39,9 +39,11 @@ gzip goes through zlib, which the loader links anyway for gzipped
 kernels; a build without zlib leaves it out and gzip is then refused
 like the rest.
 
+A fat ZAP's pointer table is read whether it sits in the object's first
+block or in blocks of its own.
+
 It refuses, rather than guessing: gang blocks, more than one top-level
-vdev, an external ZAP pointer table, zle and zstd, and checksums newer
-than SHA-256.
+vdev, zle and zstd, and checksums newer than SHA-256.
 
 ## What it was tested against
 
@@ -67,7 +69,12 @@ but zeros.
   dataset's `text`: both come out with the same SHA-256 as ZFS itself
   gives for the same files. A checksum that matches is worth more than
   "it read 64MB without complaining", and it is how gzip was checked.
-- All 20,000 names listed.
+- All 20,000 names listed -- but that directory's pointer table still
+  fits beside the ZAP's header, two orders of magnitude short of
+  outgrowing it. A third directory of 400,000 names does outgrow it
+  (`zt_numblks` 2, `zt_shift` 12, three levels of indirection over the
+  ZAP object), and all 400,000 are listed, with lookups at both ends of
+  the range and a miss for a name that is not there.
 - The all-zeros file found a real bug. ZFS stores it as holes all the
   way up -- the dnode's own block pointer is empty -- and the reader
   only looked for a hole at level 0, so descending read a pointer full

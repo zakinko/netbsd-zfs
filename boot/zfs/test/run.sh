@@ -46,6 +46,6 @@ rm -f label.bin
 echo "=== all checks passed"
 #
 # Not covered here, for want of a pool that has them: gang blocks, more
-# than one top-level vdev, an external ZAP pointer table, zle and zstd.
+# than one top-level vdev, zle and zstd.
 # Each is refused by name in the reader rather than guessed at.
 #

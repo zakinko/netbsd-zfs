@@ -209,6 +209,46 @@ zap_leaf_lookup(const void *leaf, int bs, uint64_t hash, const char *name,
 }
 
 /*
+ * One entry of the pointer table.
+ *
+ * [S] §5.2.1: when the table does not fit beside the header it moves
+ * out into blocks of its own, and zt_blk and zt_numblks say where --
+ * "This field is only used when the pointer table is external to the
+ * zap_phys_t structure; zero otherwise."  [S] §5.2.2: the entries are
+ * level 0 block ids either way.
+ *
+ * The scratch buffer the caller lends is the leaf buffer, which is free
+ * at this point: the leaf it will hold is the one this call finds.
+ */
+static int
+ptrtbl_get(struct zfs_pool *pool, const dnode_phys_t *dn,
+    const zap_phys_t *zp, const uint8_t *blk, size_t blksize, uint64_t idx,
+    uint8_t *scratch, uint64_t *blkid)
+{
+	size_t per = blksize / sizeof(uint64_t);
+	uint64_t b;
+	int err;
+
+	if (zp->zap_ptrtbl.zt_numblks == 0) {
+		if (idx >= per / 2)
+			return (EINVAL);
+		*blkid = ((const uint64_t *)(const void *)
+		    (blk + blksize / 2))[idx];
+		return (0);
+	}
+
+	b = idx / per;
+	if (b >= zp->zap_ptrtbl.zt_numblks)
+		return (EINVAL);
+	err = zfs_read_object_block(pool, dn, zp->zap_ptrtbl.zt_blk + b,
+	    scratch, ZFS_MAXBLOCKSIZE);
+	if (err != 0)
+		return (err);
+	*blkid = ((const uint64_t *)(const void *)scratch)[idx % per];
+	return (0);
+}
+
+/*
  * Look one name up in a ZAP object.
  *
  * [S] chapter five: the first word of the object's first block says
@@ -219,7 +259,7 @@ zap_lookup1(struct zfs_pool *pool, const dnode_phys_t *dn, const char *name,
     uint64_t *val, uint8_t *blk, uint8_t *leaf)
 {
 	const zap_phys_t *zp;
-	uint64_t hash, blkid, *ptrtbl;
+	uint64_t hash, blkid;
 	size_t blksize;
 	int bs, err;
 
@@ -264,16 +304,10 @@ zap_lookup1(struct zfs_pool *pool, const dnode_phys_t *dn, const char *name,
 	 * which is block size / 8 / 2.  So it is the second half at any
 	 * block size, and that is how it is addressed here.
 	 */
-	if (zp->zap_ptrtbl.zt_numblks != 0) {
-		/*
-		 * An external table means the ZAP outgrew its first
-		 * block.  Nothing on the path to a kernel is that large,
-		 * and reading it untested would be worse than saying so.
-		 */
-		return (ENOTSUP);
-	}
-	ptrtbl = (uint64_t *)(void *)(blk + blksize / 2);
-	blkid = ptrtbl[hash >> (64 - zp->zap_ptrtbl.zt_shift)];
+	err = ptrtbl_get(pool, dn, zp, blk, blksize,
+	    hash >> (64 - zp->zap_ptrtbl.zt_shift), leaf, &blkid);
+	if (err != 0)
+		return (err);
 
 	err = zfs_read_object_block(pool, dn, blkid, leaf, ZFS_MAXBLOCKSIZE);
 	if (err != 0)
@@ -329,16 +363,22 @@ zap_list1(struct zfs_pool *pool, const dnode_phys_t *dn,
 	zp = (const void *)blk;
 	if (zp->zap_block_type != ZBT_HEADER || zp->zap_magic != ZAP_MAGIC)
 		return (EINVAL);
-	if (zp->zap_ptrtbl.zt_numblks != 0)
-		return (ENOTSUP);
-
 	n = (uint64_t)1 << zp->zap_ptrtbl.zt_shift;
 	for (i = 0; i < n; i++) {
-		const uint64_t *ptrtbl = (const void *)(blk + blksize / 2);
 		const zap_leaf_header_t *lh;
 		const uint8_t *chunks;
-		uint64_t blkid = ptrtbl[i];
+		uint64_t blkid;
 		int c;
+
+		/*
+		 * An external table is read a block at a time through
+		 * the leaf buffer, so the leaf it names has to be read
+		 * afterwards; with the table inside the first block this
+		 * is just an index.
+		 */
+		err = ptrtbl_get(pool, dn, zp, blk, blksize, i, leaf, &blkid);
+		if (err != 0)
+			return (err);
 
 		if (blkid == prev || blkid == 0)
 			continue;
