@@ -46,6 +46,15 @@ block or in blocks of its own.
 It refuses, rather than guessing: gang blocks, more than one top-level
 vdev, zstd, and checksums newer than SHA-256.
 
+Gang blocks are refused because none could be produced to test against.
+§2.3 describes them clearly enough to write -- 512 bytes holding up to
+three block pointers and a self-checksumming tail, used when no single
+allocation of the size wanted is free -- but NetBSD's ZFS exposes no
+knob to force one, and a 96MB pool filled to 100% with 16K files and
+then emptied to 51% by deleting every other one still wrote 128K
+records without ganging. Code that has never run is worse than an
+error, so it says so instead.
+
 ## What it was tested against
 
 A 512MB NetBSD 11.0 image with a GPT and a pool at LBA 16418:
