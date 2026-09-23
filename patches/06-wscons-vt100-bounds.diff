@@ -1,0 +1,62 @@
+diff --git a/sys/dev/wscons/wsemul_vt100.c b/sys/dev/wscons/wsemul_vt100.c
+index fd236714d..8749780e8 100644
+--- a/sys/dev/wscons/wsemul_vt100.c
++++ b/sys/dev/wscons/wsemul_vt100.c
+@@ -663,6 +663,11 @@ wsemul_vt100_output_esc(struct wsemul_vt100_emuldata *edp, u_char c)
+ 			break;
+ 		vd->crow = edp->savedcursor_row;
+ 		vd->ccol = edp->savedcursor_col;
++		/*
++		 * The line may have become double width since the cursor
++		 * was saved, halving the columns it has.
++		 */
++		CHECK_DW(vd);
+ 		vd->curattr = edp->savedattr;
+ 		vd->bkgdattr = edp->savedbkgdattr;
+ 		vd->attrflags = edp->savedattrflags;
+@@ -686,8 +691,8 @@ wsemul_vt100_output_esc(struct wsemul_vt100_emuldata *edp, u_char c)
+ 		wsemul_vt100_nextline(vd);
+ 		break;
+ 	case 'H': /* HTS */
+-		KASSERT(vd->tabs != 0);
+-		vd->tabs[vd->ccol] = 1;
++		if (vd->tabs)
++			vd->tabs[vd->ccol] = 1;
+ 		break;
+ 	case '~': /* LS1R */
+ 		edp->chartab1 = 1;
+diff --git a/sys/dev/wscons/wsemul_vt100_subr.c b/sys/dev/wscons/wsemul_vt100_subr.c
+index d14ff3815..840941c28 100644
+--- a/sys/dev/wscons/wsemul_vt100_subr.c
++++ b/sys/dev/wscons/wsemul_vt100_subr.c
+@@ -331,9 +331,8 @@ wsemul_vt100_handle_csi(struct vt100base_data *vd, u_char c)
+ 			{
+ 			int i, j, ps = 0;
+ 			char buf[20];
+-			KASSERT(vd->tabs != NULL);
+ 			wsdisplay_emulinput(vd->cbcookie, "\033P2$u", 5);
+-			for (i = 0; i < vd->ncols; i++)
++			for (i = 0; vd->tabs && i < vd->ncols; i++)
+ 				if (vd->tabs[i]) {
+ 					j = snprintf(buf, sizeof(buf), "%s%d",
+ 					    (ps ? "/" : ""), i + 1);
+@@ -498,7 +497,8 @@ wsemul_vt100_handle_csi(struct vt100base_data *vd, u_char c)
+ 		vd->crow = uimin(DEF1_ARG(vd, 0) - 1, vd->nrows - 1);
+  		break;
+ 	    case 'g': /* TBC */
+-		KASSERT(vd->tabs != NULL);
++		if (vd->tabs == NULL)
++			break;
+ 		switch (ARG(vd, 0)) {
+ 		    case 0:
+ 			vd->tabs[vd->ccol] = 0;
+@@ -831,7 +831,8 @@ wsemul_vt100_handle_dcs(struct vt100base_data *vd)
+ 	    case 0: /* not handled */
+ 		return;
+ 	    case DCSTYPE_TABRESTORE:
+-		KASSERT(vd->tabs != NULL);
++		if (vd->tabs == NULL)
++			break;
+ 		KASSERT(vd->ncols <= 1024);
+ 		memset(vd->tabs, 0, vd->ncols);
+ 		pos = 0;
