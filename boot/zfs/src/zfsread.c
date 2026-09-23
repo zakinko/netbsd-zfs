@@ -449,6 +449,16 @@ dnode_valid(const dnode_phys_t *dn)
 	    (dn->dn_indblkshift < SPA_MINBLOCKSHIFT ||
 	    dn->dn_indblkshift > SPA_MAXBLOCKSHIFT))
 		return (0);
+	/*
+	 * [S] §3.1: the bonus buffer "can range between 64 and 320
+	 * bytes", and it begins where the block pointers end, so a
+	 * length that does not fit in the 512 byte dnode is a lie.
+	 */
+	if (dn->dn_bonuslen > DN_MAX_BONUSLEN ||
+	    offsetof(dnode_phys_t, dn_blkptr) +
+	    (size_t)dn->dn_nblkptr * sizeof(blkptr_t) +
+	    dn->dn_bonuslen > DNODE_SIZE)
+		return (0);
 	return (1);
 }
 

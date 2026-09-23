@@ -6,12 +6,22 @@ name: boot-zfs
 # stops being one this reader understands.  Neither announces itself,
 # hence the schedule as well as the path filter.
 
+# The prose and the transcription of the specification do not change
+# what is built, and a run here boots a NetBSD VM for twenty minutes.
 on:
   push:
     branches: [main]
-    paths: ['boot/zfs/**', '.github/workflows/boot-zfs.yml']
+    paths:
+      - 'boot/zfs/**'
+      - '!boot/zfs/**.md'
+      - '!boot/zfs/spec/**'
+      - '.github/workflows/boot-zfs.yml'
   pull_request:
-    paths: ['boot/zfs/**', '.github/workflows/boot-zfs.yml']
+    paths:
+      - 'boot/zfs/**'
+      - '!boot/zfs/**.md'
+      - '!boot/zfs/spec/**'
+      - '.github/workflows/boot-zfs.yml'
   workflow_dispatch:
   schedule:
     - cron: '23 5 11 * *'

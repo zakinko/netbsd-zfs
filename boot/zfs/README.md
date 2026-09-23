@@ -52,8 +52,17 @@ that check a dnode claiming a shift of 200 is undefined behaviour and
 one claiming two hundred block pointers indexes off the end of an array
 of three -- which, measured with the check taken out, reads 25,536
 bytes past a 448 byte structure and is stopped by AddressSanitizer,
-not by anything in the reader. The same holds at the other end of the reader, where the
-label's `ashift` becomes the stride of the uberblock array. Checksums do not help here: a pool that has been written to
+not by anything in the reader. The same holds wherever a number off the disk becomes a shift, an index
+or a length: the label's `ashift`, which becomes the stride of the
+uberblock array; a fat ZAP's `zt_shift` and a leaf's `lh_prefix_len`,
+which are shifted by; the bonus buffer's length; and the size field in
+a system attribute header, which is six bits multiplied by eight and
+can therefore claim 504 bytes of header in a 320 byte buffer.
+
+The dnode structure is declared the 512 bytes [S] §3.1 gives it rather
+than the 448 its fields occupy, so that an offset computed from a field
+inside a dnode cannot leave the copy of that dnode even when the field
+is a lie. Checksums do not help here: a pool that has been written to
 deliberately recomputes them.
 
 A mirror needs no special handling and none was written. [S] §2.1's

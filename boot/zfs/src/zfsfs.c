@@ -254,6 +254,7 @@ sa_field(const dnode_phys_t *dn, size_t off)
 {
 	const uint8_t *bonus = DN_BONUS(dn);
 	const sa_hdr_phys_t *hdr = (const void *)bonus;
+	size_t hdrsize, end;
 
 	if (dn->dn_bonustype == DMU_OT_ZNODE)
 		return (NULL);
@@ -261,7 +262,22 @@ sa_field(const dnode_phys_t *dn, size_t off)
 		return (NULL);
 	if (SA_HDR_LAYOUT(hdr->sa_layout_info) > 3)
 		return (NULL);
-	return (bonus + SA_HDR_SIZE(hdr->sa_layout_info) + off);
+
+	/*
+	 * The header says how long it is, in a six bit field that is
+	 * multiplied by eight, so a bonus buffer written on purpose can
+	 * claim 504 bytes of header and send the read past the dnode.
+	 * [S] §3.1 bounds the bonus buffer at 320 bytes and the dnode at
+	 * 512, so the field has to lie inside both.
+	 */
+	hdrsize = SA_HDR_SIZE(hdr->sa_layout_info);
+	end = (size_t)(bonus - (const uint8_t *)dn) + hdrsize + off +
+	    sizeof(uint64_t);
+	if (hdrsize + off + sizeof(uint64_t) > dn->dn_bonuslen)
+		return (NULL);
+	if (end > DNODE_SIZE)
+		return (NULL);
+	return (bonus + hdrsize + off);
 }
 
 uint64_t

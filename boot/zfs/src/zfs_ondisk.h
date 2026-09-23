@@ -407,6 +407,9 @@ struct zio_eck {
 #define	SPA_MAXBLOCKSHIFT	17
 #define	DN_MAX_LEVELS		6
 
+/* [S] §3.1: the bonus buffer is "between 64 and 320 bytes". */
+#define	DN_MAX_BONUSLEN		320
+
 /* 3.1, Illustration 9. */
 typedef struct {
 	uint8_t		dn_type;
@@ -432,6 +435,15 @@ typedef struct {
 	 * by taking the address of dn_blkptr[3].
 	 */
 	blkptr_t	dn_blkptr[3];
+	/*
+	 * [S] §3.1 fixes the whole dnode at 512 bytes, and the bonus
+	 * buffer is whatever is left after the block pointers.  The
+	 * padding is here so that sizeof matches the disk: a copy of a
+	 * dnode then contains every byte the dnode has, and an offset
+	 * computed from a field inside it -- a bonus buffer offset, say
+	 * -- cannot leave the copy even when the field is nonsense.
+	 */
+	uint8_t		dn_bonus[DNODE_SIZE - 64 - 3 * 128];
 } dnode_phys_t;
 
 #define	DN_BONUS(dn)	((void *)((uint8_t *)(dn) + \
@@ -913,6 +925,13 @@ CTASSERT(sizeof(zil_header_t) == ZIL_HEADER_SIZE);  /* [Z] zil.h */
  * metadnode or zil header moves.  704 was read off a pool.
  */
 CTASSERT(offsetof(objset_phys_t, os_type) == 704);
+
+/*
+ * [S] §3.1: the dnode is 512 bytes.  The C structure has to be that
+ * size too, or a field read at an offset taken from the dnode itself
+ * can land outside the copy while still being inside the dnode.
+ */
+CTASSERT(sizeof(dnode_phys_t) == DNODE_SIZE);
 
 /*
  * [Z] zfs_sa.h calls the old bonus buffer 0x108 bytes; the difference

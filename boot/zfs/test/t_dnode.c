@@ -21,6 +21,7 @@
 #include <errno.h>
 
 #include "zfsread.c"
+#include "zap.c"
 
 static int fails;
 
@@ -124,6 +125,53 @@ main(void)
 		    label_scan(&pool, 0, 200, &ub, &off), 0);
 		expect("an ashift of 0 finds nothing",
 		    label_scan(&pool, 0, 0, &ub, &off), 0);
+	}
+
+	/*
+	 * And the ZAP's own shift counts, which are read off the disk in
+	 * the same way: zt_shift indexes the pointer table and
+	 * lh_prefix_len says how far down the hash a leaf sits.
+	 */
+	printf("=== the bonus buffer\n");
+	sane(&dn); dn.dn_bonuslen = 320;
+	expect("the largest bonus buffer", dnode_valid(&dn), 1);
+	sane(&dn); dn.dn_bonuslen = 321;
+	expect("one byte more than that", dnode_valid(&dn), 0);
+	sane(&dn); dn.dn_nblkptr = 3; dn.dn_bonuslen = 320;
+	expect("three pointers and a full bonus do not fit",
+	    dnode_valid(&dn), 0);
+
+	printf("=== the fatzap's pointer table\n");
+	{
+		static uint8_t blk[ZFS_MAXBLOCKSIZE];
+		zap_phys_t *zp = (void *)blk;
+		size_t blksize = 16384;
+		int bs = 14;		/* log2(16384) */
+
+		memset(blk, 0, sizeof(blk));
+		zp->zap_block_type = ZBT_HEADER;
+		zp->zap_magic = ZAP_MAGIC;
+
+		zp->zap_ptrtbl.zt_shift = bs - 4;	/* the only right one */
+		expect("an embedded table of the right width",
+		    ptrtbl_valid(zp, blksize, bs), 1);
+		zp->zap_ptrtbl.zt_shift = 900;
+		expect("a shift of 900", ptrtbl_valid(zp, blksize, bs), 0);
+		zp->zap_ptrtbl.zt_shift = 0;
+		expect("a shift of zero", ptrtbl_valid(zp, blksize, bs), 0);
+		zp->zap_ptrtbl.zt_shift = 63;
+		expect("a shift of 63", ptrtbl_valid(zp, blksize, bs), 0);
+		zp->zap_ptrtbl.zt_shift = bs - 3;
+		expect("an embedded table one bit too wide",
+		    ptrtbl_valid(zp, blksize, bs), 0);
+
+		zp->zap_ptrtbl.zt_numblks = 2;
+		zp->zap_ptrtbl.zt_shift = 12;	/* 4096 entries, 32KB */
+		expect("an external table that fits",
+		    ptrtbl_valid(zp, blksize, bs), 1);
+		zp->zap_ptrtbl.zt_shift = 20;	/* 8MB in two 16K blocks */
+		expect("an external table that does not fit",
+		    ptrtbl_valid(zp, blksize, bs), 0);
 	}
 
 	if (fails != 0) {

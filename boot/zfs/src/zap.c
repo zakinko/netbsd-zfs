@@ -162,6 +162,16 @@ zap_leaf_lookup(const void *leaf, int bs, uint64_t hash, const char *name,
 	if (lh->lh_block_type != ZBT_LEAF || lh->lh_magic != ZAP_LEAF_MAGIC)
 		return (EINVAL);
 
+	/*
+	 * [S] §5.2.3: "lh_prefix_len can be equal to or less than
+	 * zt_shift", so it is small in any leaf ZFS wrote -- but it is
+	 * two bytes off the disk, and the line below shifts by
+	 * 64 - lh_prefix_len - the hash width.  A leaf claiming 900
+	 * makes that subtraction wrap and the shift undefined.
+	 */
+	if ((size_t)lh->lh_prefix_len + ZAP_LEAF_HASH_SHIFT(bs) >= 64)
+		return (EINVAL);
+
 	lhash = (const uint16_t *)((const uint8_t *)leaf +
 	    2 * ZAP_LEAF_CHUNKSIZE);
 	chunks = (const uint8_t *)lhash + 2 * ZAP_LEAF_HASH_NUMENTRIES(bs);
@@ -206,6 +216,35 @@ zap_leaf_lookup(const void *leaf, int bs, uint64_t hash, const char *name,
 		chunk = e->le_next;
 	}
 	return (ENOENT);
+}
+
+/*
+ * Is this fatzap header one that can be walked?
+ *
+ * zap_ptrtbl.zt_shift says how many of the hash's top bits index the
+ * pointer table, and it is read off the disk.  Two places shift by
+ * 64 - zt_shift and one shifts by zt_shift itself, so a header saying
+ * 0 or 900 is undefined behaviour before it is anything else.
+ *
+ * [S] §5.2.1 fixes the value when the table is inside the first block:
+ * the table is the block's second half, eight bytes an entry, so
+ * zt_shift is log2(blocksize) - 4 and nothing else.  When the table is
+ * outside, the blocks it occupies have to hold the entries it claims.
+ * Both are exact, so neither is a guess about a sensible range.
+ */
+static int
+ptrtbl_valid(const zap_phys_t *zp, size_t blksize, int bs)
+{
+	uint64_t shift = zp->zap_ptrtbl.zt_shift;
+
+	if (shift < 1 || shift > 40)
+		return (0);			/* before shifting by it */
+	if (zp->zap_ptrtbl.zt_numblks == 0)
+		return (shift == (uint64_t)bs - 4);
+	if (zp->zap_ptrtbl.zt_numblks > ZFS_MAXBLOCKSIZE)
+		return (0);
+	return (((uint64_t)1 << shift) * sizeof(uint64_t) <=
+	    zp->zap_ptrtbl.zt_numblks * (uint64_t)blksize);
 }
 
 /*
@@ -284,7 +323,7 @@ zap_lookup1(struct zfs_pool *pool, const dnode_phys_t *dn, const char *name,
 	}
 
 	zp = (const void *)blk;
-	if (zp->zap_magic != ZAP_MAGIC)
+	if (zp->zap_magic != ZAP_MAGIC || !ptrtbl_valid(zp, blksize, bs))
 		return (EINVAL);
 	hash = zap_hash(zp->zap_salt, name);
 
@@ -361,7 +400,8 @@ zap_list1(struct zfs_pool *pool, const dnode_phys_t *dn,
 	}
 
 	zp = (const void *)blk;
-	if (zp->zap_block_type != ZBT_HEADER || zp->zap_magic != ZAP_MAGIC)
+	if (zp->zap_block_type != ZBT_HEADER || zp->zap_magic != ZAP_MAGIC ||
+	    !ptrtbl_valid(zp, blksize, bs))
 		return (EINVAL);
 	n = (uint64_t)1 << zp->zap_ptrtbl.zt_shift;
 	for (i = 0; i < n; i++) {
