@@ -110,7 +110,8 @@ A 512MB NetBSD 11.0 image with a GPT and a pool at LBA 16418:
   because ZFS puts metadata where the allocator felt like and a flip in
   a data block only changes data. Corrupting the device's answers
   instead found a read sixteen bytes past a dnode in `zfs_size`, which
-  is now fixed.
+  is now fixed. Fifty thousand cases since, of which 48,487 opened the
+  pool and 38,146 read the file through.
 - The nvlist parser under ASan and UBSan: 300,000 mutations of a real
   label and every one of its 8,193 truncations. Removing one bound check
   makes that fail within 5,000 cases, which is how the harness was shown

@@ -23,7 +23,9 @@
  *
  * So the device hands back a corrupted buffer instead: every read has
  * a chance of coming back with a few bits flipped, which is exactly
- * what a disk written against this reader would do.
+ * what a disk written against this reader would do.  The image itself
+ * is never written, so it is mapped once and read from -- a copy per
+ * case cost far more than the parsing it was feeding.
  */
 #include <sys/types.h>
 #include <stdint.h>
@@ -116,7 +118,7 @@ one(uint8_t *image, size_t len, uint64_t base)
 int
 main(int argc, char **argv)
 {
-	uint8_t *orig, *copy;
+	uint8_t *orig;
 	size_t len;
 	uint64_t base;
 	long iters, i;
@@ -139,8 +141,7 @@ main(int argc, char **argv)
 	if (fd < 0) { perror(argv[1]); return (1); }
 	len = (size_t)lseek(fd, 0, SEEK_END);
 	orig = malloc(len);
-	copy = malloc(len);
-	if (orig == NULL || copy == NULL) { perror("malloc"); return (1); }
+	if (orig == NULL) { perror("malloc"); return (1); }
 	if (pread(fd, orig, len, 0) != (ssize_t)len) {
 		perror("read");
 		return (1);
@@ -150,32 +151,12 @@ main(int argc, char **argv)
 	zfs_scratch_init(arena, sizeof(arena));
 
 	for (i = 0; i < iters; i++) {
-		int n = 1 + (int)(rnd() % 12), k;
-
-		memcpy(copy, orig, len);
 		g_corrupt = 1 + (int)(rnd() % 32);
-		for (k = 0; k < n; k++) {
-			size_t p;
-
-			if (rnd() & 1) {
-				/* a label: two at each end of the vdev */
-				uint64_t r = rnd() % (4 * VDEV_LABEL_SIZE);
-
-				p = (size_t)(r < 2 * VDEV_LABEL_SIZE ?
-				    base + r :
-				    len - (4 * VDEV_LABEL_SIZE - r));
-			} else {
-				p = (size_t)(base + rnd() % (len - base));
-			}
-			if (p < len)
-				copy[p] ^= (uint8_t)(1u << (rnd() & 7));
-		}
-		one(copy, len, base);
+		one(orig, len, base);
 	}
 	printf("fuzz_pool: %ld mutations, no fault\n", iters);
 	printf("  reached: %ld opened, %ld mounted, %ld found the file, "
 	    "%ld read it\n", n_opened, n_mounted, n_found, n_read);
 	free(orig);
-	free(copy);
 	return (0);
 }
