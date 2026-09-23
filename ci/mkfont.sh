@@ -1,7 +1,8 @@
 #!/bin/sh
 #
-# Generate sys/dev/wsfont/shnmk16.h, the kanji font the wscons UTF-8
-# patch compiles into the kernel, from the Shinonome 16 dot font
+# Generate sys/dev/wsfont/shnmk16.h and jisx0208.h, the kanji font the
+# wscons UTF-8 patch compiles into the kernel and the Unicode table it
+# is indexed by, from the Shinonome 16 dot font
 # (public domain, the pkgsrc fonts/ja-shinonome distfile) and the
 # Unicode consortium's JIS X 0208 mapping table.
 #
@@ -33,5 +34,5 @@ fetch JIS0208.TXT $JIS0208_URL $JIS0208_SHA256
 tar xjf "$CACHE/$SHINONOME" -C "$CACHE" shinonome-0.9.11/bdf/shnmk16.bdf
 python3 "$TOP/ci/bdf2wsfont.py" shnmk16 \
     "$CACHE/shinonome-0.9.11/bdf/shnmk16.bdf" "$CACHE/JIS0208.TXT" \
-    > "$SRC/sys/dev/wsfont/shnmk16.h"
-echo "wrote $SRC/sys/dev/wsfont/shnmk16.h"
+    "$SRC/sys/dev/wsfont"
+echo "wrote $SRC/sys/dev/wsfont/shnmk16.h and jisx0208.h"
