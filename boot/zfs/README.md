@@ -28,7 +28,8 @@ gives 15, and division is what finding a parent means.
 
 ## What it reads
 
-A pool on one disk or partition: labels, uberblocks, block pointers
+A pool on one disk or partition, or on a mirror: labels, uberblocks,
+block pointers
 (including embedded ones), gang-free DVAs, fletcher2/fletcher4/SHA-256
 checksums, lz4 and uncompressed blocks, dnodes to six levels of
 indirection, micro and fat ZAPs, the DSL down to a dataset, ZPL
@@ -43,8 +44,21 @@ like the rest.
 A fat ZAP's pointer table is read whether it sits in the object's first
 block or in blocks of its own.
 
-It refuses, rather than guessing: gang blocks, more than one top-level
-vdev, zstd, and checksums newer than SHA-256.
+A mirror needs no special handling and none was written. [S] §2.1's
+offset is an offset into the top-level vdev, and a mirror's children
+hold the same bytes at the same offsets, so any one leaf is a whole
+copy of the pool. What is missing is the other half of a mirror's
+purpose: a block that fails its checksum on this disk cannot be
+retried on the other, because the loader has opened only one.
+
+raidz is refused when the pool is opened, by name, from the label's
+`vdev_tree`. Its data is spread across the children with parity and an
+offset lands somewhere else on each, so left alone the reader would
+open the pool, read a block from the wrong place and report an I/O
+error on a disk that is perfectly sound.
+
+It refuses, rather than guessing: gang blocks, raidz, zstd, and
+checksums newer than SHA-256.
 
 Gang blocks are refused because none could be produced to test against.
 §2.3 describes them clearly enough to write -- 512 bytes holding up to
@@ -93,6 +107,10 @@ but zeros.
   only looked for a hole at level 0, so descending read a pointer full
   of zeros as if it addressed sector zero and returned EIO. A hole is
   now recognised at every level.
+- A two-way mirror, read through each leaf on its own: 12MB with the
+  same SHA-256 as ZFS, from either disk.
+- A raidz1 of three: refused at `zfs_pool_open` with ENOTSUP rather
+  than failing a checksum later.
 - `efiboot` built with it loads `solaris.kmod`, `zfs.kmod`, `msdos.kmod`
   and a 30MB kernel out of the pool under qemu, and the kernel boots.
   It then says `cannot mount root, error = 79`, which is the kernel's

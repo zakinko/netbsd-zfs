@@ -564,6 +564,18 @@ zfs_read_object_block(struct zfs_pool *pool, const dnode_phys_t *dn,
 	return (dnode_read_block(pool, dn, blkid, buf, buflen));
 }
 
+/* A string valued pair, compared without copying it out. */
+static int
+nv_streq(const struct nvpair_value *v, const char *s)
+{
+	uint32_t i;
+
+	for (i = 0; i < v->nv_strlen; i++)
+		if (v->nv_string[i] != s[i] || s[i] == '\0')
+			return (0);
+	return (s[v->nv_strlen] == '\0');
+}
+
 /*
  * Opening a pool: read a label's nvlist, take from it what is needed to
  * read the rest, and then find the active uberblock.
@@ -611,6 +623,36 @@ zfs_pool_open(struct zfs_pool *pool, char *name, size_t namelen)
 		if (nvlist_find(nv, VDEV_LABEL_NVLIST_SIZE, ZPOOL_CONFIG_VDEV_TREE,
 		    NV_WANT_NVLIST, &tree) != 0)
 			continue;
+		/*
+		 * [S] §1.3.3, Table 2 names the kinds of vdev, and which
+		 * of them this can read follows from [S] §2.1: a DVA's
+		 * offset is an offset into the *top-level* vdev.
+		 *
+		 * Under a mirror that offset means the same place on
+		 * every child, because the children hold the same bytes,
+		 * so one leaf is a complete copy of the pool and nothing
+		 * has to be enumerated.  Under a raidz it does not: the
+		 * data is spread across the children with parity, and an
+		 * offset lands somewhere else on each of them.
+		 *
+		 * So mirrors are read and raidz is refused, and it is
+		 * refused here, where the reason can be given.  Left to
+		 * itself the reader would open the pool, follow the
+		 * uberblock, read a block from the wrong place and fail
+		 * its checksum -- reporting an I/O error on a disk that
+		 * is perfectly sound.
+		 */
+		if (nvlist_find_nested(tree.nv_list, tree.nv_listlen,
+		    ZPOOL_CONFIG_TYPE, NV_WANT_STRING, &v) != 0)
+			continue;
+		if (!nv_streq(&v, VDEV_TYPE_DISK) &&
+		    !nv_streq(&v, VDEV_TYPE_FILE) &&
+		    !nv_streq(&v, VDEV_TYPE_MIRROR) &&
+		    !nv_streq(&v, VDEV_TYPE_REPLACING)) {
+			err = ENOTSUP;
+			break;
+		}
+
 		/*
 		 * [S] §1.3.3: ashift belongs to the top-level vdev.  On a
 		 * single disk the vdev_tree is that vdev and carries it;
