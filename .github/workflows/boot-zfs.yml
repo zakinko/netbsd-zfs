@@ -1,0 +1,71 @@
+name: boot-zfs
+
+# Two things can break this without anyone touching it here.  The
+# NetBSD source set moves, so the four hunks in netbsd-side.diff stop
+# applying; and ZFS itself moves, so a pool written by a newer zpool
+# stops being one this reader understands.  Neither announces itself,
+# hence the schedule as well as the path filter.
+
+on:
+  push:
+    branches: [main]
+    paths: ['boot/zfs/**', '.github/workflows/boot-zfs.yml']
+  pull_request:
+    paths: ['boot/zfs/**', '.github/workflows/boot-zfs.yml']
+  workflow_dispatch:
+  schedule:
+    - cron: '23 5 11 * *'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # One VM for both halves: the loader builds natively against the
+      # host's own /usr/share/mk, and the pool the reader is checked
+      # against is made by the ZFS on that same host, so what is read
+      # is what ZFS wrote a minute earlier rather than an image checked
+      # in months ago.
+      - name: Build the loader and read a pool back
+        uses: vmactions/netbsd-vm@v1
+        with:
+          release: '11.0'
+          copyback: false
+          sync: rsync
+          mem: 4096
+          run: |
+            set -e
+            B=https://cdn.netbsd.org/pub/NetBSD/NetBSD-11.0/source/sets
+            mkdir -p "$HOME/nbsrc" && cd "$HOME/nbsrc"
+            ftp -o syssrc.tgz $B/syssrc.tgz
+            tar xzf syssrc.tgz
+            SRC="$HOME/nbsrc/usr/src"
+
+            cd "$GITHUB_WORKSPACE"
+            sh boot/zfs/install.sh "$SRC"
+
+            cd "$SRC/sys/arch/i386/stand/efiboot"
+            make USETOOLS=no MKDTRACE=no
+
+            # A loader that built without ZFS in it would still exit 0,
+            # so count what actually reached the binary.
+            for f in bootx64/bootx64.efi bootia32/bootia32.efi; do
+                test -s "$f" || { echo "$f missing"; exit 1; }
+                ls -l "$f"
+            done
+            n=$(nm bootx64/bootx64.efi.so |
+                grep -cE ' (t|T) (zfs_|zap_|sha256|fletcher|lz4_|zle_|gzip_)')
+            echo "ZFS symbols in the loader: $n"
+            [ "$n" -ge 20 ] || { echo "the reader did not get linked in"; exit 1; }
+            if nm -u bootx64/bootx64.efi.so | grep .; then
+                echo "undefined symbols in the loader"; exit 1
+            fi
+
+            cd "$GITHUB_WORKSPACE/boot/zfs/test"
+            sh ci.sh

@@ -1,0 +1,87 @@
+--- a/sys/lib/libsa/saioctl.h	2022-04-24 06:48:15.000000000 +0000
++++ b/sys/lib/libsa/saioctl.h	2026-09-23 12:22:07.714710839 +0000
+@@ -48,3 +48,4 @@
+ #define	SAIOGBADINFO	(('d'<<8)|14)	/* get bad-sector table */
+ 
+ #define SAIOSECSIZE	(('d'<<8)|15)	/* get sector size */
++#define SAIODEVSIZE	(('d'<<8)|16)	/* get device size in bytes */
+--- a/sys/arch/i386/stand/lib/biosdisk.c	2024-01-06 21:26:43.000000000 +0000
++++ b/sys/arch/i386/stand/lib/biosdisk.c	2026-09-23 12:22:07.724517113 +0000
+@@ -1670,6 +1670,7 @@
+ 	}
+ 
+ 	d->boff = offset;
++	d->size = size;
+ 
+ 	bi_wedge.startblk = offset;
+ 	bi_wedge.nblks = size;
+@@ -1707,5 +1708,17 @@
+ int
+ biosdisk_ioctl(struct open_file *f, u_long cmd, void *arg)
+ {
+-	return EIO;
++	struct biosdisk *d = f->f_devdata;
++
++	switch (cmd) {
++	case SAIODEVSIZE:
++		/*
++		 * ZFS keeps two of its four labels at the end of the vdev
++		 * and cannot find them without this.
++		 */
++		*(uint64_t *)arg = (uint64_t)d->size * d->ll.secsize;
++		return 0;
++	default:
++		return EIO;
++	}
+ }
+--- a/sys/arch/i386/stand/efiboot/conf.c	2019-09-26 12:21:03.000000000 +0000
++++ b/sys/arch/i386/stand/efiboot/conf.c	2026-09-23 12:22:07.732474549 +0000
+@@ -43,6 +43,9 @@
+ #ifdef SUPPORT_CD9660
+ #include <lib/libsa/cd9660.h>
+ #endif
++#ifdef SUPPORT_ZFS
++#include <lib/libsa/zfs.h>
++#endif
+ #if defined(SUPPORT_NFS) || defined(SUPPORT_TFTP)
+ #include <lib/libsa/net.h>
+ #include <lib/libsa/dev_net.h>
+@@ -87,6 +90,9 @@
+ #ifdef SUPPORT_DOSFS
+ 	FS_OPS(null),
+ #endif
++#ifdef SUPPORT_ZFS
++	FS_OPS(null),
++#endif
+ };
+ int nfsys = __arraycount(file_system);
+ 
+@@ -105,6 +111,9 @@
+ #ifdef SUPPORT_DOSFS
+ 	FS_OPS(dosfs),
+ #endif
++#ifdef SUPPORT_ZFS
++	FS_OPS(zfs),
++#endif
+ };
+ __CTASSERT(__arraycount(file_system) == __arraycount(file_system_disk));
+ const int nfsys_disk = __arraycount(file_system_disk);
+--- a/sys/arch/i386/stand/efiboot/efiboot.c	2023-04-20 00:42:24.000000000 +0000
++++ b/sys/arch/i386/stand/efiboot/efiboot.c	2026-09-23 12:22:07.736712238 +0000
+@@ -44,7 +44,16 @@
+ struct btinfo_efimemmap *btinfo_efimemmap = NULL;
+ 
+ static EFI_PHYSICAL_ADDRESS heap_start = EFI_ALLOCATE_MAX_ADDRESS;
++#ifdef SUPPORT_ZFS
++/*
++ * ZFS wants more room than the other file systems: it reads a vdev
++ * label's 112KB of name-value pairs, and holds several whole blocks at
++ * once while it walks a ZAP, and a block can be 128KB.
++ */
++static UINTN heap_size = 4 * 1024 * 1024;			/* 4MB */
++#else
+ static UINTN heap_size = 1 * 1024 * 1024;			/* 1MB */
++#endif
+ static struct btinfo_efi btinfo_efi;
+ 
+ static void efi_heap_init(void);

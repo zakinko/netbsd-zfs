@@ -124,6 +124,30 @@ rather than calling `DEV_STRATEGY` itself, so the same code runs against
 a file. `test/build.sh` builds the drivers on a host; each takes an
 image, a starting LBA and a sector count.
 
+## Putting it in a tree
+
+```sh
+sh install.sh /path/to/usr/src
+cd /path/to/usr/src/sys/arch/i386/stand/efiboot && make USETOOLS=no
+```
+
+`install.sh` copies the files into `sys/lib/libsa`, rewrites that
+Makefile's `SA_INCLUDE_ZFS` block, and calls `patch-tree.sh` for the
+four hunks outside libsa, which are in `netbsd-side.diff`. Running it
+twice is harmless, so a tree can be re-fetched and re-patched.
+
+That diff is against NetBSD 11.0's `syssrc`. When the tree moves far
+enough for it to stop applying, `patch-tree.sh` says so and stops
+rather than leaving half of it in; `netbsd-side.md` says what each hunk
+is for, which is what you need to redo one by hand.
+
+`test/ci.sh` is the other half: on a NetBSD host it makes a pool with
+ZFS, reads it back with the reader and compares checksums. That is what
+the `boot-zfs` workflow runs, monthly as well as on changes, because
+the two things that can break this -- the source set moving under
+`netbsd-side.diff`, and ZFS writing something this cannot read -- do not
+announce themselves.
+
 ## In the tree
 
 `src/zfs_fsops.c` becomes `sys/lib/libsa/zfs.c`; the rest keeps its name

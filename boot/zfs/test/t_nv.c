@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include "zfs_ondisk.h"
@@ -23,11 +24,19 @@ try64(const void *b, size_t l, const char *n, int nested)
 int
 main(int argc, char **argv)
 {
-	(void)argc;
-	int fd = open(argv[1], O_RDONLY);
 	struct nvpair_value v, tree, ch;
+	unsigned long long lba;
+	int fd;
 
-	pread(fd, nv, sizeof(nv), 16418LL * 512 + VDEV_LABEL_NVLIST_OFF);
+	if (argc < 2) {
+		fprintf(stderr, "usage: %s image [start-lba]\n", argv[0]);
+		return (2);
+	}
+	fd = open(argv[1], O_RDONLY);
+	if (fd < 0) { perror(argv[1]); return (1); }
+	lba = argc > 2 ? strtoull(argv[2], NULL, 0) : 0;
+
+	pread(fd, nv, sizeof(nv), (off_t)(lba * 512 + VDEV_LABEL_NVLIST_OFF));
 	printf("encoding %u endian %u\n", nv[0], nv[1]);
 	try64(nv, sizeof(nv), "version", 0);
 	try64(nv, sizeof(nv), "state", 0);

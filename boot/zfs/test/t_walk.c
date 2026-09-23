@@ -122,19 +122,5 @@ main(int argc, char **argv)
 	printf("root directory type          %u (20 = DIRECTORY_CONTENTS)\n",
 	    dn.dn_type);
 
-	/* Look up each name the command line was given. */
-	{
-		static const char *want[] = { "netbsd", "boot", "etc",
-		    "@", NULL };
-		int i;
-
-		for (i = 0; want[i] != NULL; i++) {
-			if (zap_lookup(&pool, &dn, want[i], &obj) == 0)
-				printf("/%-27s object %llu\n", want[i],
-				    (unsigned long long)obj);
-			else
-				printf("/%-27s not found\n", want[i]);
-		}
-	}
 	return (0);
 }

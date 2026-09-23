@@ -1,4 +1,8 @@
-/* Read a file in small pieces, the way the loader does, and time it. */
+/*
+ * Read a file in small pieces, the way the loader does, and time it.
+ *
+ *	t_bench <image> <start-lba> <nsectors> <dataset> <path> [cache]
+ */
 #include <sys/types.h>
 #include <stdint.h>
 #include <stddef.h>
@@ -33,17 +37,23 @@ main(int argc, char **argv)
 	uint8_t piece[4096];
 	uint64_t off, size;
 	clock_t t0;
-	int usecache = argc > 4 ? atoi(argv[4]) : 1;
+	int usecache = argc > 6 ? atoi(argv[6]) : 1;
 
+	if (argc < 6) {
+		fprintf(stderr, "usage: %s image lba nsectors dataset path "
+		    "[cache]\n", argv[0]);
+		return (2);
+	}
 	zfs_scratch_init(arena, sizeof(arena));
 	im.fd = open(argv[1], O_RDONLY);
-	im.base = 16418ULL * 512;
+	if (im.fd < 0) { perror(argv[1]); return (1); }
+	im.base = strtoull(argv[2], NULL, 0) * 512;
 	memset(&pool, 0, sizeof(pool));
 	pool.pool_read = img_read; pool.pool_cookie = &im;
-	pool.pool_size = 1032125ULL * 512;
+	pool.pool_size = strtoull(argv[3], NULL, 0) * 512;
 	if (zfs_pool_open(&pool, NULL, 0)) return (1);
-	if (zfs_mount(&pool, argv[2], &ds)) return (1);
-	if (zfs_lookup(&ds, argv[3], &dn)) return (1);
+	if (zfs_mount(&pool, argv[4], &ds)) return (1);
+	if (zfs_lookup(&ds, argv[5], &dn)) return (1);
 	size = zfs_size(&dn);
 
 	t0 = clock();
@@ -55,7 +65,7 @@ main(int argc, char **argv)
 		off += got;
 	}
 	printf("%s in %zu byte pieces, cache %s: %llu bytes in %.2f s\n",
-	    argv[3], sizeof(piece), usecache ? "on" : "off",
+	    argv[5], sizeof(piece), usecache ? "on" : "off",
 	    (unsigned long long)off, (double)(clock() - t0) / CLOCKS_PER_SEC);
 	return (0);
 }

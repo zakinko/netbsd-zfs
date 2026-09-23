@@ -19,8 +19,9 @@ done
 echo "=== SHA-256 against FIPS 180-4"
 ./t_sha256
 
+
 echo "=== the label's name-value pairs"
-./t_nv "$IMG"
+./t_nv "$IMG" "$LBA"
 
 echo "=== uberblock to root directory"
 ./t_walk "$IMG" "$LBA" "$NSEC"
@@ -32,8 +33,8 @@ echo "=== reading a file"
 ./t_cat "$IMG" "$LBA" "$NSEC" "$DS" /netbsd
 
 echo "=== loader sized reads, with and without the block cache"
-./t_bench "$IMG" "$DS" /netbsd 0
-./t_bench "$IMG" "$DS" /netbsd 1
+./t_bench "$IMG" "$LBA" "$NSEC" "$DS" /netbsd 0
+./t_bench "$IMG" "$LBA" "$NSEC" "$DS" /netbsd 1
 
 echo "=== the nvlist parser under ASan and UBSan"
 dd if="$IMG" bs=512 skip=$((LBA + 32)) count=16 of=label.bin 2>/dev/null

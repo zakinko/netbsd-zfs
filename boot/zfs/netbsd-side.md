@@ -3,6 +3,9 @@
 Written against NetBSD 11.0. None of it is in the tree; this is the list
 so that the next person does not have to find it again.
 
+The four changes outside `sys/lib/libsa` are in `netbsd-side.diff`,
+which `install.sh` applies; what follows says what each one is for.
+
 ## `sys/lib/libsa/saioctl.h`
 
 ```c
