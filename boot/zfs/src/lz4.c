@@ -86,7 +86,12 @@ lz4_decompress(const void *src, void *dst, size_t srclen, size_t dstlen)
 			unsigned c;
 
 			do {
-				if (in > inend)
+				/*
+				 * ">=", as for the literal length above:
+				 * this was ">", which read the byte past
+				 * the end when a length ran up to it.
+				 */
+				if (in >= inend)
 					return (EINVAL);
 				c = *in++;
 				matchlen += c;
