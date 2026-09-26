@@ -79,7 +79,7 @@ mk() {
 	(cd "$m" && find . -type f | sed 's|^\./||' | sort |
 	    xargs sha256sum) > "$W/$name.sha256"
 	zpool get -H -o value feature@dynamic_gang_header "$name" \
-	    > "$W/$name.dgh"
+	    > "$W/$name.dgh" 2>/dev/null || true
 	zpool export "$name"
 }
 
@@ -194,18 +194,33 @@ echo "=== a pool as OpenZFS makes it"
 mk plain files D
 check plain
 
+# dynamic_gang_header arrived in OpenZFS 2.3.  An older one writes only
+# [S]'s headers, and has no feature to turn off.
+if zpool upgrade -v | grep -q dynamic_gang_header; then
+	dgh=yes
+	nodgh="-o feature@dynamic_gang_header=disabled"
+else
+	dgh=no
+	nodgh=
+fi
+
 echo "=== gang blocks with 512 byte headers"
-mk gangold gangfiles D -o feature@dynamic_gang_header=disabled
+mk gangold gangfiles D $nodgh
 ganged gangold
 check gangold
 
 echo "=== gang blocks with dynamic headers"
-mk gangnew gangfiles D
-ganged gangnew
-s=$(cat "$W/zbt_gangnew.dgh")
-echo "  dynamic_gang_header: $s"
-[ "$s" = active ] || { echo "  the large headers were never written"; fail=1; }
-check gangnew
+if [ $dgh = yes ]; then
+	mk gangnew gangfiles D
+	ganged gangnew
+	s=$(cat "$W/zbt_gangnew.dgh")
+	echo "  dynamic_gang_header: $s"
+	[ "$s" = active ] ||
+	    { echo "  the large headers were never written"; fail=1; }
+	check gangnew
+else
+	echo "  not in this OpenZFS; skipped"
+fi
 
 echo "=== two top-level vdevs"
 mk stripe files "D D"
