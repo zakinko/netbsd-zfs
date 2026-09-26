@@ -1,0 +1,33 @@
+name: ufs2-probe
+on:
+  push:
+    branches: [ufs2-quota-probe]
+concurrency:
+  group: ufs2-probe
+  cancel-in-progress: true
+jobs:
+  mkimg:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          run: |
+            set -x
+            freebsd-version -ku
+            truncate -s 64m ufs2.img
+            md=$(mdconfig -a -t vnode -f ufs2.img)
+            newfs /dev/$md
+            mount /dev/$md /mnt && echo hello > /mnt/hello && umount /mnt
+            dumpfs -m /dev/$md
+            dumpfs /dev/$md | head -40 > dumpfs.txt
+            cat dumpfs.txt
+            mdconfig -d -u $md
+            xz -k ufs2.img
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ufs2
+          path: |
+            ufs2.img.xz
+            dumpfs.txt
