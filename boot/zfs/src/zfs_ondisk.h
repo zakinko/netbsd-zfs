@@ -252,6 +252,17 @@ struct uberblock {
 #define	BP_GET_LEVEL(bp)	((uint8_t)(((bp)->blk_prop >> 56) & 0x1f))
 #define	BP_GET_BYTEORDER(bp)	((int)(((bp)->blk_prop >> 63) & 0x1))	/* §2.7 */
 
+/*
+ * [S] §2.12 reserves words 7, 8 and 9.  [Z] spa.h has since given word 7
+ * to blk_prop2 and word 9 to the physical birth txg, the txg the block
+ * was actually written in, which differs from word a's logical birth
+ * only for blocks that were rewritten, deduplicated or cloned.  Zero
+ * means "the same as the logical birth".  A gang header's checksum is
+ * keyed on it; see gang_header_valid().
+ */
+#define	BP_GET_PHYSICAL_BIRTH(bp)	\
+	((bp)->blk_pad[2] != 0 ? (bp)->blk_pad[2] : (bp)->blk_birth)
+
 /* [S] §2.7, Table 7. */
 #define	ZFS_HOST_BYTEORDER_BIG		0
 #define	ZFS_HOST_BYTEORDER_LITTLE	1
@@ -344,6 +355,34 @@ struct zio_eck {
 	uint64_t	zec_magic;
 	uint64_t	zec_cksum[4];
 };
+
+/*
+ * [S] §2.3: "Gang blocks are 512 byte sized, self checksumming blocks.
+ * A gang block contains up to 3 block pointers followed by a 32 byte
+ * checksum."  Three pointers are 384 bytes and the tail is 40, so 88
+ * bytes of filler sit between them.
+ *
+ * [Z] zio.h no longer fixes the size.  With the dynamic_gang_header
+ * feature active a header is as large as the smallest allocation of
+ * the top-level vdev, 1 << ashift, and holds as many pointers as fit
+ * ahead of the tail; the layout is otherwise [S]'s.  The feature only
+ * governs headers written after it was enabled, so a pool can hold
+ * both kinds, and [Z] zio_checksum.c tells them apart by trying the
+ * large size and then [S]'s.  This reader does the same, which spares
+ * it reading the pool's feature list.
+ */
+#define	SPA_GANGBLOCKSIZE	512			/* [S] §2.3 */
+#define	GBH_NBLKPTRS(size)	\
+	(((size) - sizeof(struct zio_eck)) / sizeof(blkptr_t))
+
+/*
+ * How deep a gang block may nest: a gang member may itself be a gang
+ * block.  [S] and [Z] set no limit -- each level only has to be smaller
+ * than the one above -- so this is the reader's, sized so that the
+ * header buffers for every level fit in the scratch arena.  A pool
+ * nested deeper is refused; see scratch.h for the arithmetic.
+ */
+#define	ZFS_GANG_MAXDEPTH	4
 
 /*
  * Object types.

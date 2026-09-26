@@ -79,3 +79,19 @@ jobs:
 
             cd "$GITHUB_WORKSPACE/boot/zfs/test"
             sh ci.sh
+
+  # NetBSD's ZFS is the 2016 illumos import and cannot be made to write
+  # gang blocks, zstd or the newer checksums; the current OpenZFS can,
+  # and the runner's kernel carries it.  No VM, so this is the cheap
+  # half.
+  openzfs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read pools made by OpenZFS
+        run: |
+          sudo apt-get -qq update
+          sudo apt-get -qq install -y zfsutils-linux zlib1g-dev
+          sudo modprobe zfs
+          sudo sh boot/zfs/test/openzfs.sh

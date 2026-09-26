@@ -46,7 +46,7 @@ rm -f label.bin
 
 echo "=== all checks passed"
 #
-# Not covered here, for want of a pool that has them: gang blocks, more
+# Not covered here, for want of a pool that has them: more
 # than one top-level vdev, zstd.
 # Each is refused by name in the reader rather than guessed at.
 #

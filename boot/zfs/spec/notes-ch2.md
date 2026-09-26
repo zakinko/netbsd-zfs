@@ -184,7 +184,11 @@ word 7,8,9 は予約。
 	embedded BP	§2 の blkptr に無い。現行は word 6 の一 bit を
 			BP_EMBEDDED に使い、そのとき DVA 領域にデータを
 			直接置く。**これを知らないと壊れた blkptr に見える**
-	word 7,8,9	§2.12 は「予約」。現行は word 7 が
-			physical birth txg に使われている
+	word 7,8,9	§2.12 は「予約」。現行は word 7 が blk_prop2、
+			word 8 が blk_pad、word 9 が physical birth txg
+			(blk_birth_word[0]、0 なら word a の logical birth
+			と同じ)。gang header の verifier がこれを使う
+			(2026-09-26 訂正: 前は「word 7 が physical birth」
+			と書いていた。[Z] spa.h の blkptr_t で数え直した)
 	dedup / encryption
 			この版に無い

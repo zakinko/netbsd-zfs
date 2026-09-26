@@ -16,9 +16,13 @@
  *
  * plus [S] §1.3.3's 112K of name-value pairs while a pool is opened,
  * which does not overlap the rest.
+ *
+ * Under zfs_read_block, a gang block holds one header per level of
+ * nesting while its members are read, each 1 << ashift and so at most
+ * a block; ZFS_GANG_MAXDEPTH is the number of levels.
  */
 #define	ZFS_MAXBLOCKSIZE	(128 * 1024)
-#define	ZFS_SCRATCH_SIZE	(7 * ZFS_MAXBLOCKSIZE)
+#define	ZFS_SCRATCH_SIZE	((7 + ZFS_GANG_MAXDEPTH) * ZFS_MAXBLOCKSIZE)
 
 int	zfs_scratch_init(void *, size_t);
 void	*zfs_scratch_get(size_t);

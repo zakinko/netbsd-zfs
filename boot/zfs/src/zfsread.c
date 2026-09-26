@@ -53,7 +53,7 @@ label_offset(int l, uint64_t vdev_size)
  * hashing in place.
  */
 static int
-uberblock_valid(const void *slot, size_t slotsize, uint64_t offset)
+eck_valid(const void *slot, size_t slotsize, const uint64_t verifier[4])
 {
 	uint8_t tmp[sizeof(struct zio_eck)];
 	uint64_t want[4], got[4];
@@ -81,10 +81,8 @@ uberblock_valid(const void *slot, size_t slotsize, uint64_t offset)
 		want[i] = eck->zec_cksum[i];
 
 	sub.zec_magic = ZEC_MAGIC;
-	sub.zec_cksum[0] = offset;
-	sub.zec_cksum[1] = 0;
-	sub.zec_cksum[2] = 0;
-	sub.zec_cksum[3] = 0;
+	for (i = 0; i < 4; i++)
+		sub.zec_cksum[i] = verifier[i];
 
 	p = (uint8_t *)(uintptr_t)(const uint8_t *)eck;
 	for (i = 0; i < sizeof(tmp); i++) {
@@ -101,6 +99,14 @@ uberblock_valid(const void *slot, size_t slotsize, uint64_t offset)
 		if (got[i] != want[i])
 			return (0);
 	return (1);
+}
+
+static int
+uberblock_valid(const void *slot, size_t slotsize, uint64_t offset)
+{
+	const uint64_t verifier[4] = { offset, 0, 0, 0 };
+
+	return (eck_valid(slot, slotsize, verifier));
 }
 
 /*
@@ -317,6 +323,162 @@ block_decompress(const blkptr_t *bp, const void *in, size_t psize,
 	}
 }
 
+static int	bp_is_hole(const blkptr_t *);
+static int	dva_read(struct zfs_pool *, const blkptr_t *, int, uint8_t *,
+		    size_t, int);
+
+/*
+ * [S] §2.3 calls a gang header "self checksumming" and says no more.
+ * [Z] zio_checksum.c: the tail's checksum is SHA-256 over the whole
+ * header with the checksum field holding a verifier while it is taken,
+ * as for the uberblock, and the verifier is the vdev and byte offset of
+ * DVA[0] with the block's physical birth txg.  DVA[0] even when the copy
+ * being read is DVA[1]'s: the verifier names the block, not the copy.
+ */
+static int
+gang_header_valid(const blkptr_t *bp, const void *hdr, size_t size)
+{
+	const dva_t *dva = &bp->blk_dva[0];
+	const uint64_t verifier[4] = {
+		DVA_GET_VDEV(dva), DVA_GET_OFFSET(dva),
+		BP_GET_PHYSICAL_BIRTH(bp), 0
+	};
+
+#ifdef ZFS_FUZZ_NO_CKSUM
+	/*
+	 * As in block_checksum_ok(), and for the same reason.  The tail's
+	 * magic is still required, so that the header size is chosen as
+	 * it would be with the checksum in place.
+	 */
+	(void)verifier;
+	return (((const struct zio_eck *)(const void *)((const uint8_t *)hdr +
+	    size - sizeof(struct zio_eck)))->zec_magic == ZEC_MAGIC);
+#else
+	return (eck_valid(hdr, size, verifier));
+#endif
+}
+
+/*
+ * Assemble the data of a gang block from DVA d of bp into out, which is
+ * BP_GET_PSIZE(bp) bytes.
+ *
+ * [S] §2.3 describes the header; what it leaves to be inferred is how
+ * the members make up the block.  [Z] zio.c (zio_gang_tree_issue) lays
+ * them end to end in the order the header lists them, skipping holes,
+ * each contributing its own psize, and requires that they add up to the
+ * gang block's psize exactly.  A member is an ordinary block pointer
+ * with its own checksum, over its own piece, and may itself be a gang
+ * block.  The member pieces are never compressed on their own: the
+ * gang block's compression applies to the assembled whole, and so does
+ * its checksum -- [S] §2.4: "The computed checksum is always of the
+ * data, even if this is a gang block."  The caller checks that.
+ */
+static int
+gang_read(struct zfs_pool *pool, const blkptr_t *bp, int d, uint8_t *out,
+    size_t psize, int depth)
+{
+	uint8_t *hdr;
+	size_t bufsize, hdrsize, off, g;
+	int j, err;
+
+	if (depth >= ZFS_GANG_MAXDEPTH)
+		return (ENOTSUP);
+
+	/*
+	 * Try the header at the vdev's allocation size and then at
+	 * [S]'s 512 bytes; see SPA_GANGBLOCKSIZE.  Reading the larger
+	 * size is always in bounds, because it is what the header was
+	 * given on the disk whichever kind it is.
+	 */
+	bufsize = (size_t)1 << pool->pool_ashift;
+	if (bufsize < SPA_GANGBLOCKSIZE)
+		bufsize = SPA_GANGBLOCKSIZE;
+	if ((hdr = zfs_scratch_get(bufsize)) == NULL)
+		return (ENOMEM);
+
+	err = pool->pool_read(pool->pool_cookie,
+	    dva_offset(&bp->blk_dva[d]), hdr, bufsize);
+	if (err != 0)
+		goto out;
+	hdrsize = bufsize;
+	if (!gang_header_valid(bp, hdr, hdrsize)) {
+		hdrsize = SPA_GANGBLOCKSIZE;
+		if (bufsize == hdrsize ||
+		    !gang_header_valid(bp, hdr, hdrsize)) {
+			err = EINVAL;
+			goto out;
+		}
+	}
+
+	off = 0;
+	for (g = 0; g < GBH_NBLKPTRS(hdrsize); g++) {
+		const blkptr_t *gbp = &((const blkptr_t *)(const void *)hdr)[g];
+		size_t mpsize;
+
+		if (bp_is_hole(gbp))
+			continue;
+		/*
+		 * Everything below comes out of a header that checked
+		 * out, but a checksum says the header is the one that
+		 * was written, not that its writer meant well.
+		 */
+		if (BP_IS_EMBEDDED(gbp)) {
+			err = EINVAL;
+			goto out;
+		}
+		mpsize = BP_GET_PSIZE(gbp);
+		if (mpsize > psize - off) {
+			err = EINVAL;
+			goto out;
+		}
+		err = EIO;
+		for (j = 0; j < SPA_DVAS_PER_BP; j++) {
+			if (gbp->blk_dva[j].dva_word[0] == 0 &&
+			    gbp->blk_dva[j].dva_word[1] == 0)
+				continue;
+			err = dva_read(pool, gbp, j, out + off, mpsize,
+			    depth + 1);
+			if (err == 0)
+				break;
+		}
+		if (err != 0)
+			goto out;
+		off += mpsize;
+	}
+	if (off != psize)
+		err = EINVAL;
+out:
+	zfs_scratch_put(hdr, bufsize);
+	return (err);
+}
+
+/*
+ * Read psize bytes of copy d of bp into out, and check them against
+ * bp's checksum.  Nothing is expanded.
+ */
+static int
+dva_read(struct zfs_pool *pool, const blkptr_t *bp, int d, uint8_t *out,
+    size_t psize, int depth)
+{
+	const dva_t *dva = &bp->blk_dva[d];
+	int err;
+
+	if (DVA_GET_VDEV(dva) != 0) {
+		/* One top-level vdev only, so far. */
+		return (ENOTSUP);
+	}
+	if (DVA_GET_GANG(dva))
+		err = gang_read(pool, bp, d, out, psize, depth);
+	else
+		err = pool->pool_read(pool->pool_cookie, dva_offset(dva),
+		    out, psize);
+	if (err != 0)
+		return (err);
+	if (!block_checksum_ok(bp, out, psize))
+		return (EINVAL);
+	return (0);
+}
+
 /*
  * Read one block, check it, and expand it.  buf is the logical block and
  * must be BP_GET_LSIZE(bp) bytes.
@@ -371,29 +533,9 @@ zfs_read_block(struct zfs_pool *pool, const blkptr_t *bp, void *buf,
 
 		if (dva->dva_word[0] == 0 && dva->dva_word[1] == 0)
 			continue;
-		if (DVA_GET_GANG(dva)) {
-			/*
-			 * [S] §2.3's gang block: 512 bytes holding up to
-			 * three pointers and a self checksummed tail.
-			 * Not yet; the next copy may be plain.
-			 */
-			err = ENOTSUP;
-			continue;
-		}
-		if (DVA_GET_VDEV(dva) != 0) {
-			/* One top-level vdev only, so far. */
-			err = ENOTSUP;
-			continue;
-		}
-
-		err = pool->pool_read(pool->pool_cookie, dva_offset(dva),
-		    raw, psize);
+		err = dva_read(pool, bp, i, raw, psize, 0);
 		if (err != 0)
 			continue;
-		if (!block_checksum_ok(bp, raw, psize)) {
-			err = EINVAL;
-			continue;
-		}
 		err = block_decompress(bp, raw, psize, buf, lsize);
 		if (err == 0)
 			break;

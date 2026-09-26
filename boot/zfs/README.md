@@ -30,7 +30,7 @@ gives 15, and division is what finding a parent means.
 
 A pool on one disk or partition, or on a mirror: labels, uberblocks,
 block pointers
-(including embedded ones), gang-free DVAs, fletcher2/fletcher4/SHA-256
+(including embedded ones), gang blocks, fletcher2/fletcher4/SHA-256
 checksums, lz4 and uncompressed blocks, dnodes to six levels of
 indirection, micro and fat ZAPs, the DSL down to a dataset, ZPL
 directories, and files through either a `znode_phys_t` or the system
@@ -78,17 +78,26 @@ offset lands somewhere else on each, so left alone the reader would
 open the pool, read a block from the wrong place and report an I/O
 error on a disk that is perfectly sound.
 
-It refuses, rather than guessing: gang blocks, raidz, zstd, and
-checksums newer than SHA-256.
+It refuses, rather than guessing: raidz, zstd, and checksums newer
+than SHA-256.
 
-Gang blocks are refused because none could be produced to test against.
-§2.3 describes them clearly enough to write -- 512 bytes holding up to
-three block pointers and a self-checksumming tail, used when no single
-allocation of the size wanted is free -- but NetBSD's ZFS exposes no
-knob to force one, and a 96MB pool filled to 100% with 16K files and
-then emptied to 51% by deleting every other one still wrote 128K
-records without ganging. Code that has never run is worse than an
-error, so it says so instead.
+A gang block is what ZFS writes when no single free extent is large
+enough: [S] §2.3's header of block pointers and a self-checksumming
+tail, and members that are laid end to end to make up the block. [S]
+fixes the header at 512 bytes and three pointers; OpenZFS's
+`dynamic_gang_header` feature has since made it `1 << ashift` bytes
+with as many pointers as fit, and a pool can hold both kinds. The
+reader tries the larger size and then [S]'s, which is what OpenZFS does
+itself and spares reading the pool's feature list. Nesting is followed
+to four levels, a limit that is the reader's own, sized to the scratch
+arena. Neither document gives the tail's verifier -- DVA[0]'s vdev and
+offset and the physical birth txg -- nor says that the physical birth
+lives in [S]'s reserved word 9; both are from OpenZFS.
+
+NetBSD's ZFS offers no way to force a gang block, and a 96MB pool
+filled to 100% with 16K files and then emptied to 51% by deleting every
+other one still wrote 128K records without ganging. OpenZFS on Linux
+has `metaslab_force_ganging`, and `test/openzfs.sh` uses it.
 
 ## What it was tested against
 
@@ -147,6 +156,19 @@ but zeros.
   same SHA-256 as ZFS, from either disk.
 - A raidz1 of three: refused at `zfs_pool_open` with ENOTSUP rather
   than failing a checksum later.
+
+Pools made by OpenZFS 2.4.1 on Linux, by `test/openzfs.sh`:
+
+- A plain pool, nothing forced, could not be mounted at all until the
+  DSL checks looked at the bonus type rather than the object type.
+  OpenZFS turns every dataset it creates into a ZAP to give it room for
+  more fields, and the object's type goes with it; the bonus buffer,
+  which is all [S] §4.3 says the reader needs, does not change.
+- Gang blocks with [S]'s 512 byte headers, nested two deep, and with
+  `dynamic_gang_header`'s 4K ones: every file the same SHA-256 as ZFS
+  gives. The reader with gang blocks taken out refuses the same files
+  with ENOTSUP, so it is the new code that read them, and the fuzzer
+  finds a member bound check taken out within 3,000 cases.
 - `efiboot` built with it loads `solaris.kmod`, `zfs.kmod`, `msdos.kmod`
   and a 30MB kernel out of the pool under qemu, and the kernel boots.
   It then says `cannot mount root, error = 79`, which is the kernel's
@@ -178,7 +200,9 @@ rather than leaving half of it in; `netbsd-side.md` says what each hunk
 is for, which is what you need to redo one by hand.
 
 `test/ci.sh` is the other half: on a NetBSD host it makes a pool with
-ZFS, reads it back with the reader and compares checksums. That is what
+ZFS, reads it back with the reader and compares checksums.
+`test/openzfs.sh` does the same with OpenZFS on Linux, for what
+NetBSD's ZFS never writes. That is what
 the `boot-zfs` workflow runs, monthly as well as on changes, because
 the two things that can break this -- the source set moving under
 `netbsd-side.diff`, and ZFS writing something this cannot read -- do not
