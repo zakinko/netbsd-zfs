@@ -20,5 +20,7 @@ int	nvlist_find(const void *, size_t, const char *, int,
 	    struct nvpair_value *);
 int	nvlist_find_nested(const void *, size_t, const char *, int,
 	    struct nvpair_value *);
+int	nvlist_array_elem(const struct nvpair_value *, uint32_t,
+	    struct nvpair_value *);
 
 #endif	/* _LIBSA_NVLIST_H_ */

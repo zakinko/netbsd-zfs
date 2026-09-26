@@ -171,6 +171,13 @@ struct uberblock {
 #define	ZPOOL_CONFIG_ASHIFT		"ashift"
 #define	ZPOOL_CONFIG_ASIZE		"asize"
 #define	ZPOOL_CONFIG_CHILDREN		"children"
+/*
+ * [Z] fs/zfs.h: the number of top-level vdevs, which [S]'s label has
+ * no way to say -- each label carries only its own top-level vdev's
+ * tree -- and a raidz's parity.
+ */
+#define	ZPOOL_CONFIG_VDEV_CHILDREN	"vdev_children"
+#define	ZPOOL_CONFIG_NPARITY		"nparity"
 
 /* [S] §1.3.3, Table 2. */
 #define	VDEV_TYPE_DISK		"disk"
@@ -179,6 +186,7 @@ struct uberblock {
 #define	VDEV_TYPE_RAIDZ		"raidz"
 #define	VDEV_TYPE_REPLACING	"replacing"
 #define	VDEV_TYPE_ROOT		"root"
+#define	VDEV_TYPE_SPARE		"spare"		/* [Z] */
 
 /* ------------------------------------------------------------------ */
 /* Chapter Two: block pointers						*/

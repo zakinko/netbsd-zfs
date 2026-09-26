@@ -16,14 +16,63 @@
  */
 typedef int (*zfs_readfn_t)(void *, uint64_t, void *, size_t);
 
+/*
+ * The other devices a pool may span.  The host is asked for device n,
+ * counting from zero, and answers with a way to read it and its size
+ * in bytes, or with ENOENT once there are no more.  Every device it can
+ * reach is offered, including the one the pool was found on; the
+ * reader reads each one's label and keeps those that belong.
+ */
+typedef int (*zfs_probefn_t)(void *, int, zfs_readfn_t *, void **,
+	    uint64_t *);
+/* A device offered that is not part of the pool, handed back. */
+typedef void (*zfs_releasefn_t)(void *, void *);
+#define	ZFS_MAX_PROBE		1024
+
+/*
+ * [S] §1.1: the vdevs form a tree, and the pool's top-level vdevs are
+ * the ones a DVA names by number (§2.1).  Each is kept here with the
+ * leaves below it.  How many of each is the reader's choice, not the
+ * format's: a pool wider than this is refused when it is opened.
+ */
+#define	ZFS_MAX_TOPS		8
+#define	ZFS_MAX_CHILDREN	16
+
+#define	ZFS_VT_NONE	0		/* not seen on any device */
+#define	ZFS_VT_LEAF	1		/* disk or file */
+#define	ZFS_VT_MIRROR	2		/* mirror, replacing or spare */
+#define	ZFS_VT_RAIDZ	3
+
+struct zfs_leaf {
+	uint64_t	lf_guid;
+	zfs_readfn_t	lf_read;	/* NULL: not found */
+	void		*lf_cookie;
+	uint64_t	lf_size;	/* bytes, for the trailing labels */
+};
+
+struct zfs_top {
+	int		tv_type;
+	uint32_t	tv_ashift;
+	uint32_t	tv_nparity;	/* raidz only */
+	uint32_t	tv_nchildren;
+	struct zfs_leaf	tv_child[ZFS_MAX_CHILDREN];
+};
+
 struct zfs_pool {
+	/* The device the pool was found on; set by the caller. */
 	zfs_readfn_t	pool_read;
 	void		*pool_cookie;
 	uint64_t	pool_size;	/* bytes, for the trailing labels */
+	/* The rest of them, or NULL for a pool on that one device. */
+	zfs_probefn_t	pool_probe;
+	zfs_releasefn_t	pool_release;
+	void		*pool_probe_cookie;
+
 	uint64_t	pool_guid;
-	uint32_t	pool_ashift;
+	uint32_t	pool_ashift;	/* of the found device's top vdev */
+	uint32_t	pool_ntops;
+	struct zfs_top	pool_top[ZFS_MAX_TOPS];
 	struct uberblock pool_ub;	/* the active one */
-	int		pool_label;	/* which label it came from */
 };
 
 int	zfs_pool_open(struct zfs_pool *, char *, size_t);

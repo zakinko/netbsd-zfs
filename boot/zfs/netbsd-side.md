@@ -10,15 +10,28 @@ which `install.sh` applies; what follows says what each one is for.
 
 ```c
 #define	SAIODEVSIZE	(('d'<<8)|16)	/* get device size in bytes */
+#define	SAIODEVPEER	(('d'<<8)|17)	/* open another device, by number */
+struct saiodevpeer { int sp_index; struct open_file *sp_file; };
 ```
 
 Two of a vdev's four labels sit at the end of the device (§1.2.1), and
 nothing in libsa could ask how long one was.
 
+A pool may span disks, and libsa opens one device per file.
+`SAIODEVPEER` asks the driver of that device to open its `sp_index`th
+device on an `open_file` the caller provides, answering `ENOENT` past
+the last. The ZFS code offers each to the reader, which keeps those
+whose label names the same pool and closes the rest. A driver that
+does not answer leaves the pool on the one device.
+
 ## `sys/arch/i386/stand/lib/biosdisk.c`
 
 `biosdisk_ioctl()` was one line returning `EIO`. It answers `SAIODEVSIZE`
-with `d->size * d->ll.secsize`.
+with `d->size * d->ll.secsize`, and `SAIODEVPEER` by numbering every
+partition of every hard disk, `BIOSDISKNPART` to a disk, and opening
+that one with `biosdisk_open()`. That function also records what it
+opened as the boot device in `bi_disk` and `bi_wedge`, which is what
+the kernel is later told, so the ioctl puts both back afterwards.
 
 And `biosdisk_open_name()` — the path taken for `NAME=`, which is how a
 GPT wedge is named — had the size in hand and passed it only to
@@ -63,7 +76,7 @@ SAMISCMAKEFLAGS+="SA_INCLUDE_ZFS=yes"
 ## `sys/arch/i386/stand/efiboot/efiboot.c`
 
 The heap goes from 1MB to 4MB under `SUPPORT_ZFS`. The reader asks for
-about 900KB of scratch when a pool is first opened and 128KB per open
+about 1.4MB of scratch when a pool is first opened and 128KB per open
 file; 1MB is not enough and 4MB leaves room.
 
 ## The BIOS loader is a different question

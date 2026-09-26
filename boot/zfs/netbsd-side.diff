@@ -1,12 +1,26 @@
---- a/sys/lib/libsa/saioctl.h	2022-04-24 06:48:15.000000000 +0000
-+++ b/sys/lib/libsa/saioctl.h	2026-09-23 12:22:07.714710839 +0000
-@@ -48,3 +48,4 @@
+--- a/sys/lib/libsa/saioctl.h	2026-09-26 23:48:19
++++ b/sys/lib/libsa/saioctl.h	2026-09-26 23:48:34
+@@ -48,3 +48,18 @@
  #define	SAIOGBADINFO	(('d'<<8)|14)	/* get bad-sector table */
  
  #define SAIOSECSIZE	(('d'<<8)|15)	/* get sector size */
 +#define SAIODEVSIZE	(('d'<<8)|16)	/* get device size in bytes */
---- a/sys/arch/i386/stand/lib/biosdisk.c	2024-01-06 21:26:43.000000000 +0000
-+++ b/sys/arch/i386/stand/lib/biosdisk.c	2026-09-23 12:22:07.724517113 +0000
++#define SAIODEVPEER	(('d'<<8)|17)	/* open another device, by number */
++
++/*
++ * SAIODEVPEER: open device sp_index of those the driver can reach on
++ * sp_file, which the caller allocates and later closes.  ENOENT once
++ * the number is past the last; any other error is a device that could
++ * not be opened, and the next number may still work.  For a file
++ * system that spans devices, such as a ZFS pool on several disks.
++ */
++struct open_file;
++struct saiodevpeer {
++	int			sp_index;
++	struct open_file	*sp_file;
++};
+--- a/sys/arch/i386/stand/lib/biosdisk.c	2026-09-26 23:48:21
++++ b/sys/arch/i386/stand/lib/biosdisk.c	2026-09-26 23:48:49
 @@ -1670,6 +1670,7 @@
  	}
  
@@ -15,7 +29,7 @@
  
  	bi_wedge.startblk = offset;
  	bi_wedge.nblks = size;
-@@ -1707,5 +1708,17 @@
+@@ -1707,5 +1708,40 @@
  int
  biosdisk_ioctl(struct open_file *f, u_long cmd, void *arg)
  {
@@ -30,12 +44,35 @@
 +		 */
 +		*(uint64_t *)arg = (uint64_t)d->size * d->ll.secsize;
 +		return 0;
++	case SAIODEVPEER: {
++		/*
++		 * A ZFS pool may span disks, and the other disks have
++		 * to be found by opening each partition of each one.
++		 * biosdisk_open() records whatever it opens as the
++		 * boot device in bi_disk and bi_wedge, which is what
++		 * the kernel is later told, so they are put back.
++		 */
++		struct saiodevpeer *sp = arg;
++		struct btinfo_bootdisk sdisk = bi_disk;
++		struct btinfo_bootwedge swedge = bi_wedge;
++		int unit = sp->sp_index / BIOSDISKNPART;
++		int error;
++
++		if (sp->sp_index < 0 || unit >= get_harddrives())
++			return ENOENT;
++		sp->sp_file->f_dev = f->f_dev;
++		error = biosdisk_open(sp->sp_file, 0x80 + unit,
++		    sp->sp_index % BIOSDISKNPART);
++		bi_disk = sdisk;
++		bi_wedge = swedge;
++		return error;
++	}
 +	default:
 +		return EIO;
 +	}
  }
---- a/sys/arch/i386/stand/efiboot/conf.c	2019-09-26 12:21:03.000000000 +0000
-+++ b/sys/arch/i386/stand/efiboot/conf.c	2026-09-23 12:22:07.732474549 +0000
+--- a/sys/arch/i386/stand/efiboot/conf.c	2026-09-26 23:48:22
++++ b/sys/arch/i386/stand/efiboot/conf.c	2026-09-26 23:48:23
 @@ -43,6 +43,9 @@
  #ifdef SUPPORT_CD9660
  #include <lib/libsa/cd9660.h>
@@ -66,8 +103,8 @@
  };
  __CTASSERT(__arraycount(file_system) == __arraycount(file_system_disk));
  const int nfsys_disk = __arraycount(file_system_disk);
---- a/sys/arch/i386/stand/efiboot/efiboot.c	2023-04-20 00:42:24.000000000 +0000
-+++ b/sys/arch/i386/stand/efiboot/efiboot.c	2026-09-23 12:22:07.736712238 +0000
+--- a/sys/arch/i386/stand/efiboot/efiboot.c	2026-09-26 23:48:23
++++ b/sys/arch/i386/stand/efiboot/efiboot.c	2026-09-26 23:48:24
 @@ -44,7 +44,16 @@
  struct btinfo_efimemmap *btinfo_efimemmap = NULL;
  

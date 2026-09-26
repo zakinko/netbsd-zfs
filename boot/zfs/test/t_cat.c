@@ -1,8 +1,14 @@
 /*
- * t_cat <image> <start-lba> <nsectors> <dataset> <path> [outfile]
+ * t_cat <image>[,<image>...] <start-lba> <nsectors> <dataset> <path>
+ *     [outfile]
  *
  * Mounts a dataset out of a pool image and reads a file from it, the
  * whole way down from the uberblock.
+ *
+ * With more than one image the first is the device the pool is found
+ * on, and every image, the first included, is then offered through
+ * pool_probe as a loader offers its disks.  The start LBA and sector
+ * count describe the first; the others are whole files from offset 0.
  */
 #include <sys/types.h>
 #include <stdint.h>
@@ -33,6 +39,24 @@ img_read(void *c, uint64_t off, void *buf, size_t len)
 
 static uint8_t chunk[1 << 20];
 
+#define	MAXIMG	16
+static struct img imgs[MAXIMG];
+static uint64_t imgsize[MAXIMG];
+static int nimg;
+
+static int
+img_probe(void *c, int n, zfs_readfn_t *rd, void **cookie, uint64_t *size)
+{
+
+	(void)c;
+	if (n >= nimg)
+		return (ENOENT);
+	*rd = img_read;
+	*cookie = &imgs[n];
+	*size = imgsize[n];
+	return (0);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -50,8 +74,20 @@ main(int argc, char **argv)
 		    "[outfile]\n", argv[0]);
 		return (2);
 	}
-	im.fd = open(argv[1], O_RDONLY);
-	if (im.fd < 0) { perror(argv[1]); return (1); }
+	{
+		char *list = argv[1], *name;
+
+		while ((name = strsep(&list, ",")) != NULL && nimg < MAXIMG) {
+			struct img *ip = &imgs[nimg];
+
+			ip->fd = open(name, O_RDONLY);
+			if (ip->fd < 0) { perror(name); return (1); }
+			ip->base = 0;
+			imgsize[nimg] = (uint64_t)lseek(ip->fd, 0, SEEK_END);
+			nimg++;
+		}
+	}
+	im = imgs[0];
 	im.base = strtoull(argv[2], NULL, 0) * 512;
 
 	{
@@ -63,6 +99,8 @@ main(int argc, char **argv)
 	pool.pool_read = img_read;
 	pool.pool_cookie = &im;
 	pool.pool_size = strtoull(argv[3], NULL, 0) * 512;
+	if (nimg > 1)
+		pool.pool_probe = img_probe;
 	{
 		char pname[64];
 

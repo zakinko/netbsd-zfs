@@ -46,7 +46,7 @@ rm -f label.bin
 
 echo "=== all checks passed"
 #
-# Not covered here, for want of a pool that has them: more
-# than one top-level vdev, zstd.
+# Not covered here, for want of a pool that has them: zstd;
+# test/openzfs.sh covers the rest.
 # Each is refused by name in the reader rather than guessed at.
 #

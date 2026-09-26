@@ -34,11 +34,12 @@
  * libsa's struct fs_ops, and holds everything that is about the loader
  * rather than about the format.
  *
- * The pool is reached through the device libsa has already opened, so a
- * pool whose top-level vdev is one disk or partition can be read; a
- * mirror or raidz spans devices this layer never sees, and reading
- * those needs the loader to enumerate disks first, which is its own
- * piece of work.
+ * The pool is found on the device libsa has already opened.  A pool on
+ * more than one -- a stripe, or a mirror whose other half should be
+ * read when this one fails a checksum -- is assembled by asking the
+ * driver for every other device it can reach, through SAIODEVPEER,
+ * and letting the reader keep those whose label belongs to the pool.
+ * A driver that does not answer it leaves the pool on the one device.
  *
  * The pool is opened again for every file rather than cached with the
  * device it was found on.  That costs one label read per open, and it
@@ -116,6 +117,75 @@ zfs_dev_size(struct open_file *f)
 }
 
 /*
+ * The other devices, for the reader's pool_probe: each is opened on an
+ * open_file of its own, which the reader either keeps -- and zfs_close
+ * then closes -- or hands back through zfs_dev_release.
+ */
+static int
+zfs_dev_probe(void *cookie, int n, zfs_readfn_t *rd, void **devp,
+    uint64_t *sizep)
+{
+	struct open_file *f = cookie, *pf;
+	struct saiodevpeer sp;
+	int rc;
+
+	if ((pf = alloc(sizeof(*pf))) == NULL)
+		return ENOMEM;
+	memset(pf, 0, sizeof(*pf));
+	sp.sp_index = n;
+	sp.sp_file = pf;
+	rc = DEV_IOCTL(f->f_dev)(f, SAIODEVPEER, &sp);
+	if (rc != 0) {
+		dealloc(pf, sizeof(*pf));
+		/* A driver that has no peers to offer. */
+		return rc == ENOTTY ? ENOENT : rc;
+	}
+	if ((*sizep = zfs_dev_size(pf)) == 0) {
+		DEV_CLOSE(pf->f_dev)(pf);
+		dealloc(pf, sizeof(*pf));
+		return EINVAL;
+	}
+	*rd = zfs_dev_read;
+	*devp = pf;
+	return 0;
+}
+
+static void
+zfs_dev_release(void *cookie, void *dev)
+{
+	struct open_file *pf = dev;
+
+	(void)cookie;
+	DEV_CLOSE(pf->f_dev)(pf);
+	dealloc(pf, sizeof(*pf));
+}
+
+/*
+ * Everything a zfs_file holds: the devices the pool was assembled from,
+ * other than the one libsa opened and will close itself, and the block
+ * cache.
+ */
+static void
+zfs_file_free(struct zfs_file *zf, struct open_file *f)
+{
+	uint32_t t, c;
+
+	for (t = 0; t < zf->zf_pool.pool_ntops; t++) {
+		struct zfs_top *tv = &zf->zf_pool.pool_top[t];
+
+		for (c = 0; c < tv->tv_nchildren; c++) {
+			struct zfs_leaf *lf = &tv->tv_child[c];
+
+			if (lf->lf_read != NULL && lf->lf_cookie != f)
+				zfs_dev_release(NULL, lf->lf_cookie);
+		}
+	}
+	if (zf->zf_cache.bc_buf != NULL)
+		dealloc(zf->zf_cache.bc_buf, ZFS_MAXBLOCKSIZE);
+	dealloc(zf, sizeof(*zf));
+}
+
+/*
  * A path here is either "/path" in the pool's boot dataset, or
  * "dataset:/path" naming one.  The loader's own boot.cfg lives in the
  * former, so the common case needs no dataset name.
@@ -185,6 +255,9 @@ zfs_open(const char *path, struct open_file *f)
 		dealloc(zf, sizeof(*zf));
 		return EINVAL;
 	}
+	zf->zf_pool.pool_probe = zfs_dev_probe;
+	zf->zf_pool.pool_release = zfs_dev_release;
+	zf->zf_pool.pool_probe_cookie = f;
 
 	/*
 	 * This is also the test of whether the device holds a pool at
@@ -193,13 +266,13 @@ zfs_open(const char *path, struct open_file *f)
 	 */
 	rc = zfs_pool_open(&zf->zf_pool, NULL, 0);
 	if (rc != 0) {
-		dealloc(zf, sizeof(*zf));
+		zfs_file_free(zf, f);
 		return rc;
 	}
 
 	rc = zfs_split_path(path, ds, sizeof(ds), &rest);
 	if (rc != 0) {
-		dealloc(zf, sizeof(*zf));
+		zfs_file_free(zf, f);
 		return rc;
 	}
 
@@ -211,13 +284,13 @@ zfs_open(const char *path, struct open_file *f)
 	 */
 	rc = zfs_mount(&zf->zf_pool, ds, &zf->zf_ds);
 	if (rc != 0) {
-		dealloc(zf, sizeof(*zf));
+		zfs_file_free(zf, f);
 		return rc;
 	}
 
 	rc = zfs_lookup(&zf->zf_ds, rest, &zf->zf_dnode);
 	if (rc != 0) {
-		dealloc(zf, sizeof(*zf));
+		zfs_file_free(zf, f);
 		return rc;
 	}
 
@@ -240,11 +313,8 @@ zfs_close(struct open_file *f)
 	struct zfs_file *zf = f->f_fsdata;
 
 	f->f_fsdata = NULL;
-	if (zf != NULL) {
-		if (zf->zf_cache.bc_buf != NULL)
-			dealloc(zf->zf_cache.bc_buf, ZFS_MAXBLOCKSIZE);
-		dealloc(zf, sizeof(*zf));
-	}
+	if (zf != NULL)
+		zfs_file_free(zf, f);
 	return 0;
 }
 

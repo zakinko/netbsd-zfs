@@ -115,16 +115,16 @@ main(void)
 	 */
 	printf("=== the label's ashift\n");
 	{
-		struct zfs_pool pool;
+		struct zfs_leaf lf;
 		struct uberblock ub;
 		uint64_t off;
 
-		memset(&pool, 0, sizeof(pool));
-		pool.pool_size = 1 << 20;
+		memset(&lf, 0, sizeof(lf));
+		lf.lf_size = 1 << 20;
 		expect("an ashift of 200 finds nothing",
-		    label_scan(&pool, 0, 200, &ub, &off), 0);
+		    label_scan(&lf, 0, 200, &ub, &off), 0);
 		expect("an ashift of 0 finds nothing",
-		    label_scan(&pool, 0, 0, &ub, &off), 0);
+		    label_scan(&lf, 0, 0, &ub, &off), 0);
 	}
 
 	/*

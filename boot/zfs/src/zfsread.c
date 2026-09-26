@@ -23,8 +23,7 @@
 
 /*
  * [S] §1.2.1, Illustration 2: two labels at the front of the device and
- * two at the back, on a device of size N at 0, 256K, N-512K and N-256K.
- */
+ * two at the back, on a device of size N at 0, 256K, N-512K and N-256K. */
 static uint64_t
 label_offset(int l, uint64_t vdev_size)
 {
@@ -122,7 +121,7 @@ uberblock_valid(const void *slot, size_t slotsize, uint64_t offset)
  * only the checksum then fails, which is how a wrong stride shows up.
  */
 static int
-label_scan(struct zfs_pool *pool, int l, uint32_t ashift,
+label_scan(const struct zfs_leaf *lf, int l, uint32_t ashift,
     struct uberblock *best, uint64_t *best_off)
 {
 	uint8_t *slot;
@@ -145,14 +144,13 @@ label_scan(struct zfs_pool *pool, int l, uint32_t ashift,
 	if ((slot = zfs_scratch_get(slotsize)) == NULL)
 		return (0);
 
-	base = label_offset(l, pool->pool_size) + VDEV_LABEL_UBERBLOCK_OFF;
+	base = label_offset(l, lf->lf_size) + VDEV_LABEL_UBERBLOCK_OFF;
 
 	for (off = 0; off + slotsize <= VDEV_LABEL_UBERBLOCK_SIZE;
 	    off += slotsize) {
 		const struct uberblock *ub = (const void *)slot;
 
-		err = pool->pool_read(pool->pool_cookie, base + off, slot,
-		    slotsize);
+		err = lf->lf_read(lf->lf_cookie, base + off, slot, slotsize);
 		if (err != 0)
 			continue;
 
@@ -172,25 +170,64 @@ label_scan(struct zfs_pool *pool, int l, uint32_t ashift,
 }
 
 /*
+ * A pool that was not opened with zfs_pool_open -- the test drivers
+ * that walk a pool by hand do this -- has an empty table of vdevs.  The
+ * device it was given is then the whole of it.
+ */
+static void
+pool_single(struct zfs_pool *pool)
+{
+	struct zfs_top *tv = &pool->pool_top[0];
+
+	pool->pool_ntops = 1;
+	tv->tv_type = ZFS_VT_LEAF;
+	tv->tv_ashift = pool->pool_ashift;
+	tv->tv_nchildren = 1;
+	tv->tv_child[0].lf_read = pool->pool_read;
+	tv->tv_child[0].lf_cookie = pool->pool_cookie;
+	tv->tv_child[0].lf_size = pool->pool_size;
+}
+
+/*
  * [S] §1.2.2: the four labels are written in two stages, so at least one
  * is always intact.  All four are read for that reason, and the newest
  * valid uberblock across all of them wins.
+ *
+ * [S] §1.3.4 speaks of one device.  Every leaf of a pool carries the
+ * same uberblocks, and a leaf that missed some transaction groups --
+ * one half of a mirror that was away -- carries older ones, so every
+ * leaf found is read and the newest across all of them is taken.  This
+ * is also what [Z] vdev_label.c (vdev_uberblock_load) does.
  */
 int
 zfs_uberblock_find(struct zfs_pool *pool)
 {
 	struct uberblock ub, best;
 	uint64_t off;
+	uint32_t t, c;
 	int l, found = 0;
 
-	for (l = 0; l < VDEV_LABELS; l++) {
-		if (!label_scan(pool, l, pool->pool_ashift, &ub, &off))
-			continue;
-		if (found && ub.ub_txg <= best.ub_txg)
-			continue;
-		best = ub;
-		pool->pool_label = l;
-		found = 1;
+	if (pool->pool_ntops == 0)
+		pool_single(pool);
+
+	for (t = 0; t < pool->pool_ntops; t++) {
+		const struct zfs_top *tv = &pool->pool_top[t];
+
+		for (c = 0; c < tv->tv_nchildren; c++) {
+			const struct zfs_leaf *lf = &tv->tv_child[c];
+
+			if (lf->lf_read == NULL)
+				continue;
+			for (l = 0; l < VDEV_LABELS; l++) {
+				if (!label_scan(lf, l, tv->tv_ashift, &ub,
+				    &off))
+					continue;
+				if (found && ub.ub_txg <= best.ub_txg)
+					continue;
+				best = ub;
+				found = 1;
+			}
+		}
 	}
 	if (!found)
 		return (EINVAL);
@@ -328,6 +365,66 @@ static int	dva_read(struct zfs_pool *, const blkptr_t *, int, uint8_t *,
 		    size_t, int);
 
 /*
+ * Read len bytes of a DVA from its top-level vdev, and hand them to
+ * verify; the first copy it accepts is the answer.
+ *
+ * [S] §2.1: a DVA's vdev field is "the top-level vdev", and its offset
+ * is an offset into that vdev.  A disk has one copy of the bytes.  A
+ * mirror's children hold the same bytes at the same offsets, so any
+ * one of them will do -- and when one fails its checksum, the next may
+ * not, which is the other half of what a mirror is for.  The verify
+ * function is how this layer knows a copy is bad without knowing what
+ * the bytes are.
+ */
+typedef int (*zfs_verifyfn_t)(void *, const void *, size_t);
+
+static int
+vdev_read(struct zfs_pool *pool, const dva_t *dva, void *buf, size_t len,
+    zfs_verifyfn_t verify, void *arg)
+{
+	const struct zfs_top *tv;
+	uint64_t id = DVA_GET_VDEV(dva);
+	uint32_t c;
+	int err;
+
+	if (id >= pool->pool_ntops)
+		return (ENXIO);
+	tv = &pool->pool_top[id];
+
+	switch (tv->tv_type) {
+	case ZFS_VT_LEAF:
+	case ZFS_VT_MIRROR:
+		err = ENXIO;
+		for (c = 0; c < tv->tv_nchildren; c++) {
+			const struct zfs_leaf *lf = &tv->tv_child[c];
+
+			if (lf->lf_read == NULL)
+				continue;
+			err = lf->lf_read(lf->lf_cookie, dva_offset(dva), buf,
+			    len);
+			if (err != 0)
+				continue;
+			if (verify(arg, buf, len))
+				return (0);
+			err = EINVAL;
+		}
+		return (err);
+	case ZFS_VT_NONE:
+		/* On a device that was not found. */
+		return (ENXIO);
+	default:
+		return (ENOTSUP);
+	}
+}
+
+static int
+bp_verify(void *arg, const void *buf, size_t len)
+{
+
+	return (block_checksum_ok(arg, buf, len));
+}
+
+/*
  * [S] §2.3 calls a gang header "self checksumming" and says no more.
  * [Z] zio_checksum.c: the tail's checksum is SHA-256 over the whole
  * header with the checksum field holding a verifier while it is taken,
@@ -373,42 +470,61 @@ gang_header_valid(const blkptr_t *bp, const void *hdr, size_t size)
  * its checksum -- [S] §2.4: "The computed checksum is always of the
  * data, even if this is a gang block."  The caller checks that.
  */
+/*
+ * Try the header at the vdev's allocation size and then at [S]'s 512
+ * bytes; see SPA_GANGBLOCKSIZE.  Reading the larger size is always in
+ * bounds, because it is what the header was given on the disk whichever
+ * kind it is.
+ */
+struct gang_verify {
+	const blkptr_t	*gv_bp;
+	size_t		gv_hdrsize;	/* out: which size checked out */
+};
+
+static int
+gang_verify(void *arg, const void *hdr, size_t bufsize)
+{
+	struct gang_verify *gv = arg;
+
+	if (gang_header_valid(gv->gv_bp, hdr, bufsize)) {
+		gv->gv_hdrsize = bufsize;
+		return (1);
+	}
+	if (bufsize > SPA_GANGBLOCKSIZE &&
+	    gang_header_valid(gv->gv_bp, hdr, SPA_GANGBLOCKSIZE)) {
+		gv->gv_hdrsize = SPA_GANGBLOCKSIZE;
+		return (1);
+	}
+	return (0);
+}
+
 static int
 gang_read(struct zfs_pool *pool, const blkptr_t *bp, int d, uint8_t *out,
     size_t psize, int depth)
 {
+	struct gang_verify gv;
 	uint8_t *hdr;
+	uint64_t id = DVA_GET_VDEV(&bp->blk_dva[d]);
 	size_t bufsize, hdrsize, off, g;
 	int j, err;
 
 	if (depth >= ZFS_GANG_MAXDEPTH)
 		return (ENOTSUP);
+	if (id >= pool->pool_ntops)
+		return (ENXIO);
 
-	/*
-	 * Try the header at the vdev's allocation size and then at
-	 * [S]'s 512 bytes; see SPA_GANGBLOCKSIZE.  Reading the larger
-	 * size is always in bounds, because it is what the header was
-	 * given on the disk whichever kind it is.
-	 */
-	bufsize = (size_t)1 << pool->pool_ashift;
+	bufsize = (size_t)1 << pool->pool_top[id].tv_ashift;
 	if (bufsize < SPA_GANGBLOCKSIZE)
 		bufsize = SPA_GANGBLOCKSIZE;
 	if ((hdr = zfs_scratch_get(bufsize)) == NULL)
 		return (ENOMEM);
 
-	err = pool->pool_read(pool->pool_cookie,
-	    dva_offset(&bp->blk_dva[d]), hdr, bufsize);
+	gv.gv_bp = bp;
+	err = vdev_read(pool, &bp->blk_dva[d], hdr, bufsize, gang_verify,
+	    &gv);
 	if (err != 0)
 		goto out;
-	hdrsize = bufsize;
-	if (!gang_header_valid(bp, hdr, hdrsize)) {
-		hdrsize = SPA_GANGBLOCKSIZE;
-		if (bufsize == hdrsize ||
-		    !gang_header_valid(bp, hdr, hdrsize)) {
-			err = EINVAL;
-			goto out;
-		}
-	}
+	hdrsize = gv.gv_hdrsize;
 
 	off = 0;
 	for (g = 0; g < GBH_NBLKPTRS(hdrsize); g++) {
@@ -463,15 +579,16 @@ dva_read(struct zfs_pool *pool, const blkptr_t *bp, int d, uint8_t *out,
 	const dva_t *dva = &bp->blk_dva[d];
 	int err;
 
-	if (DVA_GET_VDEV(dva) != 0) {
-		/* One top-level vdev only, so far. */
-		return (ENOTSUP);
-	}
-	if (DVA_GET_GANG(dva))
-		err = gang_read(pool, bp, d, out, psize, depth);
-	else
-		err = pool->pool_read(pool->pool_cookie, dva_offset(dva),
-		    out, psize);
+	if (!DVA_GET_GANG(dva))
+		return (vdev_read(pool, dva, out, psize, bp_verify,
+		    (void *)(uintptr_t)bp));
+
+	/*
+	 * A gang block's members were each checked as they were read,
+	 * and each from whichever copy passed; the whole is checked
+	 * once it is assembled.
+	 */
+	err = gang_read(pool, bp, d, out, psize, depth);
 	if (err != 0)
 		return (err);
 	if (!block_checksum_ok(bp, out, psize))
@@ -796,28 +913,179 @@ nv_streq(const struct nvpair_value *v, const char *s)
 }
 
 /*
- * Opening a pool: read a label's nvlist, take from it what is needed to
- * read the rest, and then find the active uberblock.
+ * [S] §1.3.3, Table 2 names the kinds of vdev, and which of them this
+ * can read follows from [S] §2.1: a DVA's offset is an offset into the
+ * *top-level* vdev.
+ *
+ * Under a mirror that offset means the same place on every child,
+ * because the children hold the same bytes.  So do the children of a
+ * replacing vdev, while one disk is being copied to another, and of a
+ * spare that has taken over; [Z] vdev_replacing_ops and vdev_spare_ops
+ * read them as a mirror, and so does this.
+ *
+ * Under a raidz it does not: the data is spread across the children
+ * with parity, and an offset lands somewhere else on each of them.  So
+ * raidz is refused, and it is refused when the pool is opened, where
+ * the reason can be given.  Left to itself the reader would follow the
+ * uberblock, read a block from the wrong place and fail its checksum
+ * -- reporting an I/O error on a disk that is perfectly sound.
+ */
+static int
+vdev_type(const struct nvpair_value *v)
+{
+
+	if (nv_streq(v, VDEV_TYPE_DISK) || nv_streq(v, VDEV_TYPE_FILE))
+		return (ZFS_VT_LEAF);
+	if (nv_streq(v, VDEV_TYPE_MIRROR) ||
+	    nv_streq(v, VDEV_TYPE_REPLACING) ||
+	    nv_streq(v, VDEV_TYPE_SPARE))
+		return (ZFS_VT_MIRROR);
+	return (ZFS_VT_NONE);
+}
+
+static int
+nv_guid(const struct nvpair_value *list, uint64_t *guid)
+{
+	struct nvpair_value v;
+
+	if (nvlist_find_nested(list->nv_list, list->nv_listlen,
+	    ZPOOL_CONFIG_GUID, NV_WANT_UINT64, &v) != 0)
+		return (EINVAL);
+	*guid = v.nv_u64;
+	return (0);
+}
+
+/*
+ * Enter a device in the pool's table: its top-level vdev, as the
+ * label's vdev_tree describes it, and the device itself as the leaf of
+ * that vdev whose guid it carries.
+ *
+ * [S] §1.3.3: each label holds the tree of its own top-level vdev and
+ * nothing of the others, so the table fills in as devices are found.
+ * The first to name a top-level vdev describes it; any later one must
+ * agree.
+ */
+static int
+top_enter(struct zfs_pool *pool, const struct nvpair_value *tree,
+    uint64_t guid, const struct zfs_leaf *dev, uint32_t *ashiftp)
+{
+	struct nvpair_value v, ch, el;
+	struct zfs_top *tv;
+	uint64_t id, cguid;
+	uint32_t i, ashift;
+	int type;
+
+	if (nvlist_find_nested(tree->nv_list, tree->nv_listlen,
+	    ZPOOL_CONFIG_ID, NV_WANT_UINT64, &v) != 0)
+		return (EINVAL);
+	id = v.nv_u64;
+	if (id >= pool->pool_ntops)
+		return (EINVAL);
+	tv = &pool->pool_top[id];
+
+	if (nvlist_find_nested(tree->nv_list, tree->nv_listlen,
+	    ZPOOL_CONFIG_TYPE, NV_WANT_STRING, &v) != 0)
+		return (EINVAL);
+	if ((type = vdev_type(&v)) == ZFS_VT_NONE)
+		return (ENOTSUP);
+
+	/*
+	 * [S] §1.3.3: ashift belongs to the top-level vdev.  A disk's
+	 * tree is that vdev and carries it; under a mirror the tree is
+	 * the interior vdev, and older pools put it on children[0].
+	 */
+	if (nvlist_find_nested(tree->nv_list, tree->nv_listlen,
+	    ZPOOL_CONFIG_CHILDREN, NV_WANT_NVLIST, &ch) != 0)
+		ch.nv_nelem = 0;
+	if (nvlist_find_nested(tree->nv_list, tree->nv_listlen,
+	    ZPOOL_CONFIG_ASHIFT, NV_WANT_UINT64, &v) != 0) {
+		if (ch.nv_nelem == 0 ||
+		    nvlist_array_elem(&ch, 0, &el) != 0 ||
+		    nvlist_find_nested(el.nv_list, el.nv_listlen,
+		    ZPOOL_CONFIG_ASHIFT, NV_WANT_UINT64, &v) != 0)
+			return (EINVAL);
+	}
+	/*
+	 * ashift comes off the disk and is about to be shifted by, so
+	 * it is the value that is checked, not the result.
+	 */
+	if (v.nv_u64 < SPA_MINBLOCKSHIFT || v.nv_u64 > SPA_MAXBLOCKSHIFT)
+		return (EINVAL);
+	ashift = (uint32_t)v.nv_u64;
+
+	if (tv->tv_type == ZFS_VT_NONE) {
+		tv->tv_ashift = ashift;
+		tv->tv_nparity = 0;
+		tv->tv_nchildren = 0;
+		if (type == ZFS_VT_LEAF) {
+			if (nv_guid(tree, &cguid) != 0)
+				return (EINVAL);
+			tv->tv_child[0].lf_guid = cguid;
+			tv->tv_child[0].lf_read = NULL;
+			tv->tv_nchildren = 1;
+		} else {
+			if (ch.nv_nelem == 0 ||
+			    ch.nv_nelem > ZFS_MAX_CHILDREN)
+				return (ENOTSUP);
+			for (i = 0; i < ch.nv_nelem; i++) {
+				if (nvlist_array_elem(&ch, i, &el) != 0 ||
+				    nv_guid(&el, &cguid) != 0)
+					return (EINVAL);
+				/*
+				 * A child may itself be interior -- a
+				 * mirror's disk being replaced.  Its
+				 * guid is then no device's, so it is
+				 * never found and the other children,
+				 * each a whole copy, are read instead.
+				 */
+				tv->tv_child[i].lf_guid = cguid;
+				tv->tv_child[i].lf_read = NULL;
+			}
+			tv->tv_nchildren = ch.nv_nelem;
+		}
+		tv->tv_type = type;
+	} else if (tv->tv_type != type || tv->tv_ashift != ashift)
+		return (EINVAL);
+
+	*ashiftp = ashift;
+	for (i = 0; i < tv->tv_nchildren; i++) {
+		struct zfs_leaf *lf = &tv->tv_child[i];
+
+		if (lf->lf_guid != guid)
+			continue;
+		if (lf->lf_read != NULL)
+			return (EEXIST);	/* offered twice */
+		lf->lf_read = dev->lf_read;
+		lf->lf_cookie = dev->lf_cookie;
+		lf->lf_size = dev->lf_size;
+		return (0);
+	}
+	/* Once part of this pool, and since detached from it. */
+	return (ENOENT);
+}
+
+/*
+ * Read one device's label and, if it belongs to the pool, enter it.
+ * The first device decides which pool that is: the one the loader was
+ * pointed at.  Returns zero only if the device was entered.
  *
  * [S] §1.3.3 lists what is in the label: version, name, state, txg,
- * pool_guid, top_guid, guid and the vdev_tree, whose ashift says how
- * the uberblock array is spaced.
+ * pool_guid, top_guid, guid and the vdev_tree.
  */
-int
-zfs_pool_open(struct zfs_pool *pool, char *name, size_t namelen)
+static int
+label_enter(struct zfs_pool *pool, const struct zfs_leaf *dev, uint8_t *nv,
+    int first, char *name, size_t namelen)
 {
-	uint8_t *nv;
 	struct nvpair_value v, tree;
+	uint64_t guid;
+	uint32_t ashift;
 	int l, err = EINVAL;
 
-	if ((nv = zfs_scratch_get(VDEV_LABEL_NVLIST_SIZE)) == NULL)
-		return (ENOMEM);
-
 	for (l = 0; l < VDEV_LABELS; l++) {
-		uint64_t off = label_offset(l, pool->pool_size) +
+		uint64_t off = label_offset(l, dev->lf_size) +
 		    VDEV_LABEL_NVLIST_OFF;
 
-		if (pool->pool_read(pool->pool_cookie, off, nv,
+		if (dev->lf_read(dev->lf_cookie, off, nv,
 		    VDEV_LABEL_NVLIST_SIZE) != 0)
 			continue;
 
@@ -828,88 +1096,118 @@ zfs_pool_open(struct zfs_pool *pool, char *name, size_t namelen)
 		 * read, because a pool built on another machine and
 		 * exported is exactly what an install image is.
 		 */
-		if (nvlist_find(nv, VDEV_LABEL_NVLIST_SIZE, ZPOOL_CONFIG_POOL_STATE,
-		    NV_WANT_UINT64, &v) != 0)
+		if (nvlist_find(nv, VDEV_LABEL_NVLIST_SIZE,
+		    ZPOOL_CONFIG_POOL_STATE, NV_WANT_UINT64, &v) != 0)
 			continue;
 		if (v.nv_u64 != POOL_STATE_ACTIVE &&
 		    v.nv_u64 != POOL_STATE_EXPORTED)
 			continue;
-		if (nvlist_find(nv, VDEV_LABEL_NVLIST_SIZE, ZPOOL_CONFIG_POOL_GUID,
+		if (nvlist_find(nv, VDEV_LABEL_NVLIST_SIZE,
+		    ZPOOL_CONFIG_POOL_GUID, NV_WANT_UINT64, &v) != 0)
+			continue;
+		if (first)
+			pool->pool_guid = v.nv_u64;
+		else if (v.nv_u64 != pool->pool_guid)
+			return (ENOENT);	/* another pool's */
+
+		if (nvlist_find(nv, VDEV_LABEL_NVLIST_SIZE, ZPOOL_CONFIG_GUID,
 		    NV_WANT_UINT64, &v) != 0)
 			continue;
-		pool->pool_guid = v.nv_u64;
+		guid = v.nv_u64;
+		if (nvlist_find(nv, VDEV_LABEL_NVLIST_SIZE,
+		    ZPOOL_CONFIG_VDEV_TREE, NV_WANT_NVLIST, &tree) != 0)
+			continue;
 
-		if (nvlist_find(nv, VDEV_LABEL_NVLIST_SIZE, ZPOOL_CONFIG_VDEV_TREE,
-		    NV_WANT_NVLIST, &tree) != 0)
-			continue;
-		/*
-		 * [S] §1.3.3, Table 2 names the kinds of vdev, and which
-		 * of them this can read follows from [S] §2.1: a DVA's
-		 * offset is an offset into the *top-level* vdev.
-		 *
-		 * Under a mirror that offset means the same place on
-		 * every child, because the children hold the same bytes,
-		 * so one leaf is a complete copy of the pool and nothing
-		 * has to be enumerated.  Under a raidz it does not: the
-		 * data is spread across the children with parity, and an
-		 * offset lands somewhere else on each of them.
-		 *
-		 * So mirrors are read and raidz is refused, and it is
-		 * refused here, where the reason can be given.  Left to
-		 * itself the reader would open the pool, follow the
-		 * uberblock, read a block from the wrong place and fail
-		 * its checksum -- reporting an I/O error on a disk that
-		 * is perfectly sound.
-		 */
-		if (nvlist_find_nested(tree.nv_list, tree.nv_listlen,
-		    ZPOOL_CONFIG_TYPE, NV_WANT_STRING, &v) != 0)
-			continue;
-		if (!nv_streq(&v, VDEV_TYPE_DISK) &&
-		    !nv_streq(&v, VDEV_TYPE_FILE) &&
-		    !nv_streq(&v, VDEV_TYPE_MIRROR) &&
-		    !nv_streq(&v, VDEV_TYPE_REPLACING)) {
-			err = ENOTSUP;
+		if (first) {
+			/*
+			 * [S]'s label cannot say how many top-level
+			 * vdevs there are; [Z] added vdev_children for
+			 * it.  A label without one is from a pool that
+			 * predates it, and such a pool had one.
+			 */
+			if (nvlist_find(nv, VDEV_LABEL_NVLIST_SIZE,
+			    ZPOOL_CONFIG_VDEV_CHILDREN, NV_WANT_UINT64,
+			    &v) != 0)
+				v.nv_u64 = 1;
+			if (v.nv_u64 == 0 || v.nv_u64 > ZFS_MAX_TOPS)
+				return (ENOTSUP);
+			pool->pool_ntops = (uint32_t)v.nv_u64;
+		}
+
+		err = top_enter(pool, &tree, guid, dev, &ashift);
+		if (err == EINVAL)
+			continue;	/* try the label's other copies */
+		if (err != 0)
+			return (err);
+
+		if (first) {
+			pool->pool_ashift = ashift;
+			if (name != NULL && namelen > 0 &&
+			    nvlist_find(nv, VDEV_LABEL_NVLIST_SIZE,
+			    ZPOOL_CONFIG_POOL_NAME, NV_WANT_STRING, &v) == 0) {
+				size_t i, n = v.nv_strlen;
+
+				if (n > namelen - 1)
+					n = namelen - 1;
+				for (i = 0; i < n; i++)
+					name[i] = v.nv_string[i];
+				name[n] = '\0';
+			}
+		}
+		return (0);
+	}
+	return (err);
+}
+
+/*
+ * Opening a pool: read the label of the device the pool was found on,
+ * then those of every other device the host can offer, keep the ones
+ * that belong, and find the active uberblock across all of them.
+ */
+int
+zfs_pool_open(struct zfs_pool *pool, char *name, size_t namelen)
+{
+	struct zfs_leaf dev;
+	uint8_t *nv;
+	uint32_t t;
+	int i, err;
+
+	pool->pool_ntops = 0;
+	for (t = 0; t < ZFS_MAX_TOPS; t++) {
+		pool->pool_top[t].tv_type = ZFS_VT_NONE;
+		pool->pool_top[t].tv_nchildren = 0;
+	}
+
+	if ((nv = zfs_scratch_get(VDEV_LABEL_NVLIST_SIZE)) == NULL)
+		return (ENOMEM);
+
+	dev.lf_guid = 0;
+	dev.lf_read = pool->pool_read;
+	dev.lf_cookie = pool->pool_cookie;
+	dev.lf_size = pool->pool_size;
+	err = label_enter(pool, &dev, nv, 1, name, namelen);
+
+	/*
+	 * The host answers ENOENT once it has offered everything; any
+	 * other error is a device it could not open, and is passed over.
+	 * The count is bounded all the same, since the host's answer is
+	 * not the reader's to trust.
+	 */
+	for (i = 0; err == 0 && pool->pool_probe != NULL &&
+	    i < ZFS_MAX_PROBE; i++) {
+		int perr;
+
+		dev.lf_read = NULL;
+		perr = pool->pool_probe(pool->pool_probe_cookie, i,
+		    &dev.lf_read, &dev.lf_cookie, &dev.lf_size);
+		if (perr == ENOENT)
 			break;
-		}
-
-		/*
-		 * [S] §1.3.3: ashift belongs to the top-level vdev.  On a
-		 * single disk the vdev_tree is that vdev and carries it;
-		 * under a mirror or raidz the tree is the interior vdev
-		 * and its children[0] does.  Only the value is wanted
-		 * here -- reading from more than one disk is a separate
-		 * matter -- so the first child answers either way.
-		 */
-		if (nvlist_find_nested(tree.nv_list, tree.nv_listlen,
-		    ZPOOL_CONFIG_ASHIFT, NV_WANT_UINT64, &v) != 0) {
-			struct nvpair_value ch;
-
-			if (nvlist_find_nested(tree.nv_list, tree.nv_listlen,
-			    ZPOOL_CONFIG_CHILDREN, NV_WANT_NVLIST, &ch) != 0)
-				continue;
-			if (nvlist_find_nested(ch.nv_list, ch.nv_listlen,
-			    ZPOOL_CONFIG_ASHIFT, NV_WANT_UINT64, &v) != 0)
-				continue;
-		}
-		if (v.nv_u64 < SPA_MINBLOCKSHIFT ||
-		    v.nv_u64 > SPA_MAXBLOCKSHIFT)
+		if (perr != 0 || dev.lf_read == NULL)
 			continue;
-		pool->pool_ashift = (uint32_t)v.nv_u64;
-
-		if (name != NULL && namelen > 0 &&
-		    nvlist_find(nv, VDEV_LABEL_NVLIST_SIZE, ZPOOL_CONFIG_POOL_NAME,
-		    NV_WANT_STRING, &v) == 0) {
-			size_t i, n = v.nv_strlen;
-
-			if (n > namelen - 1)
-				n = namelen - 1;
-			for (i = 0; i < n; i++)
-				name[i] = v.nv_string[i];
-			name[n] = '\0';
-		}
-
-		err = 0;
-		break;
+		if (label_enter(pool, &dev, nv, 0, NULL, 0) != 0 &&
+		    pool->pool_release != NULL)
+			pool->pool_release(pool->pool_probe_cookie,
+			    dev.lf_cookie);
 	}
 	zfs_scratch_put(nv, VDEV_LABEL_NVLIST_SIZE);
 	if (err != 0)

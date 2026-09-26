@@ -218,3 +218,47 @@ nvlist_find_nested(const void *buf, size_t len, const char *name, int want,
 	s.pos = 0;
 	return (nv_walk(&s, name, want, out));
 }
+
+/*
+ * Element i of an array of lists, in the shape nvlist_find_nested
+ * reads.
+ *
+ * [Z] nvs_embedded_nvl_array writes the elements one after another,
+ * each as nvs_embedded writes a list: version and flag words, the
+ * pairs, and nvs_xdr_nvl_fini's two zero words.  An element is stepped
+ * over by its pairs' encoded sizes, as nv_walk steps over a pair, and
+ * with the same checks.
+ */
+int
+nvlist_array_elem(const struct nvpair_value *arr, uint32_t i,
+    struct nvpair_value *out)
+{
+	struct nvs s;
+	uint32_t n, w, encsize;
+
+	if (i >= arr->nv_nelem)
+		return (ENOENT);
+
+	s.base = arr->nv_list;
+	s.len = arr->nv_listlen;
+	s.pos = 0;
+	for (n = 0; n < i; n++) {
+		if (nv_u32(&s, &w) != 0 || nv_u32(&s, &w) != 0)
+			return (EINVAL);
+		for (;;) {
+			if (nv_u32(&s, &encsize) != 0)
+				return (EINVAL);
+			if (encsize == 0)
+				break;
+			if (encsize < 8 || encsize - 4 > s.len - s.pos)
+				return (EINVAL);
+			s.pos += encsize - 4;
+		}
+		if (nv_u32(&s, &w) != 0)
+			return (EINVAL);
+	}
+	out->nv_list = s.base + s.pos;
+	out->nv_listlen = s.len - s.pos;
+	out->nv_nelem = 1;
+	return (0);
+}

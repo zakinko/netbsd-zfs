@@ -28,7 +28,8 @@ gives 15, and division is what finding a parent means.
 
 ## What it reads
 
-A pool on one disk or partition, or on a mirror: labels, uberblocks,
+A pool on one or more disks or partitions, striped, mirrored or both:
+labels, uberblocks,
 block pointers
 (including embedded ones), gang blocks, fletcher2/fletcher4/SHA-256
 checksums, lz4 and uncompressed blocks, dnodes to six levels of
@@ -65,12 +66,17 @@ inside a dnode cannot leave the copy of that dnode even when the field
 is a lie. Checksums do not help here: a pool that has been written to
 deliberately recomputes them.
 
-A mirror needs no special handling and none was written. [S] §2.1's
-offset is an offset into the top-level vdev, and a mirror's children
-hold the same bytes at the same offsets, so any one leaf is a whole
-copy of the pool. What is missing is the other half of a mirror's
-purpose: a block that fails its checksum on this disk cannot be
-retried on the other, because the loader has opened only one.
+[S] §2.1's DVA names a top-level vdev and an offset into it. The pool
+keeps a table of its top-level vdevs and the leaves under each, filled
+from the labels: each label describes only its own top-level vdev, so
+the device the loader started on is read first, and then every other
+device the driver can reach is offered to the reader, which keeps the
+ones whose label carries the same pool guid. The number of top-level
+vdevs is `vdev_children`, from [Z]; [S]'s label has no way to say it.
+A mirror's children hold the same bytes at the same offsets, so a
+block that fails its checksum on one is read again from the next, and
+the newest uberblock is taken across every leaf found, since a disk
+that was away holds older ones.
 
 raidz is refused when the pool is opened, by name, from the label's
 `vdev_tree`. Its data is spread across the children with parity and an
@@ -154,6 +160,13 @@ but zeros.
   now recognised at every level.
 - A two-way mirror, read through each leaf on its own: 12MB with the
   same SHA-256 as ZFS, from either disk.
+- A two-disk stripe and a two-way mirror, booted under qemu's UEFI
+  from the ESP on the first disk with `boot NAME=zroot:netbsd`. The
+  stripe's 30MB kernel has blocks on both disks, and loads and runs;
+  with the second disk detached the loader says "read header failed:
+  Device not configured" instead. The mirror boots with every block of
+  the first disk's ZFS partition zeroed, labels apart, so every block
+  was read again from the second.
 - A raidz1 of three: refused at `zfs_pool_open` with ENOTSUP rather
   than failing a checksum later.
 
@@ -169,6 +182,11 @@ Pools made by OpenZFS 2.4.1 on Linux, by `test/openzfs.sh`:
   gives. The reader with gang blocks taken out refuses the same files
   with ENOTSUP, so it is the new code that read them, and the fuzzer
   finds a member bound check taken out within 3,000 cases.
+- Stripes, mirrors and two mirrors side by side: every file matches
+  from any disk the pool can be found on, and each is also read from
+  too few disks, where it has to fail. A mirror with one side wiped
+  reads from the other; one whose second side missed the last write
+  is read from that side and still finds the file written last.
 - `efiboot` built with it loads `solaris.kmod`, `zfs.kmod`, `msdos.kmod`
   and a 30MB kernel out of the pool under qemu, and the kernel boots.
   It then says `cannot mount root, error = 79`, which is the kernel's
