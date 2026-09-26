@@ -337,6 +337,7 @@ struct uberblock {
 #define	ZIO_COMPRESS_GZIP_9	13
 #define	ZIO_COMPRESS_ZLE	14
 #define	ZIO_COMPRESS_LZ4	15
+#define	ZIO_COMPRESS_ZSTD	16	/* [Z] zio_compress.h */
 
 /* [S] §2.3: the gang block's tail. */
 #define	ZBT_MAGIC		0x210da7ab10c7a11ULL

@@ -92,6 +92,7 @@ jobs:
       - name: Read pools made by OpenZFS
         run: |
           sudo apt-get -qq update
-          sudo apt-get -qq install -y zfsutils-linux zlib1g-dev
+          sudo apt-get -qq install -y zfsutils-linux zlib1g-dev zstd
           sudo modprobe zfs
           sudo sh boot/zfs/test/openzfs.sh
+          sh boot/zfs/test/zstd.sh

@@ -16,6 +16,7 @@
 #   mirrors	two two-way mirrors
 #   unaligned	a disk whose size is not a multiple of 256K, with its
 #		first two labels gone
+#   zstd	zstd at four levels, over text, program text and runs
 #
 # Each file is read through the reader and compared with the SHA-256
 # ZFS gave it, and each pool is then fuzzed with the checksums out of
@@ -47,7 +48,7 @@ cc -std=c99 -O1 -g -I../src -include stdint.h -include stddef.h \
 	-fsanitize=address,undefined -fno-sanitize-recover=all \
 	../src/zfsread.c ../src/zap.c ../src/zfsfs.c ../src/nvlist.c \
 	../src/sha256.c ../src/fletcher.c ../src/lz4.c ../src/gzip.c \
-	../src/zle.c ../src/scratch.c fuzz_pool.c -o fuzz_pool -lz
+	../src/zle.c ../src/zstd.c ../src/scratch.c fuzz_pool.c -o fuzz_pool -lz
 
 gang() {
 	echo "$1" > $P/metaslab_force_ganging
@@ -106,6 +107,24 @@ gangfiles() {
 	head -c 1048576 /dev/urandom > "$1/random2"
 }
 
+# zstd at the default level and at both ends, over data that exercises
+# its different block types: text for Huffman literals and long
+# sequences, machine code for everything at once, runs for RLE, and a
+# small file for a single short block.
+zstdfiles() {
+	pool=${1##*/}
+	for lv in zstd zstd-1 zstd-19 zstd-fast-10; do
+		zfs create -o compression=$lv "$pool/$lv"
+		d=$1/$lv
+		seq 1 300000 > "$d/text"
+		cat /usr/bin/* 2>/dev/null | head -c 3000000 > "$d/prog"
+		yes 'the same line again' | head -c 1000000 > "$d/runs"
+		printf 'short\n' > "$d/small"
+	done
+	zfs create -o compression=zstd -o recordsize=16k "$pool/zstd16k"
+	cat /usr/bin/* 2>/dev/null | head -c 1000000 > "$1/zstd16k/prog"
+}
+
 # The second disk misses the last write, so its uberblocks are older
 # than the first's: [S] §1.3.4's newest uberblock has to be found
 # across the disks, not on whichever the pool was found on.
@@ -154,7 +173,8 @@ check() {
 		fi
 	done < "$W/$name.sha256"
 	if [ "$expect" = ok ] && [ "$first" = "$img" ]; then
-		./fuzz_pool "$img" 0 /random 1000 7 | sed 's/^/  /'
+		./fuzz_pool "$img" 0 "${FUZZ:-/random}" 1000 7 |
+		    sed 's/^/  /'
 	fi
 }
 
@@ -179,6 +199,15 @@ wipe() {
 	dd if=/dev/zero of="$f" bs=1M seek=4 \
 	    count=$(( (sz - 4 * 1048576 - 524288) / 1048576 )) \
 	    conv=notrunc status=none
+}
+
+# How many block pointers zdb reports as zstd, across the pool.  Only
+# six or more -b make zdb print a block pointer whole, with the name
+# of its compression; the feature's description also says "zstd",
+# hence the word after it.
+zstdcount() {
+	zdb -e -p "$W" -ddddd -bbbbbb "zbt_$1" 2>/dev/null |
+	    grep -c ' zstd unencrypted' || true
 }
 
 ganged() {
@@ -251,6 +280,13 @@ MKSIZE=$((128 * 1048576 + 100 * 1024)) mk unaligned files D
 dd if=/dev/zero of="$W/zbt_unaligned-0.img" bs=256K count=2 \
     conv=notrunc status=none
 check unaligned
+
+echo "=== zstd"
+mk zstd zstdfiles D
+z=$(zstdcount zstd)
+echo "  $z block pointers compressed with zstd"
+[ "${z:-0}" -gt 0 ] || { echo "  nothing was written with zstd"; fail=1; }
+FUZZ=zstd:/prog check zstd
 
 echo "=== two two-way mirrors"
 mk mirrors files "mirror D D mirror D D"

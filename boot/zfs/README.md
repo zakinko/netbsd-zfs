@@ -32,7 +32,8 @@ A pool on one or more disks or partitions, striped, mirrored or both:
 labels, uberblocks,
 block pointers
 (including embedded ones), gang blocks, fletcher2/fletcher4/SHA-256
-checksums, lz4 and uncompressed blocks, dnodes to six levels of
+checksums, lz4, gzip, zle, zstd and uncompressed blocks, dnodes to six
+levels of
 indirection, micro and fat ZAPs, the DSL down to a dataset, ZPL
 directories, and files through either a `znode_phys_t` or the system
 attributes that replaced it.
@@ -41,6 +42,18 @@ lz4 and zle are twenty and sixty lines from their own descriptions.
 gzip goes through zlib, which the loader links anyway for gzipped
 kernels; a build without zlib leaves it out and gzip is then refused
 like the rest.
+
+zstd is written from RFC 8878 with its verified errata, and
+`spec/notes-zstd.md` is the transcription. It is a decompressor only,
+for one frame without a dictionary, about a thousand lines with the
+comments, and it needs a block of literals and 9K of tables from the
+scratch arena, which the gang headers' share already covers. Two
+things are not in the RFC and come from OpenZFS: ZFS puts eight bytes
+of its own in front of the frame, and writes the frame "magicless",
+without the four byte Magic_Number. Two things in the RFC are wrong:
+Table 18 (errata 6442 corrects it) and Table 26, which gives two
+symbols of equal weight each other's Huffman codes; the prose, which
+the code follows, agrees with Table 25 and with the data.
 
 A fat ZAP's pointer table is read whether it sits in the object's first
 block or in blocks of its own.
@@ -84,8 +97,8 @@ offset lands somewhere else on each, so left alone the reader would
 open the pool, read a block from the wrong place and report an I/O
 error on a disk that is perfectly sound.
 
-It refuses, rather than guessing: raidz, zstd, and checksums newer
-than SHA-256.
+It refuses, rather than guessing: raidz, and checksums newer than
+SHA-256.
 
 A gang block is what ZFS writes when no single free extent is large
 enough: [S] §2.3's header of block pointers and a self-checksumming
@@ -190,6 +203,28 @@ Pools made by OpenZFS 2.4.1 on Linux, by `test/openzfs.sh`:
 - A disk whose size is not a multiple of 256K, with its first two
   labels zeroed. The last two were not where the reader looked: [Z]
   rounds the size down to whole labels before placing them.
+- zstd at levels 1, 3, 19 and fast-10, and with 16K records: every file
+  the same SHA-256 as ZFS gives, and zdb counts the zstd block
+  pointers so that a pool that stored everything uncompressed cannot
+  pass.
+
+`test/zstd.sh` decodes frames the zstd command writes, because ZFS
+alone never reaches parts of the format: it stores a block that
+compresses badly uncompressed rather than as a Raw or RLE block, its
+128K blocks are one zstd block each so no table is ever repeated from
+a block before, and it writes no content size. 108 frames over twelve
+inputs and nine settings all decode to their input. The tables built
+from the predefined distributions match all 160 cells of Appendix A.
+Three frames are put together by hand for what the zstd command will
+not write -- a block of more than 0x7F00 sequences, which takes the
+three byte count, and two that must be refused -- and the zstd
+command's own decoder is the judge of each. Together with the ZFS
+pool, that runs every line of the decoder but the ones on its error
+paths. The frames are then
+corrupted twenty thousand times under ASan and UBSan, each copied into
+an allocation of exactly its size; the Raw_Block length check taken
+out is caught as a heap overflow, and a match offset check taken out
+is caught by the pool fuzzer.
 - `efiboot` built with it loads `solaris.kmod`, `zfs.kmod`, `msdos.kmod`
   and a 30MB kernel out of the pool under qemu, and the kernel boots.
   It then says `cannot mount root, error = 79`, which is the kernel's

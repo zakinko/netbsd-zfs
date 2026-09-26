@@ -19,7 +19,10 @@
  *
  * Under zfs_read_block, a gang block holds one header per level of
  * nesting while its members are read, each 1 << ashift and so at most
- * a block; ZFS_GANG_MAXDEPTH is the number of levels.
+ * a block; ZFS_GANG_MAXDEPTH is the number of levels.  They are given
+ * back before the block is expanded, and a zstd block then takes a
+ * block of literals and ZSTD_STATE_MAX of tables in the same place --
+ * less than the gang headers' share, so that share covers both.
  */
 #define	ZFS_MAXBLOCKSIZE	(128 * 1024)
 #define	ZFS_SCRATCH_SIZE	((7 + ZFS_GANG_MAXDEPTH) * ZFS_MAXBLOCKSIZE)

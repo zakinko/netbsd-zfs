@@ -50,7 +50,7 @@ SA_INCLUDE_ZFS?= no
 .if (${SA_INCLUDE_ZFS} == "yes")
 SRCS+=	zfs.c zfsread.c zfs_zap.c zfs_dsl.c zfs_nvlist.c \
 	zfs_sha256.c zfs_fletcher.c zfs_lz4.c zfs_gzip.c \
-	zfs_zle.c zfs_scratch.c
+	zfs_zle.c zfs_zstd.c zfs_scratch.c
 ZFSZLIBDIR:=	${.PARSEDIR}/../../../common/dist/zlib
 CPPFLAGS.zfs_gzip.c+= -DZFS_SUPPORT_GZIP -I${ZFSZLIBDIR}
 .endif

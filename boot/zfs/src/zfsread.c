@@ -18,6 +18,7 @@
 #include "lz4.h"
 #include "gzip.h"
 #include "zle.h"
+#include "zstd.h"
 #include "nvlist.h"
 #include "scratch.h"
 
@@ -358,13 +359,13 @@ block_decompress(const blkptr_t *bp, const void *in, size_t psize,
 		return (gzip_decompress(in, out, psize, lsize));
 	case ZIO_COMPRESS_ZLE:
 		return (zle_decompress(in, out, psize, lsize));
+	case ZIO_COMPRESS_ZSTD:
+		return (zfs_zstd_decompress(in, out, psize, lsize));
 	default:
 		/*
 		 * [S] §2.5, Table 6 has only lzjb, which nothing has
-		 * written by default for many years; zstd is the other
-		 * one [Z] zio_compress.h lists and is not carried here,
-		 * because it would be a library rather than a function.
-		 * Both are refused rather than guessed at.
+		 * written by default for many years.  It is refused
+		 * rather than guessed at.
 		 */
 		return (ENOTSUP);
 	}
