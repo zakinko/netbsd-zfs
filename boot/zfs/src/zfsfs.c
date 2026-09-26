@@ -115,7 +115,7 @@ zfs_mount1(struct zfs_pool *pool, const char *dsname,
 		err = zfs_read_dnode(pool, &mos->os_meta_dnode, obj, &dn);
 		if (err != 0)
 			return (err);
-		if (dn.dn_type != DMU_OT_DSL_DIR)
+		if (dn.dn_bonustype != DMU_OT_DSL_DIR)
 			return (EINVAL);
 		dd = DN_BONUS(&dn);
 
@@ -160,7 +160,21 @@ mount_dataset(struct zfs_pool *pool, objset_phys_t *mos, objset_phys_t *os,
 	err = zfs_read_dnode(pool, &mos->os_meta_dnode, dsobj, &dn);
 	if (err != 0)
 		return (err);
-	if (dn.dn_type != DMU_OT_DSL_DATASET)
+	/*
+	 * [S] §4.3: a dataset is "an object of type DMU_OT_DSL_DATASET"
+	 * whose bonus buffer holds the dsl_dataset_phys_t, and [S] §4.4
+	 * says the same of a DSL directory.  What the reader uses is the
+	 * bonus buffer, so it is the bonus type that is checked, here and
+	 * for the directory above.
+	 *
+	 * The object's own type does not stay as [S] gives it.  [Z]
+	 * dmu_object.c (dmu_object_zapify) turns a dataset or directory
+	 * that needs more fields into a ZAP -- type DMU_OTN_ZAP_METADATA,
+	 * 196 -- and leaves the bonus buffer and its type alone.  OpenZFS
+	 * 2.4 on Linux does this to every dataset it creates, so checking
+	 * dn_type refused all of its pools at the first dataset.
+	 */
+	if (dn.dn_bonustype != DMU_OT_DSL_DATASET)
 		return (EINVAL);
 	ds = DN_BONUS(&dn);
 
