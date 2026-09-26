@@ -14,6 +14,8 @@
 #   mirror	a two-way mirror, then with one side's data wiped
 #   stale	a mirror whose second side was offline for the last write
 #   mirrors	two two-way mirrors
+#   unaligned	a disk whose size is not a multiple of 256K, with its
+#		first two labels gone
 #
 # Each file is read through the reader and compared with the SHA-256
 # ZFS gave it, and each pool is then fuzzed with the checksums out of
@@ -62,7 +64,7 @@ mk() {
 	for w in $layout; do
 		if [ "$w" = D ]; then
 			w=$W/$name-$i.img
-			truncate -s 128M "$w"
+			truncate -s "${MKSIZE:-128M}" "$w"
 			i=$((i + 1))
 		fi
 		vdevs="$vdevs $w"
@@ -224,6 +226,16 @@ mk stale stalefiles "mirror D D"
 check stale 1,0
 check stale 0,1
 check1 stale 1 after
+
+# [Z] vdev.c rounds a device's size down to a whole number of labels
+# before placing the last two, so on a device whose size is not a
+# multiple of 256K they sit short of its end.  With the first two gone
+# they are all there is.
+echo "=== the trailing labels, on an unaligned device"
+MKSIZE=$((128 * 1048576 + 100 * 1024)) mk unaligned files D
+dd if=/dev/zero of="$W/zbt_unaligned-0.img" bs=256K count=2 \
+    conv=notrunc status=none
+check unaligned
 
 echo "=== two two-way mirrors"
 mk mirrors files "mirror D D mirror D D"

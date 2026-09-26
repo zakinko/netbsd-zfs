@@ -187,6 +187,9 @@ Pools made by OpenZFS 2.4.1 on Linux, by `test/openzfs.sh`:
   too few disks, where it has to fail. A mirror with one side wiped
   reads from the other; one whose second side missed the last write
   is read from that side and still finds the file written last.
+- A disk whose size is not a multiple of 256K, with its first two
+  labels zeroed. The last two were not where the reader looked: [Z]
+  rounds the size down to whole labels before placing them.
 - `efiboot` built with it loads `solaris.kmod`, `zfs.kmod`, `msdos.kmod`
   and a 30MB kernel out of the pool under qemu, and the kernel boots.
   It then says `cannot mount root, error = 79`, which is the kernel's

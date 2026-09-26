@@ -23,11 +23,21 @@
 
 /*
  * [S] §1.2.1, Illustration 2: two labels at the front of the device and
- * two at the back, on a device of size N at 0, 256K, N-512K and N-256K. */
+ * two at the back, on a device of size N at 0, 256K, N-512K and N-256K.
+ *
+ * N is not quite the device's size.  [Z] vdev.c (vdev_open) rounds the
+ * size down to a whole number of labels before placing them, and
+ * vdev_label.c asserts that it has.  A partition whose size is not a
+ * multiple of 256K -- most of them -- has its last two labels up to
+ * 256K short of the end, and read at the unrounded size they were
+ * never found; a pool whose first two labels were damaged could not
+ * be opened although the other two were intact.
+ */
 static uint64_t
 label_offset(int l, uint64_t vdev_size)
 {
 
+	vdev_size &= ~(uint64_t)(VDEV_LABEL_SIZE - 1);
 	if (l < 2)
 		return ((uint64_t)l * VDEV_LABEL_SIZE);
 	return (vdev_size - (uint64_t)(4 - l) * VDEV_LABEL_SIZE);
