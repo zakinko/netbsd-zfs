@@ -14,6 +14,10 @@
 #include "zfs_ondisk.h"
 #include "zfsread.h"
 #include "sha256.h"
+#include "sha512.h"
+#include "skein.h"
+#include "edonr.h"
+#include "blake3.h"
 #include "fletcher.h"
 #include "lz4.h"
 #include "gzip.h"
@@ -272,7 +276,8 @@ dva_offset(const dva_t *dva)
 }
 
 static int
-block_checksum_ok(const blkptr_t *bp, const void *buf, size_t psize)
+block_checksum_ok(const struct zfs_pool *pool, const blkptr_t *bp,
+    const void *buf, size_t psize)
 {
 	uint64_t got[4];
 	int i;
@@ -285,7 +290,7 @@ block_checksum_ok(const blkptr_t *bp, const void *buf, size_t psize)
 	 * the checksums -- so a fuzzer that has to get past them is
 	 * testing fletcher4 rather than the parsing underneath it.
 	 */
-	(void)bp; (void)buf; (void)psize; (void)got; (void)i;
+	(void)pool; (void)bp; (void)buf; (void)psize; (void)got; (void)i;
 	return (1);
 #else
 
@@ -309,10 +314,29 @@ block_checksum_ok(const blkptr_t *bp, const void *buf, size_t psize)
 	case ZIO_CHECKSUM_SHA256:
 		sha256(buf, psize, got);
 		break;
+	case ZIO_CHECKSUM_SHA512:
+		sha512_256(buf, psize, NULL, got);
+		break;
+	case ZIO_CHECKSUM_SKEIN:
+	case ZIO_CHECKSUM_EDONR:
+	case ZIO_CHECKSUM_BLAKE3:
+		/*
+		 * [Z] zio_checksum.c: these three are keyed with the
+		 * pool's salt.  Without it there is nothing to check
+		 * against, and a block is not read unchecked.
+		 */
+		if (!pool->pool_salt_ok)
+			return (0);
+		if (BP_GET_CHECKSUM(bp) == ZIO_CHECKSUM_SKEIN)
+			skein_zfs(pool->pool_salt, buf, psize, got);
+		else if (BP_GET_CHECKSUM(bp) == ZIO_CHECKSUM_EDONR)
+			edonr_zfs(pool->pool_salt, buf, psize, got);
+		else
+			blake3_keyed(pool->pool_salt, buf, psize, NULL, got);
+		break;
 	default:
 		/*
-		 * [Z] zio_checksum.h has added sha512, skein, edonr and
-		 * blake3 since [S].  A pool using one of them is refused
+		 * Anything past [Z] zio_checksum.h's blake3 is refused
 		 * rather than read unchecked: a bootloader that skips the
 		 * checksum turns a bad disk into a kernel that crashes
 		 * somewhere else.
@@ -428,11 +452,17 @@ vdev_read(struct zfs_pool *pool, const dva_t *dva, void *buf, size_t len,
 	}
 }
 
+struct bp_verify {
+	const struct zfs_pool	*bv_pool;
+	const blkptr_t		*bv_bp;
+};
+
 static int
 bp_verify(void *arg, const void *buf, size_t len)
 {
+	const struct bp_verify *bv = arg;
 
-	return (block_checksum_ok(arg, buf, len));
+	return (block_checksum_ok(bv->bv_pool, bv->bv_bp, buf, len));
 }
 
 /*
@@ -590,9 +620,11 @@ dva_read(struct zfs_pool *pool, const blkptr_t *bp, int d, uint8_t *out,
 	const dva_t *dva = &bp->blk_dva[d];
 	int err;
 
-	if (!DVA_GET_GANG(dva))
-		return (vdev_read(pool, dva, out, psize, bp_verify,
-		    (void *)(uintptr_t)bp));
+	if (!DVA_GET_GANG(dva)) {
+		struct bp_verify bv = { pool, bp };
+
+		return (vdev_read(pool, dva, out, psize, bp_verify, &bv));
+	}
 
 	/*
 	 * A gang block's members were each checked as they were read,
@@ -602,7 +634,7 @@ dva_read(struct zfs_pool *pool, const blkptr_t *bp, int d, uint8_t *out,
 	err = gang_read(pool, bp, d, out, psize, depth);
 	if (err != 0)
 		return (err);
-	if (!block_checksum_ok(bp, out, psize))
+	if (!block_checksum_ok(pool, bp, out, psize))
 		return (EINVAL);
 	return (0);
 }

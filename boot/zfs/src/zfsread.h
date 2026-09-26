@@ -73,6 +73,12 @@ struct zfs_pool {
 	uint32_t	pool_ntops;
 	struct zfs_top	pool_top[ZFS_MAX_TOPS];
 	struct uberblock pool_ub;	/* the active one */
+	/*
+	 * [Z] the salt skein, edonr and blake3 are keyed with, from the
+	 * MOS; read when the pool is mounted.
+	 */
+	uint8_t		pool_salt[32];
+	int		pool_salt_ok;
 };
 
 int	zfs_pool_open(struct zfs_pool *, char *, size_t);
@@ -114,6 +120,9 @@ uint64_t zfs_size(const dnode_phys_t *);
 
 int	zap_lookup(struct zfs_pool *, const dnode_phys_t *, const char *,
 	    uint64_t *);
+
+int	zap_lookup_bytes(struct zfs_pool *, const dnode_phys_t *,
+	    const char *, void *, size_t);
 
 int	zap_list(struct zfs_pool *, const dnode_phys_t *,
 	    void (*)(void *, const char *, uint64_t), void *);

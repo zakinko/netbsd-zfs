@@ -12,4 +12,5 @@ CFLAGS="-std=c99 -Wall -Wextra -O2 -I$S -include stdint.h -include stddef.h"
 cc $CFLAGS -DZFS_SUPPORT_GZIP \
 	$S/zfsread.c $S/zap.c $S/zfsfs.c $S/nvlist.c $S/sha256.c \
 	$S/fletcher.c $S/lz4.c $S/gzip.c $S/zle.c $S/zstd.c $S/scratch.c \
+	$S/sha512.c $S/skein.c $S/edonr.c $S/blake3.c \
 	"$@" -lz

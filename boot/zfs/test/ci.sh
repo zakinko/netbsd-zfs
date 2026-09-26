@@ -97,7 +97,8 @@ echo "=== the dnode geometry check"
 cc -std=c99 -Wall -Wextra -O1 -g -I../src -DZFS_SUPPORT_GZIP \
 	-fsanitize=undefined -fno-sanitize-recover=all \
 	../src/sha256.c ../src/fletcher.c ../src/lz4.c ../src/gzip.c \
-	../src/zle.c ../src/zstd.c ../src/scratch.c ../src/nvlist.c t_dnode.c \
+	../src/zle.c ../src/zstd.c ../src/scratch.c ../src/sha512.c \
+	../src/skein.c ../src/edonr.c ../src/blake3.c ../src/nvlist.c t_dnode.c \
 	-o t_dnode -lz
 command -v paxctl >/dev/null 2>&1 && paxctl +a ./t_dnode || true
 ./t_dnode
@@ -114,7 +115,8 @@ if cc -std=c99 -O1 -g -I../src -DZFS_SUPPORT_GZIP -DZFS_FUZZ_NO_CKSUM \
 	-fsanitize=address,undefined -fno-sanitize-recover=all \
 	../src/zfsread.c ../src/zap.c ../src/zfsfs.c ../src/nvlist.c \
 	../src/sha256.c ../src/fletcher.c ../src/lz4.c ../src/gzip.c \
-	../src/zle.c ../src/zstd.c ../src/scratch.c fuzz_pool.c -o fuzz_pool -lz \
+	../src/zle.c ../src/zstd.c ../src/scratch.c ../src/sha512.c \
+	../src/skein.c ../src/edonr.c ../src/blake3.c fuzz_pool.c -o fuzz_pool -lz \
 	2>/dev/null; then
 	command -v paxctl >/dev/null 2>&1 && paxctl +a ./fuzz_pool || true
 	./fuzz_pool "$IMG" 0 /payload 2000 7

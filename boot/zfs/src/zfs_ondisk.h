@@ -320,6 +320,10 @@ struct uberblock {
  * ones this can verify are named; the rest are refused by number.
  */
 #define	ZIO_CHECKSUM_NOPARITY	10
+#define	ZIO_CHECKSUM_SHA512	11	/* SHA-512/256; see sha512.c */
+#define	ZIO_CHECKSUM_SKEIN	12	/* salted; see skein.c */
+#define	ZIO_CHECKSUM_EDONR	13	/* salted; see edonr.c */
+#define	ZIO_CHECKSUM_BLAKE3	14	/* salted; see blake3.c */
 
 /* [S] §2.5, Table 6. */
 #define	ZIO_COMPRESS_INHERIT	0
@@ -594,6 +598,7 @@ typedef struct {
  * spa.c keeps bootfs as the object number of a DSL dataset.
  */
 #define	DMU_POOL_PROPS		"pool_props"	/* [Z] dmu.h */
+#define	DMU_POOL_CHECKSUM_SALT	"org.illumos:checksum_salt" /* [Z] dmu.h */
 #define	ZPOOL_PROP_BOOTFS	"bootfs"	/* [Z] spa.c */
 
 /*

@@ -149,9 +149,21 @@ leaf_array_get(const void *leaf, int bs, uint16_t chunk, void *out,
  * width is ZAP_LEAF_HASH_SHIFT of the block, and [S]'s twelve is the
  * case bs = 17 of it.
  */
+/*
+ * What a lookup wants back: [S] §5.2.4's value is an array of
+ * le_value_length integers of le_int_size bytes each.  Nearly every
+ * lookup wants one 64 bit integer; the pool's checksum salt is 32 one
+ * byte ones.
+ */
+struct zap_want {
+	unsigned	w_isz;
+	size_t		w_n;
+	void		*w_out;		/* uint64_t for 8 x 1, else bytes */
+};
+
 static int
 zap_leaf_lookup(const void *leaf, int bs, uint64_t hash, const char *name,
-    uint64_t *val)
+    const struct zap_want *w)
 {
 	const zap_leaf_header_t *lh = leaf;
 	const uint16_t *lhash;
@@ -195,16 +207,21 @@ zap_leaf_lookup(const void *leaf, int bs, uint64_t hash, const char *name,
 		    e->le_name_length) == 0 &&
 		    streq(found, name, e->le_name_length)) {
 			uint8_t v[8];
+			uint64_t *val = w->w_out;
 			int i;
 
+			if (e->le_int_size != w->w_isz ||
+			    e->le_value_length != w->w_n)
+				return (EINVAL);
+			if (w->w_isz != 8)
+				return (leaf_array_get(leaf, bs,
+				    e->le_value_chunk, w->w_out,
+				    w->w_isz * w->w_n));
 			/*
 			 * [S] §5.2.4: integers in a leaf array are big
 			 * endian whatever the machine, which is the one
-			 * place in the format where that is so.  Only a
-			 * single 64 bit value is wanted here.
+			 * place in the format where that is so.
 			 */
-			if (e->le_int_size != 8 || e->le_value_length != 1)
-				return (EINVAL);
 			if (leaf_array_get(leaf, bs, e->le_value_chunk, v,
 			    sizeof(v)) != 0)
 				return (EINVAL);
@@ -295,7 +312,7 @@ ptrtbl_get(struct zfs_pool *pool, const dnode_phys_t *dn,
  */
 static int
 zap_lookup1(struct zfs_pool *pool, const dnode_phys_t *dn, const char *name,
-    uint64_t *val, uint8_t *blk, uint8_t *leaf)
+    const struct zap_want *w, uint8_t *blk, uint8_t *leaf)
 {
 	const zap_phys_t *zp;
 	uint64_t hash, blkid;
@@ -315,7 +332,10 @@ zap_lookup1(struct zfs_pool *pool, const dnode_phys_t *dn, const char *name,
 
 	switch (*(const uint64_t *)(const void *)blk) {
 	case ZBT_MICRO:
-		return (mzap_lookup(blk, blksize, name, val));
+		/* [S] §5.1: a microzap holds single 64 bit values only. */
+		if (w->w_isz != 8 || w->w_n != 1)
+			return (ENOENT);
+		return (mzap_lookup(blk, blksize, name, w->w_out));
 	case ZBT_HEADER:
 		break;
 	default:
@@ -352,7 +372,7 @@ zap_lookup1(struct zfs_pool *pool, const dnode_phys_t *dn, const char *name,
 	if (err != 0)
 		return (err);
 
-	return (zap_leaf_lookup(leaf, bs, hash, name, val));
+	return (zap_leaf_lookup(leaf, bs, hash, name, w));
 }
 
 /*
@@ -468,9 +488,9 @@ zap_list1(struct zfs_pool *pool, const dnode_phys_t *dn,
  * which is how an arena gets left shifted by one missed path -- the
  * space is taken and given back here, around a single call.
  */
-int
-zap_lookup(struct zfs_pool *pool, const dnode_phys_t *dn, const char *name,
-    uint64_t *val)
+static int
+zap_lookup_want(struct zfs_pool *pool, const dnode_phys_t *dn,
+    const char *name, const struct zap_want *w)
 {
 	uint8_t *blk, *leaf;
 	int err;
@@ -482,11 +502,30 @@ zap_lookup(struct zfs_pool *pool, const dnode_phys_t *dn, const char *name,
 		return (ENOMEM);
 	}
 
-	err = zap_lookup1(pool, dn, name, val, blk, leaf);
+	err = zap_lookup1(pool, dn, name, w, blk, leaf);
 
 	zfs_scratch_put(leaf, ZFS_MAXBLOCKSIZE);
 	zfs_scratch_put(blk, ZFS_MAXBLOCKSIZE);
 	return (err);
+}
+
+int
+zap_lookup(struct zfs_pool *pool, const dnode_phys_t *dn, const char *name,
+    uint64_t *val)
+{
+	struct zap_want w = { 8, 1, val };
+
+	return (zap_lookup_want(pool, dn, name, &w));
+}
+
+/* A value of n one byte integers, which is to say n bytes. */
+int
+zap_lookup_bytes(struct zfs_pool *pool, const dnode_phys_t *dn,
+    const char *name, void *out, size_t n)
+{
+	struct zap_want w = { 1, n, out };
+
+	return (zap_lookup_want(pool, dn, name, &w));
 }
 
 int

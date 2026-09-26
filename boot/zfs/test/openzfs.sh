@@ -17,6 +17,8 @@
 #   unaligned	a disk whose size is not a multiple of 256K, with its
 #		first two labels gone
 #   zstd	zstd at four levels, over text, program text and runs
+#   cksum	sha512, skein, edonr and blake3, the last three keyed
+#		with the pool's salt
 #
 # Each file is read through the reader and compared with the SHA-256
 # ZFS gave it, and each pool is then fuzzed with the checksums out of
@@ -48,7 +50,8 @@ cc -std=c99 -O1 -g -I../src -include stdint.h -include stddef.h \
 	-fsanitize=address,undefined -fno-sanitize-recover=all \
 	../src/zfsread.c ../src/zap.c ../src/zfsfs.c ../src/nvlist.c \
 	../src/sha256.c ../src/fletcher.c ../src/lz4.c ../src/gzip.c \
-	../src/zle.c ../src/zstd.c ../src/scratch.c fuzz_pool.c -o fuzz_pool -lz
+	../src/zle.c ../src/zstd.c ../src/scratch.c ../src/sha512.c \
+	../src/skein.c ../src/edonr.c ../src/blake3.c fuzz_pool.c -o fuzz_pool -lz
 
 gang() {
 	echo "$1" > $P/metaslab_force_ganging
@@ -123,6 +126,24 @@ zstdfiles() {
 	done
 	zfs create -o compression=zstd -o recordsize=16k "$pool/zstd16k"
 	cat /usr/bin/* 2>/dev/null | head -c 1000000 > "$1/zstd16k/prog"
+}
+
+# A dataset per checksum, each with a file of a few blocks.  Their
+# metadata is checksummed the same way, so mounting one already reads
+# blocks that need the salt.
+ckfiles() {
+	pool=${1##*/}
+	for ck in sha512 skein edonr blake3; do
+		zfs create -o checksum=$ck "$pool/$ck"
+		cat /usr/bin/* 2>/dev/null | head -c 700000 > "$1/$ck/prog"
+		seq 1 20000 > "$1/$ck/text"
+	done
+}
+
+# How many block pointers zdb reports with one checksum.
+ckcount() {
+	zdb -e -p "$W" -ddddd -bbbbbb "zbt_$1" 2>/dev/null |
+	    grep -c " $2 [a-z0-9-]* unencrypted" || true
 }
 
 # The second disk misses the last write, so its uberblocks are older
@@ -287,6 +308,15 @@ z=$(zstdcount zstd)
 echo "  $z block pointers compressed with zstd"
 [ "${z:-0}" -gt 0 ] || { echo "  nothing was written with zstd"; fail=1; }
 FUZZ=zstd:/prog check zstd
+
+echo "=== sha512, skein, edonr and blake3"
+mk cksum ckfiles D
+for ck in sha512 skein edonr blake3; do
+	c=$(ckcount cksum $ck)
+	echo "  $c block pointers checksummed with $ck"
+	[ "${c:-0}" -gt 0 ] || { echo "  nothing was written with $ck"; fail=1; }
+done
+FUZZ=blake3:/prog check cksum
 
 echo "=== two two-way mirrors"
 mk mirrors files "mirror D D mirror D D"

@@ -31,8 +31,8 @@ gives 15, and division is what finding a parent means.
 A pool on one or more disks or partitions, striped, mirrored or both:
 labels, uberblocks,
 block pointers
-(including embedded ones), gang blocks, fletcher2/fletcher4/SHA-256
-checksums, lz4, gzip, zle, zstd and uncompressed blocks, dnodes to six
+(including embedded ones), gang blocks, fletcher2, fletcher4, SHA-256,
+SHA-512/256, Skein, Edon-R and BLAKE3 checksums, lz4, gzip, zle, zstd and uncompressed blocks, dnodes to six
 levels of
 indirection, micro and fat ZAPs, the DSL down to a dataset, ZPL
 directories, and files through either a `znode_phys_t` or the system
@@ -97,8 +97,18 @@ offset lands somewhere else on each, so left alone the reader would
 open the pool, read a block from the wrong place and report an I/O
 error on a disk that is perfectly sound.
 
-It refuses, rather than guessing: raidz, and checksums newer than
-SHA-256.
+It refuses, rather than guessing: raidz.
+
+The checksums after SHA-256 are each written from their own
+specification -- FIPS 180-4, Skein 1.3, the Edon-R submission and the
+BLAKE3 paper -- and `spec/notes-checksums.md` says which sections, and
+how ZFS uses each: SHA-512/256 plainly, the other three keyed with a
+32 byte salt the pool keeps in its object directory, which the ZAP
+reader now returns as a byte array. Edon-R needed two sources the
+document does not give: the 2009 feedback tweak ZFS computes, from
+Gligoroski's own announcement of it, and the fact that the submission
+package's code and test vectors use other rotation amounts than the
+document's Table 2.2, which is what ZFS follows.
 
 A gang block is what ZFS writes when no single free extent is large
 enough: [S] §2.3's header of block pointers and a self-checksumming
@@ -207,6 +217,18 @@ Pools made by OpenZFS 2.4.1 on Linux, by `test/openzfs.sh`:
   the same SHA-256 as ZFS gives, and zdb counts the zstd block
   pointers so that a pool that stored everything uncompressed cannot
   pass.
+
+- sha512, skein, edonr and blake3, a dataset each: every file the same
+  SHA-256 as ZFS gives, and zdb counts 33 to 35 block pointers with
+  each checksum. For the three keyed ones this is the only test of the
+  keying.
+
+`test/hashes.sh` checks each hash against its specification's own
+vectors: NIST's two SHA-512/256 examples, Skein's Appendix C.2 and the
+B.8 chaining value, twelve of the BLAKE3 team's vectors in both modes,
+and for Edon-R, built with the submission's rotations, three of its
+KATs and the four MAC examples, then as ZFS computes it, the two
+digests OpenZFS's tests hold.
 
 `test/zstd.sh` decodes frames the zstd command writes, because ZFS
 alone never reaches parts of the format: it stores a block that

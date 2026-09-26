@@ -96,3 +96,4 @@ jobs:
           sudo modprobe zfs
           sudo sh boot/zfs/test/openzfs.sh
           sh boot/zfs/test/zstd.sh
+          sh boot/zfs/test/hashes.sh

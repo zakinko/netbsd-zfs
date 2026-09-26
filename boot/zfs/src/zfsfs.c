@@ -77,6 +77,16 @@ zfs_mount1(struct zfs_pool *pool, const char *dsname,
 		return (err);
 
 	/*
+	 * [Z] spa.c keeps the key for the salted checksums in the object
+	 * directory, as 32 one byte integers, and creates it with the
+	 * pool.  A pool that has none cannot have used them, and a block
+	 * that claims one is then refused.
+	 */
+	pool->pool_salt_ok = zap_lookup_bytes(pool, &dn,
+	    DMU_POOL_CHECKSUM_SALT, pool->pool_salt,
+	    sizeof(pool->pool_salt)) == 0;
+
+	/*
 	 * With no dataset named, the pool says which one to boot.
 	 *
 	 * [S] has no notion of this: its Table 12 is the properties of a
