@@ -149,6 +149,15 @@ nv_walk(struct nvs *s, const char *name, int want, struct nvpair_value *out)
 		if (nv_string(s, &nm, &namelen) != 0 ||
 		    nv_u32(s, &type) != 0 || nv_u32(s, &nelem) != 0)
 			return (EINVAL);
+		/*
+		 * The header just read has to lie inside the pair.  An
+		 * encsize of 8 passed the check above, and next then fell
+		 * short of pos: a nested list's length, next - pos, wrapped
+		 * to nearly 2^64 and its parse ran off the end of the
+		 * label buffer.
+		 */
+		if (s->pos > next)
+			return (EINVAL);
 
 		if (!nv_name_is(nm, namelen, name)) {
 			s->pos = next;

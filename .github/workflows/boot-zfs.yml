@@ -97,3 +97,4 @@ jobs:
           sudo sh boot/zfs/test/openzfs.sh
           sh boot/zfs/test/zstd.sh
           sh boot/zfs/test/hashes.sh
+          sh boot/zfs/test/nvlist.sh
