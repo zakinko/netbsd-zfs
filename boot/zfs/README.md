@@ -100,14 +100,16 @@ taken from OpenZFS, and `spec/notes-raidz.md` lists which file and
 function each part came from, at which commit: how a block is spread
 over the children, where its data columns sit, single parity's column
 swap every other megabyte, the rounding of an I/O to whole sectors,
-and P as the XOR of the data columns. A missing child, or a block that
-fails its checksum, is read again with each data column in turn
-rebuilt from P.
+and the parities: P is the XOR of the data columns, and Q and R weigh
+them by powers of 2 and 4 in GF(2^8), whose arithmetic the same file
+defines. Up to as many columns as there is parity are rebuilt, missing
+ones first and, on a checksum failure, every combination fewest first,
+by solving those equations for the columns taken to be bad.
 
 It refuses, rather than guessing: a raidz that has been widened or is
-being widened, whose older blocks are laid out for fewer columns; two
-bad columns at once, which on raidz2 and raidz3 would need Q and R;
-and a label giving as much parity as there are disks.
+being widened, whose older blocks are laid out for fewer columns; more
+bad columns than there is parity; and a label giving as much parity as
+there are disks.
 
 The checksums after SHA-256 are each written from their own
 specification -- FIPS 180-4, Skein 1.3, the Edon-R submission and the
@@ -232,12 +234,15 @@ Pools made by OpenZFS 2.4.1 on Linux, by `test/openzfs.sh`:
   keying.
 
 - raidz1, raidz2 and raidz3 of three, four and five disks: every file
-  matches with all the disks, with the last one gone, and with the
-  first one's data zeroed. On raidz1, counted, that rebuilt 23 and 15
+  matches with all the disks, and with as many disks gone or zeroed as
+  there is parity, including two zeroed with none gone, where only the
+  checksum says which columns to rebuild. A raidz3 of seven with three
+  gone rebuilt, counted, blocks from each of P, Q and R alone, each
+  pair, and all three solving three columns at once. On raidz1, counted, that rebuilt 23 and 15
   blocks from P with a disk gone and 25 and 34 after checksum failures
   with one zeroed, and 43 of the blocks read lay in the megabytes where
   the first two columns are swapped; without the swap nothing reads.
-  Missing two disks it fails, as it must. The pool fuzzer now takes
+  One disk past the parity it fails, as it must. The pool fuzzer now takes
   several disks and ran 3,000 cases on raidz1 without a fault. A label
   claiming three parity columns of three disks, which random corruption
   seldom produces, is written on purpose and has to be refused at open.

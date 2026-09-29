@@ -500,6 +500,239 @@ raidz_data_read(const struct zfs_top *tv, const struct raidz_col *rc,
 	return (0);
 }
 
+/*
+ * GF(2^8) for raidz's Q and R, as the block comment at the top of [Z]
+ * module/zfs/vdev_raidz.c defines it: addition is XOR, and
+ * multiplication by 2 is ((a << 1) ^ ((a & 0x80) ? 0x1d : 0)), from the
+ * primitive polynomial x^8 + x^4 + x^3 + x^2 + 1.  2 generates the
+ * field, so the tables of its powers and logs are built from that one
+ * definition rather than carried.
+ */
+static uint8_t gf_pow2[255], gf_log2[256];
+
+static void
+gf_init(void)
+{
+	unsigned i, a = 1;
+
+	if (gf_pow2[0] != 0)
+		return;
+	for (i = 0; i < 255; i++) {
+		gf_pow2[i] = (uint8_t)a;
+		gf_log2[a] = (uint8_t)i;
+		a = ((a << 1) ^ ((a & 0x80) ? 0x1d : 0)) & 0xff;
+	}
+}
+
+static uint8_t
+gf_mul(uint8_t a, uint8_t b)
+{
+
+	if (a == 0 || b == 0)
+		return (0);
+	return (gf_pow2[(gf_log2[a] + gf_log2[b]) % 255]);
+}
+
+static uint8_t
+gf_inv(uint8_t a)		/* a != 0 */
+{
+
+	return (gf_pow2[(255 - gf_log2[a]) % 255]);
+}
+
+/*
+ * [Z] the same comment: over data columns D_0 .. D_n-1,
+ *	P = D_0 + ... + D_n-1
+ *	Q = 2^(n-1) D_0 + ... + 2^0 D_n-1
+ *	R = 4^(n-1) D_0 + ... + 4^0 D_n-1
+ * so parity p (0, 1, 2) weighs data column i by 2^(p * (n - 1 - i)).
+ */
+static uint8_t
+raidz_coef(unsigned p, uint64_t ndata, uint64_t i)
+{
+
+	return (gf_pow2[(p * (ndata - 1 - i)) % 255]);
+}
+
+/*
+ * Invert a k x k matrix over GF(2^8) in place, k <= 3.  Returns 0 if it
+ * is singular, which for these coefficients it is not ([Z] the same
+ * comment on why 1, 2 and 4 were chosen), but a disk is not a proof.
+ */
+static int
+gf_invert(uint8_t m[3][3], int k, uint8_t inv[3][3])
+{
+	int i, j, r;
+
+	for (i = 0; i < k; i++)
+		for (j = 0; j < k; j++)
+			inv[i][j] = (i == j);
+	for (i = 0; i < k; i++) {
+		uint8_t piv, t;
+
+		for (r = i; r < k && m[r][i] == 0; r++)
+			continue;
+		if (r == k)
+			return (0);
+		for (j = 0; j < k; j++) {
+			t = m[i][j]; m[i][j] = m[r][j]; m[r][j] = t;
+			t = inv[i][j]; inv[i][j] = inv[r][j]; inv[r][j] = t;
+		}
+		piv = gf_inv(m[i][i]);
+		for (j = 0; j < k; j++) {
+			m[i][j] = gf_mul(m[i][j], piv);
+			inv[i][j] = gf_mul(inv[i][j], piv);
+		}
+		for (r = 0; r < k; r++) {
+			uint8_t f = m[r][i];
+
+			if (r == i || f == 0)
+				continue;
+			for (j = 0; j < k; j++) {
+				m[r][j] ^= gf_mul(f, m[i][j]);
+				inv[r][j] ^= gf_mul(f, inv[i][j]);
+			}
+		}
+	}
+	return (1);
+}
+
+static int
+popcount32(uint32_t v)
+{
+	int n = 0;
+
+	for (; v != 0; v &= v - 1)
+		n++;
+	return (n);
+}
+
+/*
+ * Rebuild the data columns in tset from the parity columns in pset, one
+ * byte position at a time: for each parity p in pset its syndrome is
+ * the parity byte less every data column not in tset, weighted, and the
+ * bytes of tset solve those equations.  A short column is zero past its
+ * end, both where it is read and where it is solved for.
+ */
+static void
+raidz_solve(const struct raidz_col *col, uint64_t np, uint64_t acols,
+    const struct raidz_data *rd, uint8_t *const par[3], uint32_t tset,
+    unsigned pset)
+{
+	uint8_t m[3][3], inv[3][3], syn[3];
+	uint64_t ndata = acols - np, t[3], c;
+	unsigned pl[3];
+	size_t j, psize = col[0].rc_size;
+	int k = 0, pk = 0, a, bb;
+
+	for (c = np; c < acols; c++)
+		if (tset & ((uint32_t)1 << c))
+			t[k++] = c;
+	for (a = 0; a < 3; a++)
+		if (pset & (1u << a))
+			pl[pk++] = (unsigned)a;
+	for (a = 0; a < k; a++)
+		for (bb = 0; bb < k; bb++)
+			m[a][bb] = raidz_coef(pl[a], ndata, t[bb] - np);
+	if (!gf_invert(m, k, inv))
+		return;
+
+	for (j = 0; j < psize; j++) {
+		for (a = 0; a < k; a++) {
+			uint8_t v = par[pl[a]][j];
+
+			for (c = np; c < acols; c++) {
+				if ((tset & ((uint32_t)1 << c)) ||
+				    j >= col[c].rc_size)
+					continue;
+				v ^= gf_mul(raidz_coef(pl[a], ndata, c - np),
+				    *raidz_byte(rd, c, j));
+			}
+			syn[a] = v;
+		}
+		for (bb = 0; bb < k; bb++) {
+			uint8_t x = 0;
+
+			if (j >= col[t[bb]].rc_size)
+				continue;
+			for (a = 0; a < k; a++)
+				x ^= gf_mul(inv[bb][a], syn[a]);
+			*raidz_byte(rd, t[bb], j) = x;
+		}
+	}
+}
+
+static int
+raidz_rebuild(const struct zfs_top *tv, const struct raidz_col *col,
+    uint64_t np, uint64_t acols, const struct raidz_data *rd,
+    uint32_t missing, zfs_verifyfn_t verify, void *arg, uint8_t *buf,
+    size_t len)
+{
+	uint8_t *par[3] = { NULL, NULL, NULL };
+	size_t psize = col[0].rc_size, i;
+	uint32_t all = 0, tset;
+	unsigned pok = 0, pset;
+	uint64_t c;
+	int k, err = EIO;
+
+	gf_init();
+	for (c = np; c < acols; c++)
+		all |= (uint32_t)1 << c;
+	if (popcount32(missing) > (int)np)
+		return (EIO);
+
+	/* The parity columns that can be read. */
+	for (c = 0; c < np; c++) {
+		if ((par[c] = zfs_scratch_get(psize)) == NULL) {
+			err = ENOMEM;
+			goto out;
+		}
+		if (raidz_col_read(tv, &col[c], par[c]) == 0)
+			pok |= 1u << c;
+	}
+
+	for (k = popcount32(missing); k <= (int)np; k++) {
+		if (k == 0)
+			continue;
+		/* Every tset of k data columns that holds the missing. */
+		for (tset = 0; tset <= all; tset++) {
+			if ((tset & ~all) != 0 || (tset & missing) != missing ||
+			    popcount32(tset) != k)
+				continue;
+			for (pset = 1; pset < 8; pset++) {
+				if ((pset & ~pok) != 0 ||
+				    popcount32(pset) != k)
+					continue;
+				raidz_solve(col, np, acols, rd, par, tset, pset);
+				/* The rebuilt tail's share of the block. */
+				if (tset & ((uint32_t)1 << rd->rd_last))
+					for (i = rd->rd_tailoff;
+					    rd->rd_off[rd->rd_last] + i < len &&
+					    i < col[rd->rd_last].rc_size; i++)
+						buf[rd->rd_off[rd->rd_last] +
+						    i] = rd->rd_tail[i -
+						    rd->rd_tailoff];
+				if (verify(arg, buf, len)) {
+					err = 0;
+					goto out;
+				}
+				err = EINVAL;
+				/* Put back what was read, for the next try. */
+				for (c = np; c < acols; c++)
+					if ((tset & ~missing) &
+					    ((uint32_t)1 << c))
+						(void)raidz_data_read(tv,
+						    &col[c], rd, c);
+			}
+		}
+	}
+out:
+	for (c = np; c-- > 0; )
+		if (par[c] != NULL)
+			zfs_scratch_put(par[c], psize);
+	return (err);
+}
+
 static int
 raidz_read(struct zfs_pool *pool, const struct zfs_top *tv, const dva_t *dva,
     uint8_t *buf, size_t len, zfs_verifyfn_t verify, void *arg)
@@ -508,10 +741,11 @@ raidz_read(struct zfs_pool *pool, const struct zfs_top *tv, const dva_t *dva,
 	struct raidz_data rd;
 	uint64_t ashift = tv->tv_ashift, dcols = tv->tv_nchildren;
 	uint64_t np = tv->tv_nparity;
-	uint64_t b, s, f, o, q, r, bc, acols, scols, c, x;
+	uint64_t b, s, f, o, q, r, bc, acols, scols, c;
 	size_t off[ZFS_MAX_CHILDREN], d, sec = (size_t)1 << ashift;
-	uint8_t *p, *tail;
-	int err, bad = -1;
+	uint8_t *tail;
+	uint32_t missing = 0;
+	int err;
 
 	(void)pool;
 	if (dcols <= np || len == 0)
@@ -593,65 +827,27 @@ raidz_read(struct zfs_pool *pool, const struct zfs_top *tv, const dva_t *dva,
 	rd.rd_off = off;
 
 	/* Every data column as it is on the disks. */
-	for (c = np; c < acols; c++) {
-		if (raidz_data_read(tv, &col[c], &rd, c) != 0) {
-			if (bad >= 0) {
-				zfs_scratch_put(tail, sec);
-				return (EIO);	/* two missing */
-			}
-			bad = (int)c;
-		}
-	}
-	if (bad < 0 && verify(arg, buf, len)) {
+	for (c = np; c < acols; c++)
+		if (raidz_data_read(tv, &col[c], &rd, c) != 0)
+			missing |= (uint32_t)1 << c;
+	if (missing == 0 && verify(arg, buf, len)) {
 		zfs_scratch_put(tail, sec);
 		return (0);
 	}
 
 	/*
-	 * One column is missing, or the block failed its checksum and any
-	 * one of them may be wrong.  P, parity column 0, is the XOR of the
-	 * data columns, a short column counting as zeros past its end:
-	 * [Z] vdev_raidz.c, vdev_raidz_generate_parity_p() and _pq().  So
-	 * any single data column is P xor the others, and each in turn is
-	 * rebuilt that way until the block checks out.  A second bad
-	 * column needs Q or R and is not attempted.
+	 * Some columns are missing, or the block failed its checksum and
+	 * any of them may be wrong.  With np parity columns, up to np data
+	 * columns can be rebuilt: choose the columns T taken to be bad --
+	 * every missing one, and on a checksum failure any others as well,
+	 * fewest first -- and as many of the readable parity columns S,
+	 * and solve for T.  [Z] vdev_raidz.c tries its combinations the
+	 * same way round, fewest failures first (vdev_raidz_combrec() and
+	 * raidz_reconstruct()); how it solves them is its own business,
+	 * and this solves the equations of the comment above directly.
 	 */
-	if ((p = zfs_scratch_get(col[0].rc_size)) == NULL) {
-		zfs_scratch_put(tail, sec);
-		return (ENOMEM);
-	}
-	err = EIO;
-	for (x = np; x < acols; x++) {
-		size_t i;
-
-		if (bad >= 0 && x != (uint64_t)bad)
-			continue;
-		if (raidz_col_read(tv, &col[0], p) != 0)
-			break;
-		for (c = np; c < acols; c++) {
-			if (c == x)
-				continue;
-			for (i = 0; i < col[c].rc_size; i++)
-				p[i] ^= *raidz_byte(&rd, c, i);
-		}
-		for (i = 0; i < col[x].rc_size; i++)
-			*raidz_byte(&rd, x, i) = p[i];
-		if (x == rd.rd_last) {
-			/* The rebuilt tail's share of the block. */
-			for (i = rd.rd_tailoff;
-			    off[x] + i < len && i < col[x].rc_size; i++)
-				buf[off[x] + i] = p[i];
-		}
-		if (verify(arg, buf, len)) {
-			err = 0;
-			break;
-		}
-		err = EINVAL;
-		/* Put back what was read, for the next column's turn. */
-		if (bad < 0 && raidz_data_read(tv, &col[x], &rd, x) != 0)
-			break;
-	}
-	zfs_scratch_put(p, col[0].rc_size);
+	err = raidz_rebuild(tv, col, np, acols, &rd, missing, verify, arg,
+	    buf, len);
 	zfs_scratch_put(tail, sec);
 	return (err);
 }

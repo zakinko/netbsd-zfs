@@ -19,8 +19,9 @@
 #   zstd	zstd at four levels, over text, program text and runs
 #   cksum	sha512, skein, edonr and blake3, the last three keyed
 #		with the pool's salt
-#   raidz1..3	3, 4 and 5 disks; each read whole, with its last disk
-#		gone, and with its first disk's data zeroed
+#   raidz1..3	3, 4 and 5 disks; read whole, with disks gone and with
+#		disks zeroed, up to as many as there is parity
+#   raidz3w	raidz3 of 7, three disks gone
 #
 # Each file is read through the reader and compared with the SHA-256
 # ZFS gave it, and each pool is then fuzzed with the checksums out of
@@ -338,9 +339,32 @@ for np in 1 2 3; do
 	check raidz$np "${all%,*}"
 	wipe raidz$np 0
 	check raidz$np "$all"
+	if [ $np -ge 2 ]; then
+		# np + 2 disks, disk 0 zeroed.
+		#   1,2        disk 0 and np - 1 others gone: np bad
+		#   0,1,2      disk 0 zeroed, np - 1 others gone: np bad
+		#   all        disks 0 and 1 zeroed, none gone: two bad,
+		#              and only the checksum says which
+		check raidz$np 1,2
+		check raidz$np 0,1,2
+		wipe raidz$np 1
+		check raidz$np "$all"
+		# 0,1: both zeroed and np others gone, one past the parity.
+		check1 raidz$np 0,1 random
+	fi
 done
 # Two columns gone is past single parity.
 check1 raidz1 0 random
+
+# Five disks under triple parity leave a block two data columns, so
+# the three column solve above is never reached.  Seven leave four:
+# with three disks gone, some blocks lose three data columns and need
+# P, Q and R together, and others one or two in each combination.
+echo "=== raidz3 of seven, three gone"
+mk raidz3w files "raidz3 D D D D D D D"
+check raidz3w 0,1,2,3
+check raidz3w 0,2,4,6
+check1 raidz3w 0,1,2 random
 
 # A label claiming as much parity as there are disks leaves no data
 # column, and the column arithmetic divides by the difference.  Random
