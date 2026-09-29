@@ -849,8 +849,12 @@ gf_invert(uint8_t m[3][3], int k, uint8_t inv[3][3])
 	return (1);
 }
 
+/*
+ * Not popcount32: NetBSD's <string.h> declares one returning unsigned
+ * int, and the test drivers include this file after it.
+ */
 static int
-popcount32(uint32_t v)
+raidz_popcount(uint32_t v)
 {
 	int n = 0;
 
@@ -1040,7 +1044,7 @@ raidz_rebuild(const struct zfs_top *tv, const struct raidz_map *rm,
 			if (raidz_col_read(tv, &rr.rr_col[c],
 			    par + (row * np + c) * psize) != 0)
 				miss[row] |= (uint32_t)1 << c;
-		if (popcount32(miss[row]) > (int)np)
+		if (raidz_popcount(miss[row]) > (int)np)
 			goto out;
 	}
 
@@ -1055,7 +1059,7 @@ raidz_rebuild(const struct zfs_top *tv, const struct raidz_map *rm,
 				(void)raidz_map_row(rm, row, &rr);
 				dmask = raidz_dmask(&rr, np);
 				bad = raidz_row_bad(tv, &rr, miss[row], ids, k);
-				if (popcount32(bad) > (int)np)
+				if (raidz_popcount(bad) > (int)np)
 					fits = 0;
 				else if ((bad & dmask) != 0 &&
 				    (k == 0 || (bad & ~miss[row]) != 0))
@@ -1074,8 +1078,8 @@ raidz_rebuild(const struct zfs_top *tv, const struct raidz_map *rm,
 				pset = 0;
 				for (c = 0; c < np; c++)
 					if (!(bad & ((uint32_t)1 << c)) &&
-					    popcount32(pset) <
-					    popcount32(bad & dmask))
+					    raidz_popcount(pset) <
+					    raidz_popcount(bad & dmask))
 						pset |= 1u << c;
 				raidz_solve(&rr, np, rd,
 				    par + row * np * psize, psize,
