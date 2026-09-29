@@ -106,10 +106,20 @@ defines. Up to as many columns as there is parity are rebuilt, missing
 ones first and, on a checksum failure, every combination fewest first,
 by solving those equations for the columns taken to be bad.
 
-It refuses, rather than guessing: a raidz that has been widened or is
-being widened, whose older blocks are laid out for fewer columns; more
-bad columns than there is parity; and a label giving as much parity as
-there are disks.
+A raidz that has been widened keeps each block at the width it was
+written at, found from the block's physical birth txg and the txgs the
+label lists for each widening, and a block narrower than the raidz is
+laid out a sector per column in rows of its own width. One being
+widened is read as far as the uberblock says the move has got: rows
+below that at their new place, or in the copy kept in the boot area
+while the uberblock says that copy is the good one, and the rest where
+they were. On a widened raidz a guess at a bad disk is also a guess at
+one that was bad before a widening, whose sectors the move spread
+diagonally; the guesses are counted that way, as OpenZFS counts them.
+
+It refuses, rather than guessing: more bad columns than there is
+parity, and a label giving as much parity as the raidz had disks when
+it was made.
 
 The checksums after SHA-256 are each written from their own
 specification -- FIPS 180-4, Skein 1.3, the Edon-R submission and the
@@ -246,6 +256,21 @@ Pools made by OpenZFS 2.4.1 on Linux, by `test/openzfs.sh`:
   several disks and ran 3,000 cases on raidz1 without a fault. A label
   claiming three parity columns of three disks, which random corruption
   seldom produces, is written on purpose and has to be refused at open.
+
+- raidz widened with `zpool attach`: raidz1 of three to four and
+  raidz2 of four to six in two steps, with files written at every
+  width, read whole, with disks gone and with one zeroed. A raidz1
+  paused part way through the move and exported, with rows above,
+  below and across the point the move reached. And the state OpenZFS
+  keeps only for a moment -- the first rows good only in the boot
+  area's copy -- which nothing but ztest can stop at, so it is made by
+  hand from a paused pool: the copy rewritten, the rows' new place
+  zeroed and the newest uberblocks marked; zdb reads the marks back,
+  and with the old marks the same disks lose four files of five. With
+  the width lookup, the move's offset or the boot area's copy each
+  taken out of the reader in turn, 32, 23 and 4 of those reads fail.
+  OpenZFS older than 2.3 has no expansion, and the CI runner's 2.2
+  skips these.
 
 `test/hashes.sh` checks each hash against its specification's own
 vectors: NIST's two SHA-512/256 examples, Skein's Appendix C.2 and the

@@ -22,6 +22,16 @@
 #   raidz1..3	3, 4 and 5 disks; read whole, with disks gone and with
 #		disks zeroed, up to as many as there is parity
 #   raidz3w	raidz3 of 7, three disks gone
+#   raidzx1	raidz1 of 3 widened to 4, files written before and after;
+#		whole, a disk gone and a disk zeroed
+#   raidzx2	raidz2 of 4 widened twice, to 6; the same, two at a time
+#   raidzxp	raidz1 of 3 being widened, the move paused part way
+#   raidzxs	the same paused just past the scratch area, rewritten
+#		into the state of a crash while the scratch copy was
+#		the only good one
+#
+# The raidz_expansion cases need OpenZFS 2.3; with an older one they
+# are skipped, and say so.
 #
 # Each file is read through the reader and compared with the SHA-256
 # ZFS gave it, and each pool is then fuzzed with the checksums out of
@@ -35,9 +45,12 @@ W=$(mktemp -d)
 P=/sys/module/zfs/parameters
 old_fg=$(cat $P/metaslab_force_ganging)
 old_pct=$(cat $P/metaslab_force_ganging_pct)
+R=$P/raidz_expand_max_reflow_bytes
+old_rf=$(cat $R 2>/dev/null || true)
 cleanup() {
 	echo "$old_fg" > $P/metaslab_force_ganging
 	echo "$old_pct" > $P/metaslab_force_ganging_pct
+	[ -z "$old_rf" ] || echo "$old_rf" > $R
 	for p in $(zpool list -H -o name 2>/dev/null); do
 		case $p in zbt_*) zpool destroy -f "$p" ;; esac
 	done
@@ -365,6 +378,185 @@ mk raidz3w files "raidz3 D D D D D D D"
 check raidz3w 0,1,2,3
 check raidz3w 0,2,4,6
 check1 raidz3w 0,1,2 random
+
+# Widening a raidz ([Z] vdev_raidz.c, the block comment on expansion)
+# leaves the blocks already written at the old width, moved row by row
+# onto the new children, and later ones at the new width.  Each file set
+# below is written at a different width, so reading them all back takes
+# every width the raidz has had.
+#
+# widen <mountpoint> <widenings>: files, then that many new disks, each
+# followed by files of its own.
+widen() {
+	pool=${1##*/}
+	files "$1"
+	zpool sync "$pool"
+	vd=$(zpool status "$pool" | awk '$1 ~ /^raidz[0-9]-0$/ { print $1; exit }')
+	n=$(ls "$W/$pool"-*.img | wc -l)
+	k=0
+	while [ $k -lt "$WIDEN" ]; do
+		d=$W/$pool-$n.img
+		truncate -s 128M "$d"
+		zpool attach "$pool" "$vd" "$d"
+		zpool wait -t raidz_expand "$pool"
+		zfs create -o compression=off "$pool/w$k"
+		head -c 1048576 /dev/urandom > "$1/w$k/random"
+		seq 1 50000 > "$1/w$k/text"
+		n=$((n + 1)); k=$((k + 1))
+	done
+}
+
+# paused <mountpoint>: data enough to reach past the scratch area when
+# $BIG is set, then a new disk, with the move held at $REFLOW bytes, and
+# files written while it is held.  The pool is exported mid-move, which
+# keeps raidz_expanding in the label and the progress in the uberblock.
+paused() {
+	pool=${1##*/}
+	files "$1"
+	[ -z "${BIG:-}" ] || head -c 41943040 /dev/urandom > "$1/big"
+	zpool sync "$pool"
+	vd=$(zpool status "$pool" | awk '$1 ~ /^raidz[0-9]-0$/ { print $1; exit }')
+	n=$(ls "$W/$pool"-*.img | wc -l)
+	echo "$REFLOW" > $R
+	truncate -s 128M "$W/$pool-$n.img"
+	zpool attach "$pool" "$vd" "$W/$pool-$n.img"
+	i=0
+	until zpool status "$pool" | grep -q 'copied'; do
+		i=$((i + 1)); [ $i -lt 60 ] || break; sleep 1
+	done
+	sleep 5
+	zfs create -o compression=off "$pool/during"
+	head -c 1048576 /dev/urandom > "$1/during/random"
+}
+
+# somewrong <pool>: at least one file has to come out wrong.  Each
+# check runs in a subshell, so what it would count as a failure does
+# not reach $fail; only the tally here does.
+somewrong() {
+	cp "$W/zbt_$1.sha256" "$W/all.sha256"
+	nw=0
+	while read -r line; do
+		echo "$line" > "$W/zbt_$1.sha256"
+		out=$(check "$1" "" wrong 2>&1)
+		case $out in *"as it should be"*) nw=$((nw + 1)) ;; esac
+	done < "$W/all.sha256"
+	cp "$W/all.sha256" "$W/zbt_$1.sha256"
+	echo "  $1: $nw of $(wc -l < "$W/all.sha256") files wrong"
+	[ $nw -gt 0 ] || fail=1
+}
+
+# The reflow state of the newest uberblock, as zdb has it.
+reflow() {
+	zdb -lu "$W/zbt_$1-0.img" | awk '
+	    $1 == "txg" { t = $3 }
+	    /raidz_reflow/ && t + 0 >= best + 0 { best = t; s = $0 }
+	    END { sub(/^[ \t]*/, "", s); print "txg " best ": " s }'
+}
+
+if [ -e $R ]; then
+	echo "=== raidz1 widened once"
+	WIDEN=1 mk raidzx1 widen "raidz1 D D D"
+	check raidzx1
+	check raidzx1 0,1,2
+	check raidzx1 1,2,3
+	wipe raidzx1 2
+	check raidzx1
+	check1 raidzx1 0,1 random
+
+	echo "=== raidz2 widened twice"
+	WIDEN=2 mk raidzx2 widen "raidz2 D D D D"
+	check raidzx2
+	check raidzx2 0,1,2,3
+	check raidzx2 2,3,4,5
+	wipe raidzx2 1
+	check raidzx2 0,1,2,3,4
+	check1 raidzx2 0,1,2 random
+
+	echo "=== raidz1 being widened, the move paused"
+	BIG=1 REFLOW=20971520 mk raidzxp paused "raidz1 D D D"
+	echo 0 > $R
+	echo "  $(reflow raidzxp)"
+	check raidzxp
+	check raidzxp 1,2,3
+	wipe raidzxp 3
+	check raidzxp
+
+	# [Z] raidz_reflow_scratch_sync() moves the first rows through a
+	# copy in the boot area, VDEV_BOOT_OFFSET on each child, and marks
+	# the uberblock RRSS_SCRATCH_VALID while the real place may be
+	# half written.  Nothing outside ztest stops it there, so the
+	# state is made by hand: pause as soon after that step as the
+	# tunable allows, copy the rows' new place into the scratch area,
+	# zero the new place, and mark the newest uberblocks SCRATCH_VALID
+	# at the copy's end.  The rows the move reached beyond that are
+	# then read from where they were before it, which holds only while
+	# no block lies in them -- a small pool, and every file matching
+	# its SHA-256 afterwards, is what says so.  With the old marks the
+	# same disks must lose files: the rows under the zeroed place hold
+	# the pool's first blocks, and a reader that does not take them
+	# from the scratch area finds zeros.  A file written during the
+	# pause lies beyond them and may still read.
+	echo "=== raidz1 being widened, only the scratch copy good"
+	REFLOW=1 mk raidzxs paused "raidz1 D D D"
+	echo 0 > $R
+	echo "  $(reflow raidzxs)"
+	for i in 0 1 2 3; do
+		python3 - "$W/zbt_raidzxs-$i.img" 4 12 <<'PY'
+import hashlib, struct, sys
+path, children, ashift = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+f = open(path, 'r+b')
+M = 1 << 20
+# [Z] raidz_reflow_scratch_sync(): VDEV_BOOT_SIZE aligned to a sector,
+# written at VDEV_BOOT_OFFSET, and the logical size it covers.
+wsize = (7 << 19) & ~((1 << ashift) - 1)
+f.seek(4 * M); new = f.read(wsize)
+f.seek(M // 2); f.write(new)
+f.seek(4 * M); f.write(b'\0' * wsize)
+f.close()
+PY
+	done
+	somewrong raidzxs
+	for i in 0 1 2 3; do
+		python3 - "$W/zbt_raidzxs-$i.img" 4 12 <<'PY'
+import hashlib, os, struct, sys
+path, children, ashift = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+f = open(path, 'r+b')
+size = os.path.getsize(path) & ~(256 * 1024 - 1)
+K = 1024
+slot = 1 << max(ashift, 10)
+wsize = (7 << 19) & ~((1 << ashift) - 1)
+L = wsize * children
+# [Z] uberblock_impl.h: ub_txg is word 2, ub_raidz_reflow_info follows
+# the 128 byte rootbp and five more words; RRSS offset is in 512 byte
+# units in the low 55 bits, the state in the 9 above.
+labels = [0, 256 * K, size - 512 * K, size - 256 * K]
+ubs = []
+for lo in labels:
+    for off in range(lo + 128 * K, lo + 256 * K, slot):
+        f.seek(off); b = f.read(slot)
+        if struct.unpack_from('<Q', b, 0)[0] == 0x00bab10c:
+            ubs.append((struct.unpack_from('<Q', b, 16)[0], off, bytearray(b)))
+top = max(t for t, _, _ in ubs)
+n = 0
+for t, off, b in ubs:
+    if t != top:
+        continue
+    struct.pack_into('<Q', b, 208, (1 << 55) | (L >> 9))
+    # [Z] vdev_label.c: the embedded checksum is SHA-256 of the slot
+    # with the checksum field holding the slot's offset and three zeros.
+    struct.pack_into('<4Q', b, slot - 32, off, 0, 0, 0)
+    d = hashlib.sha256(bytes(b)).digest()
+    struct.pack_into('<4Q', b, slot - 32, *struct.unpack('>4Q', d))
+    f.seek(off); f.write(b); n += 1
+print('  %s: %d uberblocks of txg %d marked SCRATCH_VALID at %d'
+      % (path.split('/')[-1], n, top, L))
+PY
+	done
+	echo "  $(reflow raidzxs)"
+	check raidzxs
+else
+	echo "=== raidz expansion: this OpenZFS has none, skipped"
+fi
 
 # A label claiming as much parity as there are disks leaves no data
 # column, and the column arithmetic divides by the difference.  Random

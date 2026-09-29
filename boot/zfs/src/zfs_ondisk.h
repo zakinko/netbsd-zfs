@@ -135,7 +135,14 @@ typedef struct {
  */
 #define	UBERBLOCK_MAGIC		0x00bab10cULL
 
-/* [S] §1.3.4 */
+/*
+ * [S] §1.3.4 gives the fields up to ub_rootbp.  The rest are [Z]
+ * include/sys/uberblock_impl.h, struct uberblock (openzfs/zfs 81b19c6),
+ * of which only ub_raidz_reflow_info is read: how far an expanding
+ * raidz has been moved, see raidz_read().  A pool older than a field
+ * has zeros there, and the slot is at least 1K ([S] §1.3.4), so the
+ * whole structure is always inside it.
+ */
 struct uberblock {
 	uint64_t	ub_magic;
 	uint64_t	ub_version;
@@ -143,7 +150,32 @@ struct uberblock {
 	uint64_t	ub_guid_sum;
 	uint64_t	ub_timestamp;
 	blkptr_t	ub_rootbp;
+	uint64_t	ub_software_version;	/* [Z] */
+	uint64_t	ub_mmp_magic;
+	uint64_t	ub_mmp_delay;
+	uint64_t	ub_mmp_config;
+	uint64_t	ub_checkpoint_txg;
+	uint64_t	ub_raidz_reflow_info;
 };
+
+/*
+ * [Z] uberblock_impl.h, RRSS_GET_OFFSET() and RRSS_GET_STATE(): the
+ * low 55 bits are the offset in the raidz up to which rows have been
+ * moved, in 512 byte units (BF64_GET_SB with SPA_MINBLOCKSHIFT), and
+ * the 9 above them the state of the scratch area; RRSS_SCRATCH_VALID
+ * is 1 in enum raidz_reflow_scratch_state.
+ */
+#define	RRSS_GET_OFFSET(ub)	\
+	(((ub)->ub_raidz_reflow_info & ((1ULL << 55) - 1)) << 9)
+#define	RRSS_GET_STATE(ub)	(((ub)->ub_raidz_reflow_info >> 55) & 0x1ff)
+#define	RRSS_SCRATCH_VALID	1
+
+/*
+ * [Z] vdev_impl.h: the part of the 4MB before the data that is not the
+ * two front labels.  An expanding raidz keeps a copy of its first rows
+ * there while it moves them; see raidz_read().
+ */
+#define	VDEV_BOOT_SIZE		(7ULL << 19)	/* 3.5MB */
 
 /*
  * [S] §1.3.3, Table 1.
@@ -972,7 +1004,7 @@ typedef struct {
 #endif
 
 CTASSERT(sizeof(blkptr_t) == 128);		/* [S] chapter 2 */
-CTASSERT(sizeof(struct uberblock) == 5 * 8 + 128);  /* [S] §1.3.4 */
+CTASSERT(sizeof(struct uberblock) == 5 * 8 + 128 + 6 * 8); /* [S] §1.3.4, [Z] */
 CTASSERT(sizeof(mzap_ent_phys_t) == MZAP_ENT_LEN);  /* [S] §5.1 */
 CTASSERT(MZAP_NAME_LEN == 50);			/* [S] chapter 5 */
 CTASSERT(sizeof(zap_leaf_entry_t) == ZAP_LEAF_CHUNKSIZE);

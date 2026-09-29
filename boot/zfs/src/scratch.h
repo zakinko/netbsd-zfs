@@ -24,12 +24,18 @@
  * block of literals and ZSTD_STATE_MAX of tables in the same place --
  * less than the gang headers' share, so that share covers both.
  *
- * A block on a raidz takes a sector for the padding at its end and, if
- * it has to be rebuilt, up to three parity columns; each is at most a
- * block, and they can be taken under every gang header at once.
+ * A block on a raidz takes a sector for the padding at its end, a word
+ * for each row of its map, and, if it has to be rebuilt, up to three
+ * parity columns; each column is at most a block, and they can be
+ * taken under every gang header at once.  A map has at most a row per
+ * sector of the block: the narrowest raidz, one data column beside its
+ * parity, puts one data sector in each row, and a wider one fewer rows.
+ * The smallest sector is [S] §2.1's 512 bytes.
  */
 #define	ZFS_MAXBLOCKSIZE	(128 * 1024)
-#define	ZFS_SCRATCH_SIZE	((11 + ZFS_GANG_MAXDEPTH) * ZFS_MAXBLOCKSIZE)
+#define	ZFS_RAIDZ_MAXROWS	(ZFS_MAXBLOCKSIZE / 512)
+#define	ZFS_SCRATCH_SIZE	((11 + ZFS_GANG_MAXDEPTH) * ZFS_MAXBLOCKSIZE + \
+				 ZFS_RAIDZ_MAXROWS * 4)
 
 int	zfs_scratch_init(void *, size_t);
 void	*zfs_scratch_get(size_t);

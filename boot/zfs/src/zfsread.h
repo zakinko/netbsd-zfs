@@ -56,6 +56,13 @@ struct zfs_top {
 	uint32_t	tv_nparity;	/* raidz only: 1 to 3 */
 	uint32_t	tv_nchildren;
 	struct zfs_leaf	tv_child[ZFS_MAX_CHILDREN];
+	/*
+	 * raidz only: the txgs at which it was widened, ascending, and
+	 * whether it is being widened now.  See raidz_width().
+	 */
+	uint32_t	tv_nexpand;
+	int		tv_expanding;
+	uint64_t	tv_expand_txg[ZFS_MAX_CHILDREN];
 };
 
 struct zfs_pool {

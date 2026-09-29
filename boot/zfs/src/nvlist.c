@@ -48,7 +48,9 @@
 
 #define	NV_ENCODE_XDR		1	/* [Z] nvpair.h */
 
-#define	DATA_TYPE_UINT64	8	/* [Z] nvpair.h */
+#define	DATA_TYPE_BOOLEAN	1	/* [Z] nvpair.h */
+#define	DATA_TYPE_UINT64	8
+#define	DATA_TYPE_UINT64_ARRAY	16
 #define	DATA_TYPE_STRING	9
 #define	DATA_TYPE_NVLIST	19
 #define	DATA_TYPE_NVLIST_ARRAY	20
@@ -165,6 +167,15 @@ nv_walk(struct nvs *s, const char *name, int want, struct nvpair_value *out)
 		}
 
 		switch (type) {
+		case DATA_TYPE_BOOLEAN:
+			/*
+			 * [Z] nvpair.c, i_validate_type_nelem(): a boolean
+			 * is a name alone, with no elements and no value;
+			 * that it is there is what it says.
+			 */
+			if (want != NV_WANT_BOOLEAN || nelem != 0)
+				return (EINVAL);
+			return (0);
 		case DATA_TYPE_UINT64:
 			if (want != NV_WANT_UINT64 || nelem != 1)
 				return (EINVAL);
@@ -174,6 +185,24 @@ nv_walk(struct nvs *s, const char *name, int want, struct nvpair_value *out)
 				return (EINVAL);
 			return (nv_string(s, &out->nv_string,
 			    &out->nv_strlen));
+		case DATA_TYPE_UINT64_ARRAY: {
+			uint32_t n;
+
+			/*
+			 * [Z] nvpair.c, nvs_xdr_nvp_op(): xdr_array(),
+			 * which is RFC 4506 §4.13's variable length array:
+			 * a count, then the elements, eight bytes each.
+			 */
+			if (want != NV_WANT_UINT64_ARRAY)
+				return (EINVAL);
+			if (nv_u32(s, &n) != 0 || n != nelem ||
+			    (size_t)n > (next - s->pos) / 8)
+				return (EINVAL);
+			out->nv_list = s->base + s->pos;
+			out->nv_listlen = (size_t)n * 8;
+			out->nv_nelem = n;
+			return (0);
+		}
 		case DATA_TYPE_NVLIST:
 		case DATA_TYPE_NVLIST_ARRAY:
 			if (want != NV_WANT_NVLIST)
@@ -270,4 +299,17 @@ nvlist_array_elem(const struct nvpair_value *arr, uint32_t i,
 	out->nv_listlen = s.len - s.pos;
 	out->nv_nelem = 1;
 	return (0);
+}
+
+/* Element i of a uint64 array found by nvlist_find(); i < nv_nelem. */
+uint64_t
+nvlist_u64_elem(const struct nvpair_value *v, uint32_t i)
+{
+	const uint8_t *p = v->nv_list + (size_t)i * 8;
+	uint64_t x = 0;
+	int k;
+
+	for (k = 0; k < 8; k++)
+		x = (x << 8) | p[k];
+	return (x);
 }
