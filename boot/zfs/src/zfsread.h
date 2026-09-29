@@ -53,7 +53,7 @@ struct zfs_leaf {
 struct zfs_top {
 	int		tv_type;
 	uint32_t	tv_ashift;
-	uint32_t	tv_nparity;	/* raidz only */
+	uint32_t	tv_nparity;	/* raidz only: 1 to 3 */
 	uint32_t	tv_nchildren;
 	struct zfs_leaf	tv_child[ZFS_MAX_CHILDREN];
 };

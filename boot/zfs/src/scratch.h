@@ -23,9 +23,13 @@
  * back before the block is expanded, and a zstd block then takes a
  * block of literals and ZSTD_STATE_MAX of tables in the same place --
  * less than the gang headers' share, so that share covers both.
+ *
+ * A block on a raidz takes a sector for the padding at its end and, if
+ * it has to be rebuilt, its P column; each is at most a block, and they
+ * can be taken under every gang header at once.
  */
 #define	ZFS_MAXBLOCKSIZE	(128 * 1024)
-#define	ZFS_SCRATCH_SIZE	((7 + ZFS_GANG_MAXDEPTH) * ZFS_MAXBLOCKSIZE)
+#define	ZFS_SCRATCH_SIZE	((9 + ZFS_GANG_MAXDEPTH) * ZFS_MAXBLOCKSIZE)
 
 int	zfs_scratch_init(void *, size_t);
 void	*zfs_scratch_get(size_t);

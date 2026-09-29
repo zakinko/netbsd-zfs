@@ -28,7 +28,8 @@ gives 15, and division is what finding a parent means.
 
 ## What it reads
 
-A pool on one or more disks or partitions, striped, mirrored or both:
+A pool on one or more disks or partitions, striped, mirrored, raidz or
+a mix:
 labels, uberblocks,
 block pointers
 (including embedded ones), gang blocks, fletcher2, fletcher4, SHA-256,
@@ -91,13 +92,22 @@ block that fails its checksum on one is read again from the next, and
 the newest uberblock is taken across every leaf found, since a disk
 that was away holds older ones.
 
-raidz is refused when the pool is opened, by name, from the label's
-`vdev_tree`. Its data is spread across the children with parity and an
-offset lands somewhere else on each, so left alone the reader would
-open the pool, read a block from the wrong place and report an I/O
-error on a disk that is perfectly sound.
+raidz is the one layout [S] does not describe. It names the vdev type,
+counts parity in a DVA's asize and reserves the DVA's GRID field for
+"Raid-Z layout information", and says nothing of where a block's
+columns go; no other normative description was found. So the layout is
+taken from OpenZFS, and `spec/notes-raidz.md` lists which file and
+function each part came from, at which commit: how a block is spread
+over the children, where its data columns sit, single parity's column
+swap every other megabyte, the rounding of an I/O to whole sectors,
+and P as the XOR of the data columns. A missing child, or a block that
+fails its checksum, is read again with each data column in turn
+rebuilt from P.
 
-It refuses, rather than guessing: raidz.
+It refuses, rather than guessing: a raidz that has been widened or is
+being widened, whose older blocks are laid out for fewer columns; two
+bad columns at once, which on raidz2 and raidz3 would need Q and R;
+and a label giving as much parity as there are disks.
 
 The checksums after SHA-256 are each written from their own
 specification -- FIPS 180-4, Skein 1.3, the Edon-R submission and the
@@ -190,8 +200,6 @@ but zeros.
   Device not configured" instead. The mirror boots with every block of
   the first disk's ZFS partition zeroed, labels apart, so every block
   was read again from the second.
-- A raidz1 of three: refused at `zfs_pool_open` with ENOTSUP rather
-  than failing a checksum later.
 
 Pools made by OpenZFS 2.4.1 on Linux, by `test/openzfs.sh`:
 
@@ -222,6 +230,17 @@ Pools made by OpenZFS 2.4.1 on Linux, by `test/openzfs.sh`:
   SHA-256 as ZFS gives, and zdb counts 33 to 35 block pointers with
   each checksum. For the three keyed ones this is the only test of the
   keying.
+
+- raidz1, raidz2 and raidz3 of three, four and five disks: every file
+  matches with all the disks, with the last one gone, and with the
+  first one's data zeroed. On raidz1, counted, that rebuilt 23 and 15
+  blocks from P with a disk gone and 25 and 34 after checksum failures
+  with one zeroed, and 43 of the blocks read lay in the megabytes where
+  the first two columns are swapped; without the swap nothing reads.
+  Missing two disks it fails, as it must. The pool fuzzer now takes
+  several disks and ran 3,000 cases on raidz1 without a fault. A label
+  claiming three parity columns of three disks, which random corruption
+  seldom produces, is written on purpose and has to be refused at open.
 
 `test/hashes.sh` checks each hash against its specification's own
 vectors: NIST's two SHA-512/256 examples, Skein's Appendix C.2 and the

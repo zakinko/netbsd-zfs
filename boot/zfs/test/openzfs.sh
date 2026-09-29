@@ -19,6 +19,8 @@
 #   zstd	zstd at four levels, over text, program text and runs
 #   cksum	sha512, skein, edonr and blake3, the last three keyed
 #		with the pool's salt
+#   raidz1..3	3, 4 and 5 disks; each read whole, with its last disk
+#		gone, and with its first disk's data zeroed
 #
 # Each file is read through the reader and compared with the SHA-256
 # ZFS gave it, and each pool is then fuzzed with the checksums out of
@@ -193,7 +195,7 @@ check() {
 			fail=1
 		fi
 	done < "$W/$name.sha256"
-	if [ "$expect" = ok ] && [ "$first" = "$img" ]; then
+	if [ "$expect" = ok ]; then
 		./fuzz_pool "$img" 0 "${FUZZ:-/random}" 1000 7 |
 		    sed 's/^/  /'
 	fi
@@ -317,6 +319,63 @@ for ck in sha512 skein edonr blake3; do
 	[ "${c:-0}" -gt 0 ] || { echo "  nothing was written with $ck"; fail=1; }
 done
 FUZZ=blake3:/prog check cksum
+
+# A missing disk and a zeroed one both leave a column that only P can
+# give back, one by I/O error and one by checksum.  The pool's blocks
+# lie at offsets across many megabytes of the vdev, both sides of the
+# 1MB boundaries where single parity swaps its first two columns.
+for np in 1 2 3; do
+	echo "=== raidz$np"
+	layout=raidz$np
+	i=0
+	while [ $i -lt $((np + 2)) ]; do
+		layout="$layout D"
+		i=$((i + 1))
+	done
+	mk raidz$np files "$layout"
+	all=$(seq 0 $((np + 1)) | paste -sd, -)
+	check raidz$np "$all"
+	check raidz$np "${all%,*}"
+	wipe raidz$np 0
+	check raidz$np "$all"
+done
+# Two columns gone is past single parity.
+check1 raidz1 0 random
+
+# A label claiming as much parity as there are disks leaves no data
+# column, and the column arithmetic divides by the difference.  Random
+# corruption rarely makes that one value and nothing else wrong, so it
+# is set on purpose, in every label of every disk, and the pool has to
+# be refused rather than crash the reader.
+echo "=== a raidz label with no room for data"
+for i in 0 1 2; do
+	python3 - "$W/zbt_raidz1-$i.img" <<'PY'
+import sys
+f = open(sys.argv[1], 'r+b')
+d = f.read()
+# XDR: name length 7, "nparity" padded to 8, type 8 (uint64), 1 element
+pat = b'\0\0\0\x07nparity\0\0\0\0\x08\0\0\0\x01'
+at = d.find(pat)
+n = 0
+while at >= 0:
+    f.seek(at + len(pat))
+    f.write((3).to_bytes(8, 'big'))
+    n += 1
+    at = d.find(pat, at + 1)
+print('  nparity set to 3 in %d labels of %s' % (n, sys.argv[1].split('/')[-1]))
+PY
+done
+rc=0
+./t_cat "$W/zbt_raidz1-0.img,$W/zbt_raidz1-1.img,$W/zbt_raidz1-2.img" \
+    0 $(( $(wc -c < "$W/zbt_raidz1-0.img") / 512 )) "" /random "$W/out" \
+    > "$W/msg" 2>&1 || rc=$?
+msg=$(tail -1 "$W/msg")
+if [ $rc -eq 1 ] && grep -q '^pool: ' "$W/msg"; then
+	echo "  refused at open: $msg"
+else
+	echo "  not refused at open (exit $rc): $msg"
+	fail=1
+fi
 
 echo "=== two two-way mirrors"
 mk mirrors files "mirror D D mirror D D"

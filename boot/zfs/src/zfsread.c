@@ -413,6 +413,249 @@ static int	dva_read(struct zfs_pool *, const blkptr_t *, int, uint8_t *,
  */
 typedef int (*zfs_verifyfn_t)(void *, const void *, size_t);
 
+/*
+ * raidz.
+ *
+ * [S] names the vdev type and says a DVA's asize includes its parity,
+ * and nothing more; everything below is from OpenZFS, file and function
+ * named at each step, all at openzfs/zfs 81b19c6.
+ */
+struct raidz_col {
+	uint32_t	rc_devidx;	/* which child */
+	uint64_t	rc_offset;	/* on that child, labels not counted */
+	size_t		rc_size;	/* bytes, 0 for a skipped column */
+};
+
+/* Read column c into buf, from a child that was found. */
+static int
+raidz_col_read(const struct zfs_top *tv, const struct raidz_col *rc,
+    void *buf)
+{
+	const struct zfs_leaf *lf = &tv->tv_child[rc->rc_devidx];
+
+	if (lf->lf_read == NULL)
+		return (ENXIO);
+	/*
+	 * [Z] module/zfs/zio.c, zio_vdev_child_io(): an I/O to a leaf
+	 * vdev has VDEV_LABEL_START_SIZE added to its offset -- the same
+	 * 4MB [S] §2.1 adds for a disk that is its own top-level vdev.
+	 */
+	return (lf->lf_read(lf->lf_cookie, rc->rc_offset +
+	    VDEV_LABEL_START_SIZE, buf, rc->rc_size));
+}
+
+/*
+ * A raidz block's data is its bytes laid down the data columns in order
+ * ([Z] vdev_raidz.c, vdev_raidz_map_alloc_read()), rounded up to whole
+ * sectors ([Z] zio.c, zio_vdev_io_start(), which pads a write with
+ * zeros).  The caller's buffer holds only the block, so the padding --
+ * less than a sector, and always in the last sector of the last data
+ * column -- is read into tail instead.  These address byte i of data
+ * column c wherever it is kept.
+ */
+struct raidz_data {
+	uint8_t		*rd_buf;	/* the block, rd_len bytes */
+	size_t		rd_len;
+	uint8_t		*rd_tail;	/* last sector of the last column */
+	size_t		rd_tailoff;	/* where that sector starts in it */
+	uint64_t	rd_last;	/* the last data column */
+	size_t		*rd_off;	/* each data column's place in buf */
+};
+
+static uint8_t *
+raidz_byte(const struct raidz_data *rd, uint64_t c, size_t i)
+{
+
+	if (c == rd->rd_last && i >= rd->rd_tailoff)
+		return (&rd->rd_tail[i - rd->rd_tailoff]);
+	return (&rd->rd_buf[rd->rd_off[c] + i]);
+}
+
+/* Read data column c into its place. */
+static int
+raidz_data_read(const struct zfs_top *tv, const struct raidz_col *rc,
+    const struct raidz_data *rd, uint64_t c)
+{
+	struct raidz_col part = *rc;
+	int err;
+
+	if (c != rd->rd_last)
+		return (raidz_col_read(tv, rc, rd->rd_buf + rd->rd_off[c]));
+	part.rc_size = rd->rd_tailoff;
+	if (part.rc_size > 0 &&
+	    (err = raidz_col_read(tv, &part, rd->rd_buf + rd->rd_off[c])) != 0)
+		return (err);
+	part.rc_offset = rc->rc_offset + rd->rd_tailoff;
+	part.rc_size = rc->rc_size - rd->rd_tailoff;
+	if ((err = raidz_col_read(tv, &part, rd->rd_tail)) != 0)
+		return (err);
+	/* The part of the last sector that belongs to the block. */
+	{
+		size_t i, n = rd->rd_len - (rd->rd_off[c] + rd->rd_tailoff);
+
+		for (i = 0; i < n; i++)
+			rd->rd_buf[rd->rd_off[c] + rd->rd_tailoff + i] =
+			    rd->rd_tail[i];
+	}
+	return (0);
+}
+
+static int
+raidz_read(struct zfs_pool *pool, const struct zfs_top *tv, const dva_t *dva,
+    uint8_t *buf, size_t len, zfs_verifyfn_t verify, void *arg)
+{
+	struct raidz_col col[ZFS_MAX_CHILDREN];
+	struct raidz_data rd;
+	uint64_t ashift = tv->tv_ashift, dcols = tv->tv_nchildren;
+	uint64_t np = tv->tv_nparity;
+	uint64_t b, s, f, o, q, r, bc, acols, scols, c, x;
+	size_t off[ZFS_MAX_CHILDREN], d, sec = (size_t)1 << ashift;
+	uint8_t *p, *tail;
+	int err, bad = -1;
+
+	(void)pool;
+	if (dcols <= np || len == 0)
+		return (EINVAL);
+
+	/*
+	 * [Z] module/zfs/vdev_raidz.c, vdev_raidz_map_alloc(): the block
+	 * is spread over the children a row at a time, starting at child
+	 * b % dcols.  Each of the first bc columns holds q + 1 sectors
+	 * and the rest q; the first np columns are parity.  A block too
+	 * small to fill a row uses only the columns it needs.  The skip
+	 * sectors that pad a block's allocation to a multiple of np + 1
+	 * are after its last column and never read.  The size mapped is
+	 * the I/O's, rounded up to sectors as above.
+	 */
+	b = DVA_GET_OFFSET(dva) >> ashift;
+	s = (len + sec - 1) >> ashift;
+	f = b % dcols;
+	o = (b / dcols) << ashift;
+	q = s / (dcols - np);
+	r = s - q * (dcols - np);
+	bc = (r == 0 ? 0 : r + np);
+	if (q == 0) {
+		acols = bc;
+		scols = (bc + np) / (np + 1) * (np + 1);
+		if (scols > dcols)
+			scols = dcols;
+	} else
+		acols = scols = dcols;
+
+	for (c = 0; c < scols; c++) {
+		uint64_t cc = f + c, coff = o;
+
+		if (cc >= dcols) {
+			cc -= dcols;
+			coff += (uint64_t)1 << ashift;
+		}
+		col[c].rc_devidx = (uint32_t)cc;
+		col[c].rc_offset = coff;
+		if (c >= acols)
+			col[c].rc_size = 0;
+		else if (c < bc)
+			col[c].rc_size = (size_t)(q + 1) << ashift;
+		else
+			col[c].rc_size = (size_t)q << ashift;
+	}
+
+	/*
+	 * [Z] the same function: single parity trades its first two
+	 * columns in every other megabyte of the vdev, a layout choice
+	 * its comment calls "an implicit on-disk format requirement that
+	 * we need to support for all eternity, but only for single-parity
+	 * RAID-Z".
+	 */
+	if (np == 1 && (DVA_GET_OFFSET(dva) & ((uint64_t)1 << 20))) {
+		struct raidz_col t = col[0];
+
+		col[0].rc_devidx = col[1].rc_devidx;
+		col[0].rc_offset = col[1].rc_offset;
+		col[1].rc_devidx = t.rc_devidx;
+		col[1].rc_offset = t.rc_offset;
+	}
+
+	d = 0;
+	for (c = np; c < acols; c++) {
+		off[c] = d;
+		d += col[c].rc_size;
+	}
+	if (d != s << ashift || acols <= np)
+		return (EINVAL);
+
+	if ((tail = zfs_scratch_get(sec)) == NULL)
+		return (ENOMEM);
+	rd.rd_buf = buf;
+	rd.rd_len = len;
+	rd.rd_tail = tail;
+	rd.rd_last = acols - 1;
+	rd.rd_tailoff = col[acols - 1].rc_size - sec;
+	rd.rd_off = off;
+
+	/* Every data column as it is on the disks. */
+	for (c = np; c < acols; c++) {
+		if (raidz_data_read(tv, &col[c], &rd, c) != 0) {
+			if (bad >= 0) {
+				zfs_scratch_put(tail, sec);
+				return (EIO);	/* two missing */
+			}
+			bad = (int)c;
+		}
+	}
+	if (bad < 0 && verify(arg, buf, len)) {
+		zfs_scratch_put(tail, sec);
+		return (0);
+	}
+
+	/*
+	 * One column is missing, or the block failed its checksum and any
+	 * one of them may be wrong.  P, parity column 0, is the XOR of the
+	 * data columns, a short column counting as zeros past its end:
+	 * [Z] vdev_raidz.c, vdev_raidz_generate_parity_p() and _pq().  So
+	 * any single data column is P xor the others, and each in turn is
+	 * rebuilt that way until the block checks out.  A second bad
+	 * column needs Q or R and is not attempted.
+	 */
+	if ((p = zfs_scratch_get(col[0].rc_size)) == NULL) {
+		zfs_scratch_put(tail, sec);
+		return (ENOMEM);
+	}
+	err = EIO;
+	for (x = np; x < acols; x++) {
+		size_t i;
+
+		if (bad >= 0 && x != (uint64_t)bad)
+			continue;
+		if (raidz_col_read(tv, &col[0], p) != 0)
+			break;
+		for (c = np; c < acols; c++) {
+			if (c == x)
+				continue;
+			for (i = 0; i < col[c].rc_size; i++)
+				p[i] ^= *raidz_byte(&rd, c, i);
+		}
+		for (i = 0; i < col[x].rc_size; i++)
+			*raidz_byte(&rd, x, i) = p[i];
+		if (x == rd.rd_last) {
+			/* The rebuilt tail's share of the block. */
+			for (i = rd.rd_tailoff;
+			    off[x] + i < len && i < col[x].rc_size; i++)
+				buf[off[x] + i] = p[i];
+		}
+		if (verify(arg, buf, len)) {
+			err = 0;
+			break;
+		}
+		err = EINVAL;
+		/* Put back what was read, for the next column's turn. */
+		if (bad < 0 && raidz_data_read(tv, &col[x], &rd, x) != 0)
+			break;
+	}
+	zfs_scratch_put(p, col[0].rc_size);
+	zfs_scratch_put(tail, sec);
+	return (err);
+}
+
 static int
 vdev_read(struct zfs_pool *pool, const dva_t *dva, void *buf, size_t len,
     zfs_verifyfn_t verify, void *arg)
@@ -444,6 +687,8 @@ vdev_read(struct zfs_pool *pool, const dva_t *dva, void *buf, size_t len,
 			err = EINVAL;
 		}
 		return (err);
+	case ZFS_VT_RAIDZ:
+		return (raidz_read(pool, tv, dva, buf, len, verify, arg));
 	case ZFS_VT_NONE:
 		/* On a device that was not found. */
 		return (ENXIO);
@@ -967,11 +1212,11 @@ nv_streq(const struct nvpair_value *v, const char *s)
  * read them as a mirror, and so does this.
  *
  * Under a raidz it does not: the data is spread across the children
- * with parity, and an offset lands somewhere else on each of them.  So
- * raidz is refused, and it is refused when the pool is opened, where
- * the reason can be given.  Left to itself the reader would follow the
- * uberblock, read a block from the wrong place and fail its checksum
- * -- reporting an I/O error on a disk that is perfectly sound.
+ * with parity, and an offset lands somewhere else on each of them.
+ * [S] names raidz (§1.3.3, Table 2), counts its parity in a DVA's asize
+ * (§2.6) and reserves the DVA's GRID field for "Raid-Z layout
+ * information" (§2.1), but never says what the layout is; raidz_read()
+ * takes it from OpenZFS.
  */
 static int
 vdev_type(const struct nvpair_value *v)
@@ -983,6 +1228,8 @@ vdev_type(const struct nvpair_value *v)
 	    nv_streq(v, VDEV_TYPE_REPLACING) ||
 	    nv_streq(v, VDEV_TYPE_SPARE))
 		return (ZFS_VT_MIRROR);
+	if (nv_streq(v, VDEV_TYPE_RAIDZ))
+		return (ZFS_VT_RAIDZ);
 	return (ZFS_VT_NONE);
 }
 
@@ -1060,6 +1307,43 @@ top_enter(struct zfs_pool *pool, const struct nvpair_value *tree,
 		tv->tv_ashift = ashift;
 		tv->tv_nparity = 0;
 		tv->tv_nchildren = 0;
+		if (type == ZFS_VT_RAIDZ) {
+			/*
+			 * [Z] module/zfs/vdev_raidz.c, vdev_raidz_init()
+			 * (openzfs/zfs 81b19c6): nparity is 1 to
+			 * VDEV_RAIDZ_MAXPARITY, and a label without one
+			 * is from a pool older than SPA_VERSION_RAIDZ2,
+			 * which had single parity only.
+			 */
+			if (nvlist_find_nested(tree->nv_list,
+			    tree->nv_listlen, ZPOOL_CONFIG_NPARITY,
+			    NV_WANT_UINT64, &v) != 0)
+				v.nv_u64 = 1;
+			if (v.nv_u64 < 1 || v.nv_u64 > VDEV_RAIDZ_MAXPARITY)
+				return (EINVAL);
+			tv->tv_nparity = (uint32_t)v.nv_u64;
+			/*
+			 * [Z] vdev_raidz.c, the block comment on raidz
+			 * expansion and vdev_raidz_map_alloc_expanded():
+			 * a raidz that has been widened keeps reading
+			 * blocks written before at their old logical
+			 * width, recorded by txg in raidz_expand_txgs,
+			 * and one being widened is half moved.  Neither
+			 * is read here; they are refused by name rather
+			 * than read at the wrong width.
+			 *
+			 * The first is an array of integers and the second
+			 * a boolean, types the nvlist reader does not
+			 * decode, so anything but ENOENT means present.
+			 */
+			if (nvlist_find_nested(tree->nv_list,
+			    tree->nv_listlen, ZPOOL_CONFIG_RAIDZ_EXPAND_TXGS,
+			    NV_WANT_UINT64, &v) != ENOENT ||
+			    nvlist_find_nested(tree->nv_list,
+			    tree->nv_listlen, ZPOOL_CONFIG_RAIDZ_EXPANDING,
+			    NV_WANT_UINT64, &v) != ENOENT)
+				return (ENOTSUP);
+		}
 		if (type == ZFS_VT_LEAF) {
 			if (nv_guid(tree, &cguid) != 0)
 				return (EINVAL);
@@ -1070,6 +1354,13 @@ top_enter(struct zfs_pool *pool, const struct nvpair_value *tree,
 			if (ch.nv_nelem == 0 ||
 			    ch.nv_nelem > ZFS_MAX_CHILDREN)
 				return (ENOTSUP);
+			/*
+			 * A raidz needs a data column beside its parity;
+			 * raidz_read() divides by the difference.
+			 */
+			if (type == ZFS_VT_RAIDZ &&
+			    ch.nv_nelem <= tv->tv_nparity)
+				return (EINVAL);
 			for (i = 0; i < ch.nv_nelem; i++) {
 				if (nvlist_array_elem(&ch, i, &el) != 0 ||
 				    nv_guid(&el, &cguid) != 0)

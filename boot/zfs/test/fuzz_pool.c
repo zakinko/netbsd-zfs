@@ -1,7 +1,8 @@
 /*
  * Mutate a pool image and read a file out of it, under ASan and UBSan.
  *
- *	fuzz_pool <image> <start-lba> [dataset:]path <iterations> [seed]
+ *	fuzz_pool <image>[,<image>...] <start-lba> [dataset:]path
+ *	    <iterations> [seed]
  *
  * With no dataset the pool's bootfs is used, as the loader does; a file
  * in another dataset has to be named, or the run stops at the lookup
@@ -90,6 +91,29 @@ img_read(void *cookie, uint64_t off, void *buf, size_t len)
 static uint8_t arena[ZFS_SCRATCH_SIZE];
 static uint8_t out[1 << 20];
 
+/*
+ * A pool on several disks: the first image is where the pool is found,
+ * and all of them, the first included, are offered through pool_probe
+ * as the loader offers its disks.  The start LBA is the first image's;
+ * the others are whole.  Reads from every one are corrupted alike.
+ */
+#define	MAXIMG	16
+static struct img imgs[MAXIMG];
+static int nimg;
+
+static int
+img_probe(void *c, int n, zfs_readfn_t *rd, void **cookie, uint64_t *size)
+{
+
+	(void)c;
+	if (n >= nimg)
+		return (ENOENT);
+	*rd = img_read;
+	*cookie = &imgs[n];
+	*size = imgs[n].len;
+	return (0);
+}
+
 static void
 one(uint8_t *image, size_t len, uint64_t base)
 {
@@ -106,6 +130,8 @@ one(uint8_t *image, size_t len, uint64_t base)
 	pool.pool_read = img_read;
 	pool.pool_cookie = &im;
 	pool.pool_size = len - base;
+	if (nimg > 1)
+		pool.pool_probe = img_probe;
 
 	if (zfs_pool_open(&pool, NULL, 0) != 0)
 		return;
@@ -151,16 +177,33 @@ main(int argc, char **argv)
 	if (st == 0)
 		st = 1;
 
-	fd = open(argv[1], O_RDONLY);
-	if (fd < 0) { perror(argv[1]); return (1); }
-	len = (size_t)lseek(fd, 0, SEEK_END);
-	orig = malloc(len);
-	if (orig == NULL) { perror("malloc"); return (1); }
-	if (pread(fd, orig, len, 0) != (ssize_t)len) {
-		perror("read");
-		return (1);
+	{
+		char *list = argv[1], *name;
+
+		while ((name = strsep(&list, ",")) != NULL && nimg < MAXIMG) {
+			uint8_t *b;
+			size_t l;
+
+			fd = open(name, O_RDONLY);
+			if (fd < 0) { perror(name); return (1); }
+			l = (size_t)lseek(fd, 0, SEEK_END);
+			if ((b = malloc(l)) == NULL) {
+				perror("malloc");
+				return (1);
+			}
+			if (pread(fd, b, l, 0) != (ssize_t)l) {
+				perror("read");
+				return (1);
+			}
+			close(fd);
+			imgs[nimg].base = b;
+			imgs[nimg].len = l;
+			imgs[nimg].off = 0;
+			nimg++;
+		}
 	}
-	close(fd);
+	orig = imgs[0].base;
+	len = imgs[0].len;
 
 	zfs_scratch_init(arena, sizeof(arena));
 
@@ -171,6 +214,7 @@ main(int argc, char **argv)
 	printf("fuzz_pool: %ld mutations, no fault\n", iters);
 	printf("  reached: %ld opened, %ld mounted, %ld found the file, "
 	    "%ld read it\n", n_opened, n_mounted, n_found, n_read);
-	free(orig);
+	for (i = 0; i < nimg; i++)
+		free(imgs[i].base);
 	return (0);
 }

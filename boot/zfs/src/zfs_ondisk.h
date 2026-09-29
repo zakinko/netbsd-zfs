@@ -178,6 +178,14 @@ struct uberblock {
  */
 #define	ZPOOL_CONFIG_VDEV_CHILDREN	"vdev_children"
 #define	ZPOOL_CONFIG_NPARITY		"nparity"
+/*
+ * [Z] include/sys/fs/zfs.h (openzfs/zfs 81b19c6): a raidz that has had
+ * disks added carries these, and its older blocks are laid out for the
+ * narrower width; see vdev_type() in zfsread.c.
+ */
+#define	ZPOOL_CONFIG_RAIDZ_EXPANDING	"raidz_expanding"
+#define	ZPOOL_CONFIG_RAIDZ_EXPAND_TXGS	"raidz_expand_txgs"
+#define	VDEV_RAIDZ_MAXPARITY		3	/* [Z] fs/zfs.h */
 
 /* [S] §1.3.3, Table 2. */
 #define	VDEV_TYPE_DISK		"disk"
