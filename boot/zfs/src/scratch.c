@@ -20,6 +20,14 @@
  * is a bug in the size of the arena, not a condition to be handled
  * halfway down a traversal, so it is caught at the boundary and the
  * read fails there.
+ *
+ * Except for a block larger than [S]'s 128KB, which only the
+ * large_blocks feature writes, and only as a file's data.  The arena
+ * is sized for 128KB and a 16MB block would make every loader carry
+ * sixteen times as much for a pool that may not have one, so a buffer
+ * that does not fit is taken from the host's heap instead, if the host
+ * has offered one, and given back to it.  Only a large block ever gets
+ * there, and it can fail there: that is ENOMEM for the file, not a bug.
  */
 
 #include <sys/types.h>
@@ -31,10 +39,13 @@
 static uint8_t *arena;
 static size_t arena_size;
 static size_t arena_used;
+static void *(*heap_get)(size_t);
+static void (*heap_put)(void *, size_t);
 #ifdef ZFS_SCRATCH_DEBUG
 size_t zfs_scratch_high;
 int zfs_scratch_misput;
 int zfs_scratch_exhausted;
+int zfs_scratch_heaped;
 #endif
 
 int
@@ -49,6 +60,22 @@ zfs_scratch_init(void *buf, size_t len)
 	return (0);
 }
 
+void
+zfs_scratch_heap(void *(*get)(size_t), void (*put)(void *, size_t))
+{
+
+	heap_get = get;
+	heap_put = put;
+}
+
+static int
+in_arena(const void *p)
+{
+
+	return (arena != NULL && (const uint8_t *)p >= arena &&
+	    (const uint8_t *)p < arena + arena_size);
+}
+
 void *
 zfs_scratch_get(size_t len)
 {
@@ -56,6 +83,12 @@ zfs_scratch_get(size_t len)
 
 	len = (len + 7) & ~(size_t)7;
 	if (arena == NULL || len > arena_size - arena_used) {
+		if (arena != NULL && heap_get != NULL) {
+#ifdef ZFS_SCRATCH_DEBUG
+			zfs_scratch_heaped++;
+#endif
+			return (heap_get(len));
+		}
 #ifdef ZFS_SCRATCH_DEBUG
 		zfs_scratch_exhausted++;
 #endif
@@ -80,6 +113,10 @@ zfs_scratch_put(void *p, size_t len)
 {
 
 	len = (len + 7) & ~(size_t)7;
+	if (p != NULL && !in_arena(p)) {
+		heap_put(p, len);
+		return;
+	}
 	if (p != arena + arena_used - len) {
 #ifdef ZFS_SCRATCH_DEBUG
 		zfs_scratch_misput++;

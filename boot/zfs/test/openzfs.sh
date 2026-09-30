@@ -22,6 +22,8 @@
 #   raidz1..3	3, 4 and 5 disks; read whole, with disks gone and with
 #		disks zeroed, up to as many as there is parity
 #   raidz3w	raidz3 of 7, three disks gone
+#   large	recordsize 1M, 4M and 16M, on one disk
+#   larger	the same on raidz1 of 3, whole and with a disk zeroed
 #   raidzx1	raidz1 of 3 widened to 4, files written before and after;
 #		whole, a disk gone and a disk zeroed
 #   raidzx2	raidz2 of 4 widened twice, to 6; the same, two at a time
@@ -47,10 +49,12 @@ old_fg=$(cat $P/metaslab_force_ganging)
 old_pct=$(cat $P/metaslab_force_ganging_pct)
 R=$P/raidz_expand_max_reflow_bytes
 old_rf=$(cat $R 2>/dev/null || true)
+old_mr=$(cat $P/zfs_max_recordsize)
 cleanup() {
 	echo "$old_fg" > $P/metaslab_force_ganging
 	echo "$old_pct" > $P/metaslab_force_ganging_pct
 	[ -z "$old_rf" ] || echo "$old_rf" > $R
+	echo "$old_mr" > $P/zfs_max_recordsize
 	for p in $(zpool list -H -o name 2>/dev/null); do
 		case $p in zbt_*) zpool destroy -f "$p" ;; esac
 	done
@@ -445,6 +449,14 @@ somewrong() {
 	[ $nw -gt 0 ] || fail=1
 }
 
+# drop <pool>: its images, once nothing below looks at them again.  The
+# pools are sparse files under $W, and together the later ones do not
+# fit a 2GB tmpfs /tmp; when it filled, ZFS suspended the pool being
+# written and the script hung in the kernel.
+drop() {
+	rm -f "$W/zbt_$1"-*.img
+}
+
 # The reflow state of the newest uberblock, as zdb has it.
 reflow() {
 	zdb -lu "$W/zbt_$1-0.img" | awk '
@@ -464,6 +476,7 @@ if zpool upgrade -v | grep -q '^raidz_expansion'; then
 	wipe raidzx1 2
 	check raidzx1
 	check1 raidzx1 0,1 random
+	drop raidzx1
 
 	echo "=== raidz2 widened twice"
 	WIDEN=2 mk raidzx2 widen "raidz2 D D D D"
@@ -473,6 +486,7 @@ if zpool upgrade -v | grep -q '^raidz_expansion'; then
 	wipe raidzx2 1
 	check raidzx2 0,1,2,3,4
 	check1 raidzx2 0,1,2 random
+	drop raidzx2
 
 	echo "=== raidz1 being widened, the move paused"
 	BIG=1 REFLOW=20971520 mk raidzxp paused "raidz1 D D D"
@@ -482,6 +496,7 @@ if zpool upgrade -v | grep -q '^raidz_expansion'; then
 	check raidzxp 1,2,3
 	wipe raidzxp 3
 	check raidzxp
+	drop raidzxp
 
 	# [Z] raidz_reflow_scratch_sync() moves the first rows through a
 	# copy in the boot area, VDEV_BOOT_OFFSET on each child, and marks
@@ -556,9 +571,60 @@ PY
 	done
 	echo "  $(reflow raidzxs)"
 	check raidzxs
+	drop raidzxs
 else
 	echo "=== raidz expansion: this OpenZFS has none, skipped"
 fi
+
+# large_blocks: records past [S]'s 128KB, up to [Z]'s 16MB, which the
+# reader takes from the heap rather than its arena.  Each file is 20MB,
+# so the last record of the 16M set is partly empty; t_cat names the
+# block size it found, so that a pool made with smaller records than
+# asked for cannot pass.
+largefiles() {
+	for rs in 1M 4M 16M; do
+		zfs create -o recordsize=$rs "${1##*/}/rs$rs"
+		head -c 20971520 /dev/urandom > "$1/rs$rs/random"
+		seq 1 2800000 > "$1/rs$rs/text"
+	done
+}
+
+blocksizes() {
+	name=zbt_$1
+	img=$(ls "$W/$name"-*.img | paste -sd, -)
+	n=$(( $(wc -c < "$W/$name-0.img") / 512 ))
+	for rs in 1M 4M 16M; do
+		b=$(./t_cat "$img" 0 $n "rs$rs" /random 2>&1 |
+		    sed -n 's/.* \([0-9]*\) byte blocks$/\1/p')
+		case $rs in
+		1M) want=1048576 ;; 4M) want=4194304 ;; 16M) want=16777216 ;;
+		esac
+		if [ "$b" = "$want" ]; then
+			echo "  $1 rs$rs: $b byte blocks"
+		else
+			echo "  $1 rs$rs: ${b:-no} byte blocks, not $want"
+			fail=1
+		fi
+	done
+}
+
+# [Z] dsl_dataset.c: zfs_max_recordsize is 16M on a 64 bit kernel now,
+# and was 1M before; set here so that an older OpenZFS makes the same.
+echo 16777216 > $P/zfs_max_recordsize
+echo "=== large_blocks, on one disk"
+MKSIZE=256M mk large largefiles D
+blocksizes large
+FUZZ=rs1M:/random check large
+drop large
+
+echo "=== large_blocks, on raidz1"
+MKSIZE=256M mk larger largefiles "raidz1 D D D"
+blocksizes larger
+FUZZ=rs1M:/random check larger
+wipe larger 1
+FUZZ=rs1M:/random check larger
+check1 larger 0,1 rs16M/random
+drop larger
 
 # A label claiming as much parity as there are disks leaves no data
 # column, and the column arithmetic divides by the difference.  Random

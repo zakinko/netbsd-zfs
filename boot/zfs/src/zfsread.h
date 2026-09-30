@@ -109,15 +109,16 @@ int	zfs_lookup(struct zfs_dataset *, const char *, dnode_phys_t *);
  * A file's last decompressed block.
  *
  * The loader reads a kernel in pieces far smaller than a ZFS block, and
- * without this each piece re-reads and re-expands the whole 128KB block
+ * without this each piece re-reads and re-expands the whole block
  * it falls in -- thirty times over for a 4KB read.  The caller owns the
  * buffer so that its lifetime is the open file's, which the reader's
  * own scratch arena, being a stack, cannot give it.
  */
 struct zfs_blkcache {
-	uint8_t		*bc_buf;	/* ZFS_MAXBLOCKSIZE, or NULL */
+	uint8_t		*bc_buf;	/* bc_size bytes, or NULL */
 	uint64_t	bc_blkid;
 	int		bc_valid;
+	size_t		bc_size;	/* at least the file's block size */
 };
 
 int	zfs_read_file(struct zfs_dataset *, const dnode_phys_t *, uint64_t,

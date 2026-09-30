@@ -54,6 +54,14 @@ cat > "$LIBSA/zfs.h" <<'H'
 /*	$NetBSD$	*/
 
 FS_DEF(zfs);
+
+/*
+ * Memory for a block past 128KB, which only large_blocks writes and
+ * the heap is not sized for.  A host that can give pages on demand
+ * sets these; otherwise such a block comes from the heap.
+ */
+extern void *(*zfs_bigalloc)(size_t);
+extern void (*zfs_bigfree)(void *, size_t);
 H
 
 # libsa's Makefile.  The block goes in ahead of <bsd.lib.mk>, because

@@ -383,7 +383,7 @@ zfs_read_file(struct zfs_dataset *ds, const dnode_phys_t *dn, uint64_t off,
 	size_t n = 0;
 	int err;
 
-	if (blksize == 0 || blksize > ZFS_MAXBLOCKSIZE)
+	if (blksize == 0 || blksize > SPA_LARGE_MAXBLOCKSIZE)
 		return (EINVAL);
 	if (off >= size) {
 		*done = 0;
@@ -393,12 +393,14 @@ zfs_read_file(struct zfs_dataset *ds, const dnode_phys_t *dn, uint64_t off,
 		len = (size_t)(size - off);
 
 	/*
-	 * With a cache the block stays between calls; without one the
-	 * scratch arena lends a buffer for the length of this call.
+	 * With a cache the block stays between calls; without one, or
+	 * with one too small for this file's blocks, the scratch arena
+	 * lends a buffer for the length of this call.
 	 */
-	if (cache != NULL && cache->bc_buf != NULL)
+	if (cache != NULL && cache->bc_buf != NULL &&
+	    cache->bc_size >= blksize)
 		blk = cache->bc_buf;
-	else if ((blk = zfs_scratch_get(ZFS_MAXBLOCKSIZE)) == NULL)
+	else if ((blk = zfs_scratch_get(blksize)) == NULL)
 		return (ENOMEM);
 
 	while (n < len) {
@@ -412,11 +414,10 @@ zfs_read_file(struct zfs_dataset *ds, const dnode_phys_t *dn, uint64_t off,
 
 		if (blk != cache_buf(cache) || !cache_has(cache, blkid)) {
 			err = zfs_read_object_block(ds->ds_pool, dn, blkid,
-			    blk, ZFS_MAXBLOCKSIZE);
+			    blk, blksize);
 			if (err != 0) {
 				if (blk != cache_buf(cache))
-					zfs_scratch_put(blk,
-					    ZFS_MAXBLOCKSIZE);
+					zfs_scratch_put(blk, blksize);
 				else
 					cache->bc_valid = 0;
 				return (err);
@@ -432,7 +433,7 @@ zfs_read_file(struct zfs_dataset *ds, const dnode_phys_t *dn, uint64_t off,
 		off += c;
 	}
 	if (blk != cache_buf(cache))
-		zfs_scratch_put(blk, ZFS_MAXBLOCKSIZE);
+		zfs_scratch_put(blk, blksize);
 	*done = n;
 	return (0);
 }

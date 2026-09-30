@@ -32,7 +32,7 @@ int
 main(int argc, char **argv)
 {
 	struct zfs_pool pool; struct zfs_dataset ds; struct img im;
-	struct zfs_blkcache cache = { cachebuf, 0, 0 };
+	struct zfs_blkcache cache = { cachebuf, 0, 0, sizeof(cachebuf) };
 	dnode_phys_t dn;
 	uint8_t piece[4096];
 	uint64_t off, size;

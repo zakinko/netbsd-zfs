@@ -64,12 +64,14 @@ main(void)
 	expect("three block pointers", dnode_valid(&dn), 1);
 	sane(&dn); dn.dn_nlevels = 6; dn.dn_indblkshift = 9;
 	expect("six levels, 512 byte indirect", dnode_valid(&dn), 1);
+	sane(&dn); dn.dn_datablkszsec = 32768;	/* [Z] large_blocks */
+	expect("16M blocks", dnode_valid(&dn), 1);
 
 	printf("=== what it does not\n");
 	sane(&dn); dn.dn_datablkszsec = 0;
 	expect("a zero block size", dnode_valid(&dn), 0);
-	sane(&dn); dn.dn_datablkszsec = 257;
-	expect("blocks over 128K", dnode_valid(&dn), 0);
+	sane(&dn); dn.dn_datablkszsec = 32769;
+	expect("blocks over 16M", dnode_valid(&dn), 0);
 	sane(&dn); dn.dn_nblkptr = 0;
 	expect("no block pointers", dnode_valid(&dn), 0);
 	sane(&dn); dn.dn_nblkptr = 200;

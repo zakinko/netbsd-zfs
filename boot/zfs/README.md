@@ -33,7 +33,8 @@ a mix:
 labels, uberblocks,
 block pointers
 (including embedded ones), gang blocks, fletcher2, fletcher4, SHA-256,
-SHA-512/256, Skein, Edon-R and BLAKE3 checksums, lz4, gzip, zle, zstd and uncompressed blocks, dnodes to six
+SHA-512/256, Skein, Edon-R and BLAKE3 checksums, lz4, gzip, zle, zstd and uncompressed blocks, file
+data in records up to large_blocks' 16MB, dnodes to six
 levels of
 indirection, micro and fat ZAPs, the DSL down to a dataset, ZPL
 directories, and files through either a `znode_phys_t` or the system
@@ -272,6 +273,14 @@ Pools made by OpenZFS 2.4.1 on Linux, by `test/openzfs.sh`:
   OpenZFS older than 2.3 has no expansion, and the CI runner's 2.2
   skips these.
 
+- large_blocks: datasets with 1M, 4M and 16M records, t_cat reporting
+  the block size it found in each, 20MB of random data and 20MB of text
+  on one disk and on raidz1 of three, whole and with a disk zeroed. The
+  loader, built with the hooks above, booted under qemu a kernel kept
+  in 16MB records from a stripe and from a raidz1 with a disk gone; in
+  256MB both that stripe and a pool of 128KB records boot, where the
+  loader with a 96MB heap could load no kernel at all.
+
 `test/hashes.sh` checks each hash against its specification's own
 vectors: NIST's two SHA-512/256 examples, Skein's Appendix C.2 and the
 B.8 chaining value, twelve of the BLAKE3 team's vectors in both modes,
@@ -351,6 +360,16 @@ outside `libsa`:
 - `Makefile.efiboot`: `-DSUPPORT_ZFS` and `SA_INCLUDE_ZFS=yes`.
 
 The loader's heap is raised from 1MB to 4MB under `SUPPORT_ZFS`. The
-reader takes about 900KB of scratch and a 128KB cache per open file,
-both from the heap and only once a pool is actually opened. The carried
-version wanted 64MB, because it cached dnodes in a 16MB buffer.
+reader takes about 2MB of scratch and a cache of one block per open
+file, both from the heap and only once a pool is actually opened. The
+carried version wanted 64MB, because it cached dnodes in a 16MB buffer.
+
+A file written with large_blocks can have 16MB records, and reading one
+takes the record twice over and, on raidz, up to three times more for
+parity. The heap is not grown for that: efiboot takes its heap before it
+reserves 128MB to load the kernel into, and a 96MB heap left a 256MB
+machine unable to load any kernel, where the 4MB one boots. So libsa's
+`zfs.h` has two hooks, `zfs_bigalloc` and `zfs_bigfree`, which efiboot
+sets to `AllocatePages` and `FreePages`; a buffer past 128KB is taken
+from the firmware when such a record is read and given back after, and
+a host that sets nothing takes it from its heap.

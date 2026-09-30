@@ -71,6 +71,9 @@ struct zfs_file {
 	uint64_t		zf_off;
 };
 
+static void	*zfs_heap_get(size_t);
+static void	zfs_heap_put(void *, size_t);
+
 /*
  * The reader asks for bytes from the start of the vdev; libsa's
  * strategy routine counts in the device's own sectors, as the other
@@ -181,7 +184,7 @@ zfs_file_free(struct zfs_file *zf, struct open_file *f)
 		}
 	}
 	if (zf->zf_cache.bc_buf != NULL)
-		dealloc(zf->zf_cache.bc_buf, ZFS_MAXBLOCKSIZE);
+		zfs_heap_put(zf->zf_cache.bc_buf, zf->zf_cache.bc_size);
 	dealloc(zf, sizeof(*zf));
 }
 
@@ -221,6 +224,37 @@ zfs_split_path(const char *path, char *ds, size_t dslen, const char **rest)
  * pool is opened, so that a loader linked with this but never given a
  * ZFS disk pays nothing for it.
  */
+/*
+ * A block larger than the arena is sized for -- only a large_blocks
+ * file's data, up to 16MB -- is given memory as it is read.  The heap
+ * is sized for 128KB blocks, so a buffer larger than that comes from
+ * zfs_bigalloc when the host has set it (efiboot: pages from the
+ * firmware), and from the heap otherwise.  The choice is by length
+ * alone, so the free goes back the same way.  alloc() and dealloc() are
+ * __compactcall, so they are not what a plain function pointer calls.
+ */
+void *(*zfs_bigalloc)(size_t);
+void (*zfs_bigfree)(void *, size_t);
+
+static void *
+zfs_heap_get(size_t len)
+{
+
+	if (len > ZFS_MAXBLOCKSIZE && zfs_bigalloc != NULL)
+		return zfs_bigalloc(len);
+	return alloc(len);
+}
+
+static void
+zfs_heap_put(void *p, size_t len)
+{
+
+	if (len > ZFS_MAXBLOCKSIZE && zfs_bigalloc != NULL)
+		zfs_bigfree(p, len);
+	else
+		dealloc(p, len);
+}
+
 static int
 zfs_scratch_setup(void)
 {
@@ -230,6 +264,7 @@ zfs_scratch_setup(void)
 		return 0;
 	if ((arena = alloc(ZFS_SCRATCH_SIZE)) == NULL)
 		return ENOMEM;
+	zfs_scratch_heap(zfs_heap_get, zfs_heap_put);
 	return zfs_scratch_init(arena, ZFS_SCRATCH_SIZE);
 }
 
@@ -297,11 +332,12 @@ zfs_open(const char *path, struct open_file *f)
 	zf->zf_size = zfs_size(&zf->zf_dnode);
 
 	/*
-	 * One block of the file kept between reads.  If the heap cannot
-	 * spare it the file is still readable, only slowly, so this is
-	 * not a failure.
+	 * One block of the file kept between reads, as large as the
+	 * file's blocks are.  If the heap cannot spare it the file is
+	 * still readable, only slowly, so this is not a failure.
 	 */
-	zf->zf_cache.bc_buf = alloc(ZFS_MAXBLOCKSIZE);
+	zf->zf_cache.bc_size = (size_t)zf->zf_dnode.dn_datablkszsec << 9;
+	zf->zf_cache.bc_buf = zfs_heap_get(zf->zf_cache.bc_size);
 
 	f->f_fsdata = zf;
 	return 0;

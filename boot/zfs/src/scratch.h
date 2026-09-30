@@ -40,6 +40,7 @@
 int	zfs_scratch_init(void *, size_t);
 void	*zfs_scratch_get(size_t);
 void	zfs_scratch_put(void *, size_t);
+void	zfs_scratch_heap(void *(*)(size_t), void (*)(void *, size_t));
 
 #endif	/* _LIBSA_ZFS_SCRATCH_H_ */
 
@@ -47,4 +48,5 @@ void	zfs_scratch_put(void *, size_t);
 extern size_t	zfs_scratch_high;	/* high water mark, bytes */
 extern int	zfs_scratch_misput;	/* returns out of order: a bug */
 extern int	zfs_scratch_exhausted;
+extern int	zfs_scratch_heaped;
 #endif

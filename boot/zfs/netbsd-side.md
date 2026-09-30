@@ -77,8 +77,18 @@ SAMISCMAKEFLAGS+="SA_INCLUDE_ZFS=yes"
 ## `sys/arch/i386/stand/efiboot/efiboot.c`
 
 The heap goes from 1MB to 4MB under `SUPPORT_ZFS`. The reader asks for
-about 1.4MB of scratch when a pool is first opened and 128KB per open
+about 2MB of scratch when a pool is first opened and one block per open
 file; 1MB is not enough and 4MB leaves room.
+
+A block past 128KB -- only large_blocks writes one, up to 16MB -- is not
+given heap. `efi_heap_init()` runs before `efi_memory_probe()` reserves
+`KERN_LOADSPACE_SIZE`, 128MB, for the kernel, so a heap big enough for
+16MB records (about 96MB) takes that room first: under qemu with 256MB
+the loader then stops at "couldn't allocate kernel space", where with
+the 4MB heap it boots. Instead `efi_main()` sets libsa's `zfs_bigalloc`
+and `zfs_bigfree` to `AllocatePages` and `FreePages`, and such a record's
+buffers come from the firmware while it is read. A pool without large
+records never calls them.
 
 ## The BIOS loader is a different question
 

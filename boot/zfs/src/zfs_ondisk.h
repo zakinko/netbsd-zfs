@@ -499,6 +499,17 @@ struct zio_eck {
 #define	SPA_MAXBLOCKSHIFT	17
 #define	DN_MAX_LEVELS		6
 
+/*
+ * [Z] include/sys/fs/zfs.h (openzfs/zfs 81b19c6): the large_blocks
+ * feature raised the largest block to 1 << SPA_MAXBLOCKSHIFT = 16MB,
+ * keeping [S]'s 128KB as SPA_OLD_MAXBLOCKSIZE.  Only a file's data
+ * blocks go past it: [Z] dnode.h's DN_MAX_INDBLKSHIFT keeps indirect
+ * blocks at 17, and a ZAP's blocks stay within the old size, so the
+ * checks on those remain [S]'s.  dn_datablkszsec, 16 bits of 512 byte
+ * sectors, holds 16MB.
+ */
+#define	SPA_LARGE_MAXBLOCKSIZE	(1U << 24)
+
 /* [S] §3.1: the bonus buffer is "between 64 and 320 bytes". */
 #define	DN_MAX_BONUSLEN		320
 

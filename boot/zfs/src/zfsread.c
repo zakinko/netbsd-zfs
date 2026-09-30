@@ -1126,7 +1126,7 @@ raidz_read(struct zfs_pool *pool, const struct zfs_top *tv, const dva_t *dva,
 	if (width <= tv->tv_nparity || width > tv->tv_nchildren || len == 0)
 		return (EINVAL);
 	raidz_map_init(&rm, pool, tv, DVA_GET_OFFSET(dva), len, width);
-	if (rm.rm_rows > ZFS_RAIDZ_MAXROWS)
+	if (rm.rm_rows > SPA_LARGE_MAXBLOCKSIZE >> SPA_MINBLOCKSHIFT)
 		return (EINVAL);
 
 	if ((tail = zfs_scratch_get(sec)) == NULL)
@@ -1439,9 +1439,9 @@ zfs_read_block(struct zfs_pool *pool, const blkptr_t *bp, void *buf,
 
 	lsize = BP_GET_LSIZE(bp);
 	psize = BP_GET_PSIZE(bp);
-	if (buflen < lsize || psize > ZFS_MAXBLOCKSIZE)
+	if (buflen < lsize || psize > SPA_LARGE_MAXBLOCKSIZE)
 		return (EINVAL);
-	if ((raw = zfs_scratch_get(ZFS_MAXBLOCKSIZE)) == NULL)
+	if ((raw = zfs_scratch_get(psize)) == NULL)
 		return (ENOMEM);
 
 	for (i = 0; i < SPA_DVAS_PER_BP; i++) {
@@ -1456,7 +1456,7 @@ zfs_read_block(struct zfs_pool *pool, const blkptr_t *bp, void *buf,
 		if (err == 0)
 			break;
 	}
-	zfs_scratch_put(raw, ZFS_MAXBLOCKSIZE);
+	zfs_scratch_put(raw, psize);
 	return (err);
 }
 
@@ -1510,7 +1510,7 @@ dnode_valid(const dnode_phys_t *dn)
 {
 
 	if (dn->dn_datablkszsec == 0 ||
-	    dn->dn_datablkszsec > ZFS_MAXBLOCKSIZE / 512)
+	    dn->dn_datablkszsec > SPA_LARGE_MAXBLOCKSIZE / 512)
 		return (0);
 	if (dn->dn_nblkptr < 1 || dn->dn_nblkptr > SPA_DVAS_PER_BP)
 		return (0);

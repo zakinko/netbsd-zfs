@@ -89,6 +89,22 @@ img_read(void *cookie, uint64_t off, void *buf, size_t len)
 }
 
 static uint8_t arena[ZFS_SCRATCH_SIZE];
+
+/* What the loader gives the reader for blocks past 128KB. */
+static void *
+heap_get(size_t len)
+{
+
+	return (malloc(len));
+}
+
+static void
+heap_put(void *p, size_t len)
+{
+
+	(void)len;
+	free(p);
+}
 static uint8_t out[1 << 20];
 
 /*
@@ -206,6 +222,7 @@ main(int argc, char **argv)
 	len = imgs[0].len;
 
 	zfs_scratch_init(arena, sizeof(arena));
+	zfs_scratch_heap(heap_get, heap_put);
 
 	for (i = 0; i < iters; i++) {
 		g_corrupt = 1 + (int)(rnd() % 32);

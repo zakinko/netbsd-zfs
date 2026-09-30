@@ -103,9 +103,19 @@
  };
  __CTASSERT(__arraycount(file_system) == __arraycount(file_system_disk));
  const int nfsys_disk = __arraycount(file_system_disk);
---- a/sys/arch/i386/stand/efiboot/efiboot.c	2026-09-26 23:48:23
-+++ b/sys/arch/i386/stand/efiboot/efiboot.c	2026-09-26 23:48:24
-@@ -44,7 +44,16 @@
+--- a/sys/arch/i386/stand/efiboot/efiboot.c
++++ b/sys/arch/i386/stand/efiboot/efiboot.c
+@@ -27,6 +27,9 @@
+  */
+ 
+ #include "efiboot.h"
++#ifdef SUPPORT_ZFS
++#include <lib/libsa/zfs.h>
++#endif
+ 
+ #include "bootinfo.h"
+ #include "devopen.h"
+@@ -44,11 +47,52 @@
  struct btinfo_efimemmap *btinfo_efimemmap = NULL;
  
  static EFI_PHYSICAL_ADDRESS heap_start = EFI_ALLOCATE_MAX_ADDRESS;
@@ -122,3 +132,50 @@
  static struct btinfo_efi btinfo_efi;
  
  static void efi_heap_init(void);
+ 
++#ifdef SUPPORT_ZFS
++/*
++ * A file written with large_blocks has records of up to 16MB, and ZFS
++ * holds one twice over while reading it, and more to rebuild it on
++ * raidz.  The heap is not grown for that: it is taken before
++ * efi_memory_probe() reserves the kernel's load space, and a heap large
++ * enough would leave a smaller machine no room to load any kernel at
++ * all.  Such a record's buffers come from the firmware as it is read,
++ * and go back as soon as it has been.
++ */
++static void *
++efi_zfs_bigalloc(size_t len)
++{
++	EFI_PHYSICAL_ADDRESS pa = EFI_ALLOCATE_MAX_ADDRESS;
++	EFI_STATUS status;
++
++	status = uefi_call_wrapper(BS->AllocatePages, 4, AllocateMaxAddress,
++	    EfiLoaderData, EFI_SIZE_TO_PAGES(len), &pa);
++	if (EFI_ERROR(status))
++		return NULL;
++	return (void *)(UINTN)pa;
++}
++
++static void
++efi_zfs_bigfree(void *p, size_t len)
++{
++
++	uefi_call_wrapper(BS->FreePages, 2, (EFI_PHYSICAL_ADDRESS)(UINTN)p,
++	    EFI_SIZE_TO_PAGES(len));
++}
++#endif
++
+ EFI_STATUS EFIAPI efi_main(EFI_HANDLE, EFI_SYSTEM_TABLE *);
+ EFI_STATUS EFIAPI
+ efi_main(EFI_HANDLE imageHandle, EFI_SYSTEM_TABLE *systemTable)
+@@ -66,6 +110,10 @@
+ 	cninit();
+ 	efi_heap_init();
+ 	efi_md_init();
++#ifdef SUPPORT_ZFS
++	zfs_bigalloc = efi_zfs_bigalloc;
++	zfs_bigfree = efi_zfs_bigfree;
++#endif
+ 
+ 	status = uefi_call_wrapper(BS->HandleProtocol, 3, IH,
+ 	    &LoadedImageProtocol, (void **)&efi_li);

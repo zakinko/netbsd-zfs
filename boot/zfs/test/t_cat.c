@@ -39,6 +39,22 @@ img_read(void *c, uint64_t off, void *buf, size_t len)
 
 static uint8_t chunk[1 << 20];
 
+/* What the loader gives the reader for blocks past 128KB. */
+static void *
+heap_get(size_t len)
+{
+
+	return (malloc(len));
+}
+
+static void
+heap_put(void *p, size_t len)
+{
+
+	(void)len;
+	free(p);
+}
+
 #define	MAXIMG	16
 static struct img imgs[MAXIMG];
 static uint64_t imgsize[MAXIMG];
@@ -64,8 +80,7 @@ main(int argc, char **argv)
 	struct zfs_dataset ds;
 	struct img im;
 	dnode_phys_t dn;
-	static uint8_t cachebuf[ZFS_MAXBLOCKSIZE];
-	struct zfs_blkcache cache = { cachebuf, 0, 0 };
+	struct zfs_blkcache cache = { NULL, 0, 0, 0 };
 	uint64_t off, size;
 	int err, out = -1;
 
@@ -94,6 +109,7 @@ main(int argc, char **argv)
 		static uint8_t arena[ZFS_SCRATCH_SIZE];
 
 		zfs_scratch_init(arena, sizeof(arena));
+		zfs_scratch_heap(heap_get, heap_put);
 	}
 	memset(&pool, 0, sizeof(pool));
 	pool.pool_read = img_read;
@@ -136,6 +152,10 @@ main(int argc, char **argv)
 	    dn.dn_type, dn.dn_nlevels,
 	    dn.dn_datablkszsec * 512);
 
+	/* As the loader does: a cache the size of the file's blocks. */
+	cache.bc_size = (size_t)dn.dn_datablkszsec * 512;
+	cache.bc_buf = malloc(cache.bc_size);
+
 	if (argc > 6) {
 		out = open(argv[6], O_WRONLY | O_CREAT | O_TRUNC, 0644);
 		if (out < 0) { perror(argv[6]); return (1); }
@@ -160,9 +180,10 @@ main(int argc, char **argv)
 	}
 	printf("read %llu bytes\n", (unsigned long long)off);
 #ifdef ZFS_SCRATCH_DEBUG
-	printf("scratch: high %zu of %u bytes, %d misput, %d exhausted\n",
+	printf("scratch: high %zu of %u bytes, %d misput, %d exhausted, "
+	    "%d from the heap\n",
 	    zfs_scratch_high, (unsigned)ZFS_SCRATCH_SIZE, zfs_scratch_misput,
-	    zfs_scratch_exhausted);
+	    zfs_scratch_exhausted, zfs_scratch_heaped);
 #endif
 	if (out >= 0)
 		close(out);
