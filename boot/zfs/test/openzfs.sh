@@ -453,7 +453,9 @@ reflow() {
 	    END { sub(/^[ \t]*/, "", s); print "txg " best ": " s }'
 }
 
-if [ -e $R ]; then
+# The tunable alone is no sign: Ubuntu's 2.2 has it and still refuses to
+# attach to a raidz.  The feature is what says zpool attach will widen.
+if zpool upgrade -v | grep -q '^raidz_expansion'; then
 	echo "=== raidz1 widened once"
 	WIDEN=1 mk raidzx1 widen "raidz1 D D D"
 	check raidzx1
