@@ -214,8 +214,18 @@ check() {
 		fi
 	done < "$W/$name.sha256"
 	if [ "$expect" = ok ]; then
-		./fuzz_pool "$img" 0 "${FUZZ:-/random}" 1000 7 |
-		    sed 's/^/  /'
+		# Not in a pipe: sh takes a pipe's status from its last
+		# command, so a fault under the sanitizers left the job
+		# green.  The time limit makes a reader that loops fail
+		# here, where the log shows which pool it was.
+		r=0
+		timeout 300 ./fuzz_pool "$img" 0 "${FUZZ:-/random}" 1000 7 \
+		    > "$W/fuzz.out" 2>&1 || r=$?
+		sed 's/^/  /' "$W/fuzz.out"
+		if [ $r -ne 0 ]; then
+			echo "  $1 [$disks] fuzz_pool: exit $r"
+			fail=1
+		fi
 	fi
 }
 
