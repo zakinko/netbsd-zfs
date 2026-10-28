@@ -276,23 +276,11 @@ dva_offset(const dva_t *dva)
 }
 
 static int
-block_checksum_ok(const struct zfs_pool *pool, const blkptr_t *bp,
+block_checksum_match(const struct zfs_pool *pool, const blkptr_t *bp,
     const void *buf, size_t psize)
 {
 	uint64_t got[4];
 	int i;
-
-#ifdef ZFS_FUZZ_NO_CKSUM
-	/*
-	 * For the fuzzer only, and never for a build that boots
-	 * anything.  The threat this reader is hardened against is a
-	 * disk written on purpose, and whoever writes one recomputes
-	 * the checksums -- so a fuzzer that has to get past them is
-	 * testing fletcher4 rather than the parsing underneath it.
-	 */
-	(void)pool; (void)bp; (void)buf; (void)psize; (void)got; (void)i;
-	return (1);
-#else
 
 	switch (BP_GET_CHECKSUM(bp)) {
 	case ZIO_CHECKSUM_OFF:
@@ -348,6 +336,38 @@ block_checksum_ok(const struct zfs_pool *pool, const blkptr_t *bp,
 		if (got[i] != bp->blk_cksum.zc_word[i])
 			return (0);
 	return (1);
+}
+
+#ifdef ZFS_FUZZ_NO_CKSUM
+/* Set by the fuzzer's device each time it hands back flipped bits. */
+extern int zfs_fuzz_mutated;
+#endif
+
+static int
+block_checksum_ok(const struct zfs_pool *pool, const blkptr_t *bp,
+    const void *buf, size_t psize)
+{
+#ifdef ZFS_FUZZ_NO_CKSUM
+	int ok;
+
+	/*
+	 * For the fuzzer only, and never for a build that boots
+	 * anything.  The threat this reader is hardened against is a
+	 * disk written on purpose, and whoever writes one recomputes
+	 * the checksums -- so a fuzzer that has to get past them is
+	 * testing fletcher4 rather than the parsing underneath it.
+	 *
+	 * Only the fuzzer's own flips are let through.  Waiving every
+	 * checksum also passed the blocks of a zeroed disk, so the
+	 * copy on the other side of a mirror or the parity of a raidz
+	 * was never tried: those pools mounted in none of a thousand
+	 * cases and their recovery was never fuzzed.
+	 */
+	ok = block_checksum_match(pool, bp, buf, psize) || zfs_fuzz_mutated;
+	zfs_fuzz_mutated = 0;
+	return (ok);
+#else
+	return (block_checksum_match(pool, bp, buf, psize));
 #endif
 }
 
@@ -1378,6 +1398,10 @@ dva_read(struct zfs_pool *pool, const blkptr_t *bp, int d, uint8_t *out,
 	if (!DVA_GET_GANG(dva)) {
 		struct bp_verify bv = { pool, bp };
 
+#ifdef ZFS_FUZZ_NO_CKSUM
+		/* A flip in a label or an earlier block is not this one's. */
+		zfs_fuzz_mutated = 0;
+#endif
 		return (vdev_read(pool, dva, BP_GET_PHYSICAL_BIRTH(bp), out,
 		    psize, bp_verify, &bv));
 	}

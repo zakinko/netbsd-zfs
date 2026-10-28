@@ -13,7 +13,7 @@
  * are zero is a broken harness, not a clean reader.
  *
  * Built with -DZFS_FUZZ_NO_CKSUM, which takes the block checksums out
- * of the way.  That is deliberate, and it is the threat model: the
+ * of the way of the mutations made here, and only of those.  That is deliberate, and it is the threat model: the
  * reader is hardened against a disk somebody wrote on purpose, and
  * whoever writes one recomputes the checksums.  A fuzzer left to fight
  * fletcher4 tests fletcher4 and never reaches a dnode.
@@ -65,6 +65,7 @@ static const char *g_path = "/payload";
 static char g_ds[64];
 
 static int g_corrupt;		/* one in this many reads comes back wrong */
+int zfs_fuzz_mutated;		/* bits were flipped since the last check */
 
 static int
 img_read(void *cookie, uint64_t off, void *buf, size_t len)
@@ -84,6 +85,7 @@ img_read(void *cookie, uint64_t off, void *buf, size_t len)
 
 			((uint8_t *)buf)[p] ^= (uint8_t)(1u << (rnd() & 7));
 		}
+		zfs_fuzz_mutated = 1;
 	}
 	return (0);
 }

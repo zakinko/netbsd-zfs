@@ -83,10 +83,12 @@ jobs:
   # NetBSD's ZFS is the 2016 illumos import and cannot be made to write
   # gang blocks, zstd or the newer checksums; the current OpenZFS can,
   # and the runner's kernel carries it.  No VM, so this is the cheap
-  # half.
+  # half.  It took 14 minutes while the fuzzer skipped every checksum;
+  # with the checksums computed and the degraded pools now mounting, it
+  # took 29 once and was cut off at 40 once.
   openzfs:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: Read pools made by OpenZFS
