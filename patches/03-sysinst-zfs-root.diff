@@ -1,5 +1,5 @@
 diff --git a/share/man/man7/sysctl.7 b/share/man/man7/sysctl.7
-index 588179220..c5564e991 100644
+index 5881792..c5564e9 100644
 --- a/share/man/man7/sysctl.7
 +++ b/share/man/man7/sysctl.7
 @@ -868,6 +868,7 @@ The third level names for the settings are described below.
@@ -21,7 +21,7 @@ index 588179220..c5564e991 100644
  A boolean that enables or disables verbose
  debug messages related to kernel modules.
 diff --git a/usr.sbin/sysinst/Makefile.inc b/usr.sbin/sysinst/Makefile.inc
-index ffc79ffd2..d32ec2f84 100644
+index ffc79ff..d32ec2f 100644
 --- a/usr.sbin/sysinst/Makefile.inc
 +++ b/usr.sbin/sysinst/Makefile.inc
 @@ -108,6 +108,12 @@ CPPFLAGS+=	-DHAVE_DTB
@@ -38,7 +38,7 @@ index ffc79ffd2..d32ec2f84 100644
  CPPFLAGS+=	-I. -I${.CURDIR}/../.. -I${.CURDIR} \
  		-I${.CURDIR}/../../../../sbin/fsck \
 diff --git a/usr.sbin/sysinst/arch/amd64/Makefile b/usr.sbin/sysinst/arch/amd64/Makefile
-index 6444df560..9afe5f834 100644
+index 6444df5..9afe5f8 100644
 --- a/usr.sbin/sysinst/arch/amd64/Makefile
 +++ b/usr.sbin/sysinst/arch/amd64/Makefile
 @@ -8,6 +8,7 @@ MSG_MD=		../i386/msg.md.${SYSINSTLANG} msg.mbr.${SYSINSTLANG}
@@ -50,7 +50,7 @@ index 6444df560..9afe5f834 100644
  CPPFLAGS+=	-DBOOTSEL -DWSKBD
  
 diff --git a/usr.sbin/sysinst/arch/i386/md.c b/usr.sbin/sysinst/arch/i386/md.c
-index 1078e76ed..5cecf7236 100644
+index 1078e76..5825a52 100644
 --- a/usr.sbin/sysinst/arch/i386/md.c
 +++ b/usr.sbin/sysinst/arch/i386/md.c
 @@ -102,6 +102,18 @@ md_init_set_status(int flags)
@@ -119,27 +119,31 @@ index 1078e76ed..5cecf7236 100644
  		    rdev, sizeof rdev, NULL, raw_dev_name, true, true);
  
  		snprintf(boot_options, sizeof boot_options,
-@@ -455,12 +475,75 @@ md_post_newfs(struct install_partition_desc *install)
+@@ -455,12 +475,81 @@ md_post_newfs(struct install_partition_desc *install)
  	    : md_post_newfs_bios(install);
  }
  
 +#ifdef HAVE_ZFS_ROOT
 +/*
 + * Write a boot.cfg into the boot partition of a ZFS root that loads
-+ * the zfs module and the root ramdisk from there.  The boot.cfg the
-+ * etc set put on the ZFS root is out of the boot loader's reach.
++ * the zfs module from there and has the kernel mount the pool's bootfs
++ * as root, with the root ramdisk as the other way in.  The boot.cfg
++ * the etc set put on the ZFS root is out of the boot loader's reach.
 + * The modules are named by their full path, so nothing depends on
 + * the loader working out the module directory from the kernel.
 + */
 +static int
 +zfs_root_boot_cfg(struct install_partition_desc *install)
 +{
-+	char zfs_boot[STRSIZE], moddir[STRSIZE];
++	char zfs_boot[STRSIZE], zfs_rdboot[STRSIZE], moddir[STRSIZE];
 +	FILE *f;
 +
 +	if (!zfs_root_module_dir(moddir, sizeof moddir))
 +		return 1;
 +	snprintf(zfs_boot, sizeof zfs_boot,
++	    "load %s/zfs/zfs.kmod;"
++	    "root zfs:" ZFS_ROOT_POOL ";boot", moddir);
++	snprintf(zfs_rdboot, sizeof zfs_rdboot,
 +	    "load %s/zfs/zfs.kmod;"
 +	    "fs /" ZFS_ROOT_RAMDISK ";boot", moddir);
 +
@@ -156,6 +160,8 @@ index 1078e76ed..5cecf7236 100644
 +	scripting_fprintf(f, "banner=\n");
 +	scripting_fprintf(f, "menu=Boot normally:%s\n", zfs_boot);
 +	scripting_fprintf(f, "menu=Boot single user:%s -s\n", zfs_boot);
++	scripting_fprintf(f, "menu=Boot through the root ramdisk:%s\n",
++	    zfs_rdboot);
 +	scripting_fprintf(f, "menu=Drop to boot prompt:prompt\n");
 +	scripting_fprintf(f, "default=1\n");
 +	scripting_fprintf(f, "timeout=5\n");
@@ -196,7 +202,7 @@ index 1078e76ed..5cecf7236 100644
  	if (get_kernel_set() == SET_KERNEL_2) {
  		int ret;
 diff --git a/usr.sbin/sysinst/bsddisklabel.c b/usr.sbin/sysinst/bsddisklabel.c
-index a9af942ee..2ff14cdff 100644
+index a9af942..c9b05ab 100644
 --- a/usr.sbin/sysinst/bsddisklabel.c
 +++ b/usr.sbin/sysinst/bsddisklabel.c
 @@ -149,6 +149,36 @@ default_parts_init[] =
@@ -411,7 +417,7 @@ index a9af942ee..2ff14cdff 100644
  	return md_check_partitions(install);
  }
 diff --git a/usr.sbin/sysinst/defs.h b/usr.sbin/sysinst/defs.h
-index 484902af8..af7ea3750 100644
+index 484902a..af7ea37 100644
 --- a/usr.sbin/sysinst/defs.h
 +++ b/usr.sbin/sysinst/defs.h
 @@ -116,6 +116,7 @@ enum layout_type {
@@ -490,7 +496,7 @@ index 484902af8..af7ea3750 100644
  void check_available_binaries(void);
  
 diff --git a/usr.sbin/sysinst/disks.c b/usr.sbin/sysinst/disks.c
-index 196c47c2c..294626b29 100644
+index 196c47c..75e39d0 100644
 --- a/usr.sbin/sysinst/disks.c
 +++ b/usr.sbin/sysinst/disks.c
 @@ -1329,6 +1329,17 @@ make_filesystems(struct install_partition_desc *install)
@@ -520,12 +526,12 @@ index 196c47c2c..294626b29 100644
 +			if (strcmp(mp, "/") != 0)
 +				continue;
 +			/*
-+			 * The ramdisk mounts it before init runs, and
-+			 * mount_zfs can not update a mount, so noauto;
-+			 * the entry is there for fsck_root and friends.
++			 * The kernel, or the ramdisk, mounts it before
++			 * init runs; rc.d/root makes it read/write, as
++			 * for any root.
 +			 */
 +			scripting_fprintf(f,
-+			    "%s/%s\t\t/\tzfs\trw,noauto\t 0 0\n",
++			    "%s/%s\t\t/\tzfs\trw\t 0 0\n",
 +			    ZFS_ROOT_POOL, ZFS_ROOT_FS);
 +			continue;
 +#endif
@@ -634,10 +640,10 @@ index 196c47c2c..294626b29 100644
  		if (install->infos[i].fs_version >= 2) {
 diff --git a/usr.sbin/sysinst/disks_zfs.c b/usr.sbin/sysinst/disks_zfs.c
 new file mode 100644
-index 000000000..d52f800f4
+index 0000000..4e6e8fd
 --- /dev/null
 +++ b/usr.sbin/sysinst/disks_zfs.c
-@@ -0,0 +1,363 @@
+@@ -0,0 +1,372 @@
 +/*	$NetBSD$	*/
 +
 +/*
@@ -670,12 +676,14 @@ index 000000000..d52f800f4
 + * Root on ZFS.
 + *
 + * The boot loader can not read ZFS, so the root pool is paired with a
-+ * small FFS boot partition holding the kernel, the zfs
-+ * module and the ramdisk-zfsroot.fs image from the release.  The
-+ * ramdisk imports the pool, mounts ZFS_ROOT_POOL/ZFS_ROOT_FS on
-+ * /altroot and points init.root at it; that is where the names used
-+ * here come from (see distrib/common/zfsroot.rc).  The boot partition
-+ * stays reachable from the installed system as ZFS_BOOT_MOUNT.
++ * small FFS boot partition holding the kernel, the zfs module and the
++ * ramdisk-zfsroot.fs image from the release.  The kernel is told
++ * "root zfs:ZFS_ROOT_POOL" and mounts the pool's bootfs, which is
++ * ZFS_ROOT_POOL/ZFS_ROOT_FS; the ramdisk, which imports the pool,
++ * mounts that file system on /altroot and points init.root at it, is
++ * the boot menu's other way in.  The names are the ones the ramdisk
++ * expects (see distrib/common/zfsroot.rc).  The boot partition stays
++ * reachable from the installed system as ZFS_BOOT_MOUNT.
 + */
 +
 +#include <sys/mount.h>
@@ -705,8 +713,9 @@ index 000000000..d52f800f4
 +}
 +
 +/*
-+ * The ramdisk finds the pool with zpool import, which on NetBSD only
-+ * scans whole disks and wedges, so the pool partition has to be one
++ * The kernel finds the pool by its labels, as the ramdisk's zpool
++ * import does, and both scan only whole disks and wedges, so the pool
++ * partition has to be one
 + * the kernel turns into a wedge by itself: a GPT one.  A disklabel
 + * partition would need DKWEDGE_METHOD_BSDLABEL, which GENERIC lacks.
 + */
@@ -784,7 +793,8 @@ index 000000000..d52f800f4
 + * file system, the equivalent of newfs and mount for other types.
 + * The pool itself is not mounted anywhere (the install medium may
 + * well be read-only), ZFS_ROOT_FS uses a legacy mount point so
-+ * mount(8) and the ramdisk can deal with it.
++ * mount(8) and the ramdisk can deal with it, and is the pool's bootfs,
++ * which the kernel mounts as root.
 + */
 +int
 +zfs_root_setup(struct part_usage_info *ptn, const char *dev)
@@ -800,6 +810,11 @@ index 000000000..d52f800f4
 +		error = run_program(RUN_DISPLAY | RUN_PROGRESS,
 +		    "/sbin/zfs create -o mountpoint=legacy %s/%s",
 +		    ZFS_ROOT_POOL, ZFS_ROOT_FS);
++		if (error != 0)
++			return error;
++		error = run_program(RUN_DISPLAY | RUN_PROGRESS,
++		    "/sbin/zpool set bootfs=%s/%s %s",
++		    ZFS_ROOT_POOL, ZFS_ROOT_FS, ZFS_ROOT_POOL);
 +		if (error != 0)
 +			return error;
 +		ptn->instflags &= ~(unsigned int)PUIINST_NEWFS;
@@ -1002,7 +1017,7 @@ index 000000000..d52f800f4
 +	return 0;
 +}
 diff --git a/usr.sbin/sysinst/gpt.c b/usr.sbin/sysinst/gpt.c
-index 77cde14aa..bf0bf8719 100644
+index 77cde14..bf0bf87 100644
 --- a/usr.sbin/sysinst/gpt.c
 +++ b/usr.sbin/sysinst/gpt.c
 @@ -142,6 +142,7 @@ struct gpt_part_entry {
@@ -1086,7 +1101,7 @@ index 77cde14aa..bf0bf8719 100644
  	 * If no GPT on disk yet, create it.
  	 */
 diff --git a/usr.sbin/sysinst/msg.mi.de b/usr.sbin/sysinst/msg.mi.de
-index 76fd296a2..c82765f5b 100644
+index 76fd296..5169742 100644
 --- a/usr.sbin/sysinst/msg.mi.de
 +++ b/usr.sbin/sysinst/msg.mi.de
 @@ -1036,6 +1036,26 @@ message cannot_ufs2_root
@@ -1103,8 +1118,8 @@ index 76fd296a2..c82765f5b 100644
 +"root on ZFS" partition layout.}
 +
 +message zfs_root_needs_gpt
-+{A root file system on ZFS needs a GPT partition for the pool: the boot
-+ramdisk finds the pool by scanning whole disks and wedges only.}
++{A root file system on ZFS needs a GPT partition for the pool: the pool
++is found at boot by scanning whole disks and wedges only.}
 +
 +/* Called with:				Example
 + *  $0 = ramdisk file name		ramdisk-zfsroot.fs
@@ -1130,7 +1145,7 @@ index 76fd296a2..c82765f5b 100644
   *  $0 = partitioning name		Master Boot Record (MBR)
   *  $1 = short version of $0		MBR
 diff --git a/usr.sbin/sysinst/msg.mi.en b/usr.sbin/sysinst/msg.mi.en
-index ea188b841..bf0f173b8 100644
+index ea188b8..b24a2b4 100644
 --- a/usr.sbin/sysinst/msg.mi.en
 +++ b/usr.sbin/sysinst/msg.mi.en
 @@ -971,6 +971,26 @@ message cannot_ufs2_root
@@ -1147,8 +1162,8 @@ index ea188b841..bf0f173b8 100644
 +"root on ZFS" partition layout.}
 +
 +message zfs_root_needs_gpt
-+{A root file system on ZFS needs a GPT partition for the pool: the boot
-+ramdisk finds the pool by scanning whole disks and wedges only.}
++{A root file system on ZFS needs a GPT partition for the pool: the pool
++is found at boot by scanning whole disks and wedges only.}
 +
 +/* Called with:				Example
 + *  $0 = ramdisk file name		ramdisk-zfsroot.fs
@@ -1174,7 +1189,7 @@ index ea188b841..bf0f173b8 100644
   *  $0 = partitioning name		Master Boot Record (MBR)
   *  $1 = short version of $0		MBR
 diff --git a/usr.sbin/sysinst/msg.mi.es b/usr.sbin/sysinst/msg.mi.es
-index 357275920..11382a1e6 100644
+index 3572759..abea299 100644
 --- a/usr.sbin/sysinst/msg.mi.es
 +++ b/usr.sbin/sysinst/msg.mi.es
 @@ -990,6 +990,26 @@ message cannot_ufs2_root
@@ -1191,8 +1206,8 @@ index 357275920..11382a1e6 100644
 +"root on ZFS" partition layout.}
 +
 +message zfs_root_needs_gpt
-+{A root file system on ZFS needs a GPT partition for the pool: the boot
-+ramdisk finds the pool by scanning whole disks and wedges only.}
++{A root file system on ZFS needs a GPT partition for the pool: the pool
++is found at boot by scanning whole disks and wedges only.}
 +
 +/* Called with:				Example
 + *  $0 = ramdisk file name		ramdisk-zfsroot.fs
@@ -1218,7 +1233,7 @@ index 357275920..11382a1e6 100644
   *  $0 = partitioning name		Master Boot Record (MBR)
   *  $1 = short version of $0		MBR
 diff --git a/usr.sbin/sysinst/msg.mi.fr b/usr.sbin/sysinst/msg.mi.fr
-index efac92445..9790ec93e 100644
+index efac924..11bceeb 100644
 --- a/usr.sbin/sysinst/msg.mi.fr
 +++ b/usr.sbin/sysinst/msg.mi.fr
 @@ -1032,6 +1032,26 @@ message cannot_ufs2_root
@@ -1235,8 +1250,8 @@ index efac92445..9790ec93e 100644
 +"root on ZFS" partition layout.}
 +
 +message zfs_root_needs_gpt
-+{A root file system on ZFS needs a GPT partition for the pool: the boot
-+ramdisk finds the pool by scanning whole disks and wedges only.}
++{A root file system on ZFS needs a GPT partition for the pool: the pool
++is found at boot by scanning whole disks and wedges only.}
 +
 +/* Called with:				Example
 + *  $0 = ramdisk file name		ramdisk-zfsroot.fs
@@ -1262,7 +1277,7 @@ index efac92445..9790ec93e 100644
   *  $0 = partitioning name		Master Boot Record (MBR)
   *  $1 = short version of $0		MBR
 diff --git a/usr.sbin/sysinst/msg.mi.pl b/usr.sbin/sysinst/msg.mi.pl
-index b3344a213..4b5a1a86f 100644
+index b3344a2..809bf13 100644
 --- a/usr.sbin/sysinst/msg.mi.pl
 +++ b/usr.sbin/sysinst/msg.mi.pl
 @@ -963,6 +963,26 @@ message cannot_ufs2_root
@@ -1279,8 +1294,8 @@ index b3344a213..4b5a1a86f 100644
 +"root on ZFS" partition layout.}
 +
 +message zfs_root_needs_gpt
-+{A root file system on ZFS needs a GPT partition for the pool: the boot
-+ramdisk finds the pool by scanning whole disks and wedges only.}
++{A root file system on ZFS needs a GPT partition for the pool: the pool
++is found at boot by scanning whole disks and wedges only.}
 +
 +/* Called with:				Example
 + *  $0 = ramdisk file name		ramdisk-zfsroot.fs
@@ -1306,7 +1321,7 @@ index b3344a213..4b5a1a86f 100644
   *  $0 = partitioning name		Master Boot Record (MBR)
   *  $1 = short version of $0		MBR
 diff --git a/usr.sbin/sysinst/net.c b/usr.sbin/sysinst/net.c
-index ce8a17cee..34c7c1d97 100644
+index ce8a17c..34c7c1d 100644
 --- a/usr.sbin/sysinst/net.c
 +++ b/usr.sbin/sysinst/net.c
 @@ -979,8 +979,13 @@ pkgsrc_fetch(const char *set_name)
@@ -1379,7 +1394,7 @@ index ce8a17cee..34c7c1d97 100644
  // XXX: check MSG_netnotup_continueanyway and MSG_netnotup
  
 diff --git a/usr.sbin/sysinst/util.c b/usr.sbin/sysinst/util.c
-index 2e938d213..ebc1272ea 100644
+index 2e938d2..ebc1272 100644
 --- a/usr.sbin/sysinst/util.c
 +++ b/usr.sbin/sysinst/util.c
 @@ -194,7 +194,7 @@ static bool have_warned_compat_missing;

@@ -11,23 +11,64 @@ NetBSD/amd64 with the root file system on ZFS, two ways:
 
 ## How root on ZFS boots
 
-NetBSD's boot loader cannot read ZFS (the libsa work is an open
-[project](https://wiki.netbsd.org/projects/project/zfs_root/)), so
-both variants use the layout from
-[Root On ZFS](https://wiki.netbsd.org/root_on_zfs/) on the wiki:
+NetBSD's BIOS boot loader cannot read ZFS (the libsa work is an open
+[project](https://wiki.netbsd.org/projects/project/zfs_root/)), so the
+kernel and the `zfs` module live on a small FFS partition of their own:
 
 | GPT | label / mount   | fs   | contents |
 |-----|-----------------|------|----------|
-| 1   | boot, `/altroot`| FFS  | `/boot`, `netbsd`, the `solaris` and `zfs` modules, `ramdisk-zfsroot.fs` |
+| 1   | boot, `/altroot`| FFS  | `/boot`, `netbsd`, the `zfs` module, `ramdisk-zfsroot.fs` |
 | 2   | swap            | swap | |
 | 3   | rpool           | ZFS  | `rpool/ROOT`, mounted as `/` |
 
-`boot.cfg` loads the kernel and the two modules from the FFS partition,
-then the `ramdisk-zfsroot.fs` shipped in every release.  The ramdisk
-imports `rpool`, mounts `rpool/ROOT` on `/altroot` and sets `init.root`,
-so `init` starts inside the ZFS file system.  The boot partition is in
-`fstab` as `/altroot` (`noauto`); mount it before updating the kernel
-or modules.
+The two variants differ in what happens next.
+
+**The disk image** is stock NetBSD 11.0 and uses the layout from
+[Root On ZFS](https://wiki.netbsd.org/root_on_zfs/) on the wiki:
+`boot.cfg` loads the `solaris` and `zfs` modules and the
+`ramdisk-zfsroot.fs` shipped in every release.  The ramdisk imports
+`rpool`, mounts `rpool/ROOT` on `/altroot` and sets `init.root`, so
+`init` starts inside the ZFS file system.
+
+**The ISO** installs a system whose kernel mounts the pool itself.
+`boot.cfg` says
+
+    load /stand/amd64/11.0/modules/zfs/zfs.kmod;root zfs:rpool;boot
+
+`root zfs:rpool` names a file system type rather than a device; the
+kernel hands it to the `zfs` module, which imports the pool from the
+disks it finds and mounts the pool's `bootfs` (`rpool/ROOT`) as `/`,
+read/write, before `init` runs.  The ramdisk stays in the boot partition
+and in the boot menu ("Boot through the root ramdisk") as a way in when
+something is wrong with that path.  At the boot prompt, `root` can also
+be answered with `zfs:<pool>` or `zfs:<pool>/<dataset>`.
+
+In both, the boot partition is in `fstab` as `/altroot` (`noauto`);
+mount it before updating the kernel or modules.
+
+## The ZFS on the ISO
+
+The ZFS in NetBSD's base tree (`external/cddl/osnet`) came from illumos
+by way of FreeBSD around 2016 and has not met OpenZFS since: 16 feature
+flags against OpenZFS's 49, so no `large_blocks`, `device_removal`,
+`encryption`, `zstd` or `draid`, and a pool created elsewhere with any of
+those will not import.
+
+The ISO carries OpenZFS instead, from
+[zakinko/zfs](https://github.com/zakinko/zfs), branch `bsd-kernel`, at
+the commit in [patches/OPENZFS_REV](patches/OPENZFS_REV).  The `iso`
+workflow builds its userland natively in a NetBSD VM and `zfs.kmod`
+against the release's kernel, then `ci/openzfs-sets.sh` swaps them into
+the release sets in place of osnet's `zfs`, `zpool`, `mount_zfs`, `zdb`,
+`ztest`, `libzfs`, `libzfs_core`, `libzpool`, their manual pages and
+`zfs.kmod`.  osnet's `libavl`, `libnvpair`, `libumem` and `libuutil`
+stay, as does `solaris.kmod`, which `dtrace` needs.
+
+The OpenZFS commands in `/sbin` link against `libintl`, `librt` and
+`libexecinfo` from `/usr/lib`, so they need `/usr` mounted; the ramdisk
+gets static copies.
+
+The disk image is still built from stock NetBSD 11.0 and uses osnet.
 
 ## The patches
 
@@ -49,55 +90,34 @@ outside the kernel:
 
 The entry appears when the medium has `zpool`/`zfs` and the disk uses
 GPT.  Choosing it gives the layout above; the sizes can still be edited
-before anything is written.  sysinst then creates the pool, extracts the
-sets into it, fetches `ramdisk-zfsroot.fs` from `installation/ramdisk`
-next to the sets (from the CD or the same ftp/http server), copies the
-kernel and the two modules to the boot partition, writes its `boot.cfg`
-and installs the bootstrap there.  Upgrading such a system works too:
-sysinst imports the pool, mounts `rpool/ROOT` and the boot partition,
-and after the sets are in refreshes the kernel, the modules, the
-ramdisk and the bootstrap in the boot partition.  The KASLR kernel is
-not offered with a ZFS root, because the `zfs` module is built with
-`KDTRACE_HOOKS` and `GENERIC_KASLR` without, so it cannot be loaded
-there.
+before anything is written.  sysinst then creates the pool, sets its
+`bootfs` to `rpool/ROOT`, extracts the sets into it, fetches
+`ramdisk-zfsroot.fs` from `installation/ramdisk` next to the sets (from
+the CD or the same ftp/http server), copies the kernel and the module to
+the boot partition, writes its `boot.cfg` and installs the bootstrap
+there.  Upgrading such a system works too: sysinst imports the pool,
+mounts `rpool/ROOT` and the boot partition, and after the sets are in
+refreshes the kernel, the module, the ramdisk and the bootstrap in the
+boot partition.  The KASLR kernel is not offered with a ZFS root,
+because the `zfs` module is built with `KDTRACE_HOOKS` and
+`GENERIC_KASLR` without, so it cannot be loaded there.
 
-[02-rc-root-zfs.diff](patches/02-rc-root-zfs.diff) makes `rc.d/root`
-leave a ZFS root alone: the boot ramdisk already mounted it read/write
-and `mount_zfs` cannot update a mount.  With the `noauto` entry sysinst
-writes for `/`, `fsck_root` and `mountall` are quiet as well.
+[04-ramdisk-openzfs.diff](patches/04-ramdisk-openzfs.diff) puts the
+static OpenZFS `zpool` and `mount_zfs` into `ramdisk-zfsroot.fs` in
+place of osnet's, and makes the image large enough for them.
 
-[01-libzfs-import-union-dev.diff](patches/01-libzfs-import-union-dev.diff)
-has `zpool import` open the candidates in `/dev` by full path instead
-of `openat(2)` relative to the directory: on the install CD `/dev` is a
-union-mounted tmpfs, and there `openat` on such a directory does not
-find the entries, so the pool was never found.  (That looks like a
-kernel bug in its own right.)
+[05-root-by-fsname.diff](patches/05-root-by-fsname.diff) is the kernel
+side of `root zfs:rpool`.  `setroot()` insisted on a device, and a pool
+is not one: a root specification of the form `<fstype>:<spec>` now
+selects the file system type and leaves the device unset, and
+`vfs_mountroot()` then calls that type's `mountroot` with no device for
+it to take over.  The same form is accepted at the `root device:`
+prompt, so a mistyped pool name in `boot.cfg` lands there and can be
+corrected.  `kern.root_device` reads as an empty string in that case.
 
-Not covered: MBR/disklabel disks, because the ramdisk finds the pool
-with `zpool import`, which on NetBSD only scans whole disks and wedges,
-and GENERIC does not turn disklabel partitions into wedges.
-
-## The ZFS this is built on
-
-The ZFS in NetBSD's base tree (`external/cddl/osnet`) came from illumos
-by way of FreeBSD around 2016 and has not met OpenZFS since.  Its
-`zfeature_common.c` stops at
-
-    com.delphix:{async_destroy, bookmarks, embedded_data, empty_bpobj,
-                 enabled_txg, extensible_dataset, hole_birth,
-                 spacemap_histogram}
-    com.joyent:{filesystem_limits, multi_vdev_crash_dump}
-    org.illumos:{edonr, lz4_compress, sha512, skein}
-
-which is 16 feature flags against the 49 OpenZFS has today: no
-`large_blocks`, no `device_removal`, no `encryption`, no `zstd`, no
-`draid`.  A pool created elsewhere with any of those enabled will not
-import here.  `SPA_VERSION` is 5000, so a pool that stays inside the
-list above is readable both ways.
-
-Work on a platform layer that would let NetBSD track OpenZFS proper is
-in [zakinko/zfs](https://github.com/zakinko/zfs), branch
-`bsd-platform`.  Nothing in this repository depends on it.
+Not covered: MBR/disklabel disks, because the pool is looked for on
+whole disks and wedges, and GENERIC does not turn disklabel partitions
+into wedges.
 
 ## Using the results
 
@@ -131,6 +151,5 @@ they no longer need a partition of their own.  It is written from the
 ZFS On-Disk Specification rather than carried from another loader, and
 `install.sh` puts it into a NetBSD 11.0 tree.
 
-It does not replace the ramdisk -- the kernel still cannot mount a
-dataset as root -- and it is EFI only: the BIOS `boot` has 192KB of heap
+It is EFI only: the BIOS `boot` has 192KB of heap
 under the 640KB line, and a vdev label's nvlist alone is 112KB.

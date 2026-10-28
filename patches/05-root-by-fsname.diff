@@ -1,0 +1,206 @@
+diff --git a/sys/kern/init_main.c b/sys/kern/init_main.c
+index ded4706..3ac3c49 100644
+--- a/sys/kern/init_main.c
++++ b/sys/kern/init_main.c
+@@ -684,7 +684,8 @@ main(void)
+ 
+ 	/* Mount the root file system. */
+ 	do {
+-		domountroothook(root_device);
++		if (root_device != NULL)
++			domountroothook(root_device);
+ 		if ((error = vfs_mountroot())) {
+ 			printf("cannot mount root, error = %d\n", error);
+ 			boothowto |= RB_ASKNAME;
+diff --git a/sys/kern/init_sysctl.c b/sys/kern/init_sysctl.c
+index 7171c5c..a2116ff 100644
+--- a/sys/kern/init_sysctl.c
++++ b/sys/kern/init_sysctl.c
+@@ -1498,10 +1498,13 @@ int
+ sysctl_root_device(SYSCTLFN_ARGS)
+ {
+ 	struct sysctlnode node;
++	const char *xname;
+ 
++	/* A root named by its file system has no device. */
++	xname = root_device != NULL ? device_xname(root_device) : "";
+ 	node = *rnode;
+-	node.sysctl_data = __UNCONST(device_xname(root_device));
+-	node.sysctl_size = strlen(device_xname(root_device)) + 1;
++	node.sysctl_data = __UNCONST(xname);
++	node.sysctl_size = strlen(xname) + 1;
+ 	return (sysctl_lookup(SYSCTLFN_CALL(&node)));
+ }
+ 
+diff --git a/sys/kern/kern_subr.c b/sys/kern/kern_subr.c
+index 06f657c..fb3ec03 100644
+--- a/sys/kern/kern_subr.c
++++ b/sys/kern/kern_subr.c
+@@ -112,8 +112,9 @@ static device_t parsedisk(const char *, int, int, dev_t *);
+ static const char *getwedgename(const char *, int);
+ 
+ static void setroot_nfs(device_t);
++static bool setroot_fsname(const char *);
+ static void setroot_md(device_t *);
+-static void setroot_ask(device_t, int);
++static bool setroot_ask(device_t, int);
+ static void setroot_root(device_t, int);
+ static void setroot_dump(device_t, device_t);
+ 
+@@ -209,6 +210,13 @@ setroot(device_t bootdv, int bootpartition)
+ 	if (md_is_root)
+ 		setroot_md(&bootdv);
+ 
++	/*
++	 * A root named by its file system has no device to find, unless
++	 * mounting it failed and the user is to be asked instead.
++	 */
++	if ((boothowto & RB_ASKNAME) == 0 && setroot_fsname(rootspec))
++		return;
++
+ #ifdef TFTPROOT
+ 	/*
+ 	 * XXX
+@@ -251,9 +259,11 @@ setroot(device_t bootdv, int bootpartition)
+ 	 */
+ 	waitend = time_uptime + ROOT_WAITTIME;
+ 	do {
+-		if (boothowto & RB_ASKNAME)
+-			setroot_ask(bootdv, bootpartition);
+-		else {
++		if (boothowto & RB_ASKNAME) {
++			/* Answered with a file system's root spec. */
++			if (setroot_ask(bootdv, bootpartition))
++				return;
++		} else {
+ 			setroot_root(bootdv, bootpartition);
+ 			if (root_device == NULL) {
+ 				if (time_uptime < waitend) {
+@@ -299,6 +309,49 @@ setroot_nfs(device_t dv)
+ 		vfs_delref(vops);
+ }
+ 
++/*
++ * "root on zfs:rpool": a root named by a file system that has a
++ * mountroot and something for it to find, rather than by a device.
++ * The file system reads the rest of the spec from rootspec, which the
++ * caller points at it.  root_device stays NULL and rootfstype names
++ * the file system, so that vfs_mountroot() asks no other.  The prefix
++ * has to name a file system known now that has a mountroot.  The other
++ * rootspecs that can hold a ':', "wedge:label" and a "NAME=label"
++ * whose label has one, begin with no such name, so they still go to
++ * parsedisk().
++ */
++static bool
++setroot_fsname(const char *spec)
++{
++	struct vfsops *vops;
++	const char *colon;
++	char fsname[VFS_NAMELEN];
++	size_t len;
++
++	if (spec == NULL || (colon = strchr(spec, ':')) == NULL)
++		return false;
++	len = colon - spec;
++	if (len == 0 || len >= sizeof(fsname) || colon[1] == '\0')
++		return false;
++	memcpy(fsname, spec, len);
++	fsname[len] = '\0';
++	if ((vops = vfs_getopsbyname(fsname)) == NULL)
++		return false;
++	if (vops->vfs_mountroot == NULL) {
++		vfs_delref(vops);
++		return false;
++	}
++	/* vfs_name lives as long as the file system does, as for NFS. */
++	rootfstype = vops->vfs_name;
++	vfs_delref(vops);
++
++	root_device = NULL;
++	rootdev = NODEV;
++	dumpdev = NODEV;
++	aprint_normal("root on %s\n", spec);
++	return true;
++}
++
+ /*
+  * Change boot device to md0
+  *
+@@ -318,7 +371,7 @@ setroot_md(device_t *dvp)
+ 	}
+ }
+ 
+-static void
++static bool
+ setroot_ask(device_t bootdv, int bootpartition)
+ {
+ 	device_t dv, defdumpdv, rootdv, dumpdv;
+@@ -338,6 +391,14 @@ setroot_ask(device_t bootdv, int bootpartition)
+ 		}
+ 		printf(": ");
+ 		len = cngetsn(buf, sizeof(buf));
++		if (len > 0 && setroot_fsname(buf)) {
++			/* rootspec outlives buf, for the file system. */
++			static char fsspec[sizeof(buf)];
++
++			strlcpy(fsspec, buf, sizeof(fsspec));
++			rootspec = fsspec;
++			return true;
++		}
+ 		if (len == 0 && bootdv != NULL) {
+ 			strlcpy(buf, device_xname(bootdv), sizeof(buf));
+ 			len = strlen(buf);
+@@ -469,11 +530,12 @@ setroot_ask(device_t bootdv, int bootpartition)
+ 		break;
+ 	default:
+ 		printf("can't determine root device\n");
+-		return;
++		return false;
+ 	}
+ 
+ 	root_device = rootdv;
+ 	setroot_dump(rootdv, dumpdv);
++	return false;
+ }
+ 
+ /*
+diff --git a/sys/kern/vfs_mount.c b/sys/kern/vfs_mount.c
+index 55e17ae..310c8bd 100644
+--- a/sys/kern/vfs_mount.c
++++ b/sys/kern/vfs_mount.c
+@@ -1239,8 +1239,15 @@ vfs_mountroot(void)
+ 	struct vfsops *v;
+ 	int error = ENODEV;
+ 
+-	if (root_device == NULL)
+-		panic("vfs_mountroot: root device unknown");
++	/*
++	 * A root named by its file system has no device; setroot() set
++	 * rootfstype, and only that file system is asked.
++	 */
++	if (root_device == NULL) {
++		if (strcmp(rootfstype, ROOT_FSTYPE_ANY) == 0)
++			panic("vfs_mountroot: root device unknown");
++		goto byname;
++	}
+ 
+ 	switch (device_class(root_device)) {
+ 	case DV_IFNET:
+@@ -1279,6 +1286,7 @@ vfs_mountroot(void)
+ 	 * If user specified a root fs type, use it.  Make sure the
+ 	 * specified type exists and has a mount_root()
+ 	 */
++byname:
+ 	if (strcmp(rootfstype, ROOT_FSTYPE_ANY) != 0) {
+ 		v = vfs_getopsbyname(rootfstype);
+ 		error = SET_ERROR(EFTYPE);
+@@ -1324,7 +1332,8 @@ vfs_mountroot(void)
+ 	}
+ 
+ done:
+-	if (error && device_class(root_device) == DV_DISK) {
++	if (error && root_device != NULL &&
++	    device_class(root_device) == DV_DISK) {
+ 		vn_lock(rootvp, LK_EXCLUSIVE | LK_RETRY);
+ 		VOP_CLOSE(rootvp, FREAD, FSCRED);
+ 		VOP_UNLOCK(rootvp);
