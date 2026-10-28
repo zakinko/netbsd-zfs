@@ -1,8 +1,9 @@
 name: iso
 
 # Build NetBSD/amd64 from source with the sysinst root-on-ZFS patch,
-# make the install ISO, and install from it under qemu choosing the
-# new "root on ZFS" layout.  The full build takes about two hours on
+# put OpenZFS (zakinko/zfs at patches/OPENZFS_REV) in place of NetBSD's
+# own ZFS, make the install ISO, and install from it under qemu choosing
+# the new "root on ZFS" layout.  The full build takes about two hours on
 # a standard runner, so this only runs when the patch or the CI
 # changes, on request, and once a month to catch bit rot.
 
@@ -22,7 +23,45 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # OpenZFS's userland is built natively, on the NetBSD release the
+  # branch is on, against base's libraries only.
+  openzfs-user:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out OpenZFS
+        run: |
+          rev=$(cat patches/OPENZFS_REV)
+          git init -q openzfs
+          git -C openzfs remote add origin https://github.com/zakinko/zfs.git
+          git -C openzfs fetch -q --depth 1 origin "$rev"
+          git -C openzfs checkout -q FETCH_HEAD
+          git -C openzfs log -1 --format='%H %cd'
+
+      - name: Build the userland on NetBSD
+        uses: vmactions/netbsd-vm@v1
+        with:
+          release: "11.0"
+          mem: 4096
+          cpu: 3
+          prepare: |
+            /usr/sbin/pkg_add autoconf automake libtool-base gmake gettext-tools
+          run: |
+            sh ci/build-openzfs-user.sh openzfs openzfs-user
+
+      - name: Pack it
+        run: tar -C openzfs-user -cf openzfs-user.tar root static
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openzfs-user
+          path: openzfs-user.tar
+          retention-days: 7
+
   iso:
+    needs: openzfs-user
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
@@ -50,8 +89,39 @@ jobs:
           git -C nbsrc/src checkout -q FETCH_HEAD
           git -C nbsrc/src log -1 --format='%H %cd'
 
-      - name: Build release and ISO
-        run: sh ci/build-iso.sh release iso-image
+      - uses: actions/download-artifact@v4
+        with:
+          name: openzfs-user
+
+      # distrib/common/list.zfsroot (patches/04) copies these into the
+      # zfsroot ramdisk.
+      - name: Put OpenZFS's static commands in the tree
+        run: |
+          mkdir openzfs-user
+          tar -C openzfs-user -xf openzfs-user.tar
+          mkdir -p nbsrc/src/distrib/common/openzfs
+          cp openzfs-user/static/zpool openzfs-user/static/mount_zfs \
+              nbsrc/src/distrib/common/openzfs/
+
+      - name: Build release
+        run: sh ci/build-iso.sh release
+
+      - name: Check out OpenZFS
+        run: |
+          rev=$(cat patches/OPENZFS_REV)
+          git init -q openzfs
+          git -C openzfs remote add origin https://github.com/zakinko/zfs.git
+          git -C openzfs fetch -q --depth 1 origin "$rev"
+          git -C openzfs checkout -q FETCH_HEAD
+
+      - name: Build zfs.kmod against the release's kernel
+        run: sh ci/build-openzfs-kmod.sh openzfs
+
+      - name: Put OpenZFS into the sets
+        run: sh ci/openzfs-sets.sh openzfs-user nbsrc/openzfs-kmod/zfs.kmod
+
+      - name: Build ISO
+        run: sh ci/build-iso.sh iso-image
 
       - name: Install from the CD with root on ZFS and boot it
         run: sh ci/test-install.sh "$PWD/nbsrc/rel/amd64/"

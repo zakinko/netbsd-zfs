@@ -30,8 +30,12 @@ cd "$WORK/anita-$ANITA_VER"
 python3 ./anita --vmm qemu --workdir "$WORK/anita-wd" \
     --disk-size 4G --memory-size 1G --zfs-root \
     ${QEMU_ARGS:+--qemu-args "$QEMU_ARGS"} \
-    --run 'mount; echo; zpool status; echo; df -h /; echo; cat /etc/fstab; echo; mount /altroot && ls -l /altroot; cat /altroot/boot.cfg; echo CHECK-"START"; mount | grep " on / type zfs" && echo ZFS-ROOT-"OK"; echo CHECK-"END"' \
+    --run 'mount; echo; zpool status; echo; df -h /; echo; cat /etc/fstab; echo; mount /altroot && ls -l /altroot; cat /altroot/boot.cfg; echo CHECK-"START"; mount | grep " on / type zfs" && echo ZFS-ROOT-"OK"; zpool version | grep -q "^zfs-kmod-" && echo OPENZFS-"OK"; modstat | grep "^zfs "; echo CHECK-"END"' \
     boot "$REL" 2>&1 | tee "$LOG"
 
 grep -q 'ZFS-ROOT-OK' "$LOG" || { echo "root is not on ZFS"; exit 1; }
 echo "root on ZFS: OK"
+# zpool version is OpenZFS's, and names the module's version too; NetBSD's
+# own zpool has no such command.
+grep -q 'OPENZFS-OK' "$LOG" || { echo "not running OpenZFS"; exit 1; }
+echo "OpenZFS userland and module: OK"

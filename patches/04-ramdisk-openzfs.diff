@@ -1,0 +1,51 @@
+diff --git a/distrib/amd64/ramdisks/ramdisk-zfsroot/Makefile b/distrib/amd64/ramdisks/ramdisk-zfsroot/Makefile
+index 8f1c71f..c713c85 100644
+--- a/distrib/amd64/ramdisks/ramdisk-zfsroot/Makefile
++++ b/distrib/amd64/ramdisks/ramdisk-zfsroot/Makefile
+@@ -1,7 +1,7 @@
+ #	$NetBSD: Makefile,v 1.2 2020/03/02 16:04:49 roy Exp $
+ 
+ IMAGE=			ramdisk-zfsroot.fs
+-IMAGESIZE=		5000k
++IMAGESIZE=		14000k
+ IMAGEDEPENDS=
+ MAKEDEVTARGETS=		all
+ CRUNCHENV=		INIT_CHROOT=1
+diff --git a/distrib/common/list.zfsroot b/distrib/common/list.zfsroot
+index 9b6fb81..d7a9313 100644
+--- a/distrib/common/list.zfsroot
++++ b/distrib/common/list.zfsroot
+@@ -3,11 +3,11 @@
+ # list file (c.f. parselist.awk) for ZFS on root.
+ #
+ 
+-SRCDIRS	external/cddl/osnet/sbin
+-PROG	sbin/zfs
+-PROG	sbin/zpool
+-LINK	sbin/zfs sbin/mount_zfs
+-ARGVLN	zfs mount_zfs
++# OpenZFS's zpool and mount_zfs, linked statically against base's
++# libraries outside this tree; the CI puts them in distrib/common/openzfs
++# before the build.
++COPY	${NETBSDSRCDIR}/distrib/common/openzfs/zpool sbin/zpool 555
++COPY	${NETBSDSRCDIR}/distrib/common/openzfs/mount_zfs sbin/mount_zfs 555
+ 
+ # We need sysctl to set init.root=/altroot
+ PROG	sbin/sysctl
+@@ -17,16 +17,10 @@ PROG	sbin/modload
+ PROG	sbin/modunload
+ PROG	sbin/modstat
+ 
+-LIBS	-lnvpair
+-LIBS	-luutil
+-LIBS	-lzfs
+-LIBS	-lavl
+ LIBS	-lm
+ LIBS	-lpthread
+-LIBS	-lumem
+ #LIBS	-lutil		# replaced by libhack
+ LIBS	-lz
+-LIBS	-lzfs_core
+ 
+ COPY	${NETBSDSRCDIR}/distrib/common/zfsroot.rc etc/rc
+ 
