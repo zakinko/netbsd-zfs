@@ -30,7 +30,7 @@ cd "$WORK/anita-$ANITA_VER"
 python3 ./anita --vmm qemu --workdir "$WORK/anita-wd" \
     --disk-size 4G --memory-size 1G --zfs-root \
     ${QEMU_ARGS:+--qemu-args "$QEMU_ARGS"} \
-    --run 'mount; echo; zpool status; echo; df -h /; echo; cat /etc/fstab; echo; mount /altroot && ls -l /altroot; cat /altroot/boot.cfg; echo CHECK-"START"; mount | grep " on / type zfs" && echo ZFS-ROOT-"OK"; zpool version | grep -q "^zfs-kmod-" && echo OPENZFS-"OK"; modstat | grep "^zfs "; echo CHECK-"END"' \
+    --run 'mount; echo; zpool status; echo; df -h /; echo; cat /etc/fstab; echo; mount /altroot && ls -l /altroot; cat /altroot/boot.cfg; echo CHECK-"START"; mount | grep " on / type zfs" && echo ZFS-ROOT-"OK"; zpool version | grep -q "^zfs-kmod-" && echo OPENZFS-"OK"; modstat | grep "^zfs "; sysctl -a | grep -q "^vfs\.zfs\.vdev\.async_write_active_max_dirty_percent = " && echo SYSCTL-LONG-"OK"; echo CHECK-"END"' \
     boot "$REL" 2>&1 | tee "$LOG"
 
 grep -q 'ZFS-ROOT-OK' "$LOG" || { echo "root is not on ZFS"; exit 1; }
@@ -39,3 +39,6 @@ echo "root on ZFS: OK"
 # own zpool has no such command.
 grep -q 'OPENZFS-OK' "$LOG" || { echo "not running OpenZFS"; exit 1; }
 echo "OpenZFS userland and module: OK"
+# A 32-byte component, which SYSCTL_VERS_1 would print cut to 31.
+grep -q 'SYSCTL-LONG-OK' "$LOG" || { echo "sysctl names are cut short"; exit 1; }
+echo "sysctl names longer than 31 bytes: OK"

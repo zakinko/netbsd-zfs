@@ -1,0 +1,436 @@
+diff --git a/distrib/sets/lists/base/shl.mi b/distrib/sets/lists/base/shl.mi
+index 1b53f511..719ac2f3 100644
+--- a/distrib/sets/lists/base/shl.mi
++++ b/distrib/sets/lists/base/shl.mi
+@@ -22,7 +22,7 @@
+ ./lib/libblocklist.so.0.1			base-sys-shlib		dynamicroot
+ ./lib/libc.so					base-sys-shlib		dynamicroot
+ ./lib/libc.so.12				base-sys-shlib		dynamicroot
+-./lib/libc.so.12.224				base-sys-shlib		dynamicroot
++./lib/libc.so.12.225				base-sys-shlib		dynamicroot
+ ./lib/libcrypt.so				base-sys-shlib		dynamicroot
+ ./lib/libcrypt.so.1				base-sys-shlib		dynamicroot
+ ./lib/libcrypt.so.1.0				base-sys-shlib		dynamicroot
+@@ -260,7 +260,7 @@
+ ./usr/lib/libc++.so.1.0				base-sys-shlib		compatfile,libcxx
+ ./usr/lib/libc.so				base-sys-shlib		compatfile
+ ./usr/lib/libc.so.12				base-sys-shlib		compatfile
+-./usr/lib/libc.so.12.224			base-sys-shlib		compatfile
++./usr/lib/libc.so.12.225			base-sys-shlib		compatfile
+ ./usr/lib/libcbor.so				base-sys-shlib		compatfile
+ ./usr/lib/libcbor.so.0				base-sys-shlib		compatfile
+ ./usr/lib/libcbor.so.0.5			base-sys-shlib		compatfile
+diff --git a/distrib/sets/lists/debug/shl.mi b/distrib/sets/lists/debug/shl.mi
+index 36addef5..6c7e6d6e 100644
+--- a/distrib/sets/lists/debug/shl.mi
++++ b/distrib/sets/lists/debug/shl.mi
+@@ -3,7 +3,7 @@
+ ./usr/libdata/debug/lib						base-sys-usr	debug,dynamicroot,compatdir
+ ./usr/libdata/debug/lib/libavl.so.0.0.debug			comp-zfs-debug	debug,dynamicroot,zfs
+ ./usr/libdata/debug/lib/libblocklist.so.0.1.debug		comp-sys-debug	debug,dynamicroot
+-./usr/libdata/debug/lib/libc.so.12.224.debug			comp-sys-debug	debug,dynamicroot
++./usr/libdata/debug/lib/libc.so.12.225.debug			comp-sys-debug	debug,dynamicroot
+ ./usr/libdata/debug/lib/libcrypt.so.1.0.debug			comp-sys-debug	debug,dynamicroot
+ ./usr/libdata/debug/lib/libcrypto.so.12.0.debug			comp-sys-debug	debug,dynamicroot,openssl=10
+ ./usr/libdata/debug/lib/libcrypto.so.14.1.debug			comp-sys-debug	debug,dynamicroot,openssl=11
+@@ -85,7 +85,7 @@
+ ./usr/libdata/debug/usr/lib/libbsdmalloc.so.0.1.debug		comp-sys-debug	debug,compatfile
+ ./usr/libdata/debug/usr/lib/libbz2.so.1.1.debug			comp-sys-debug	debug,compatfile
+ ./usr/libdata/debug/usr/lib/libc++.so.1.0.debug			comp-sys-debug	debug,compatfile,libcxx
+-./usr/libdata/debug/usr/lib/libc.so.12.224.debug		comp-sys-debug	debug,compatfile
++./usr/libdata/debug/usr/lib/libc.so.12.225.debug		comp-sys-debug	debug,compatfile
+ ./usr/libdata/debug/usr/lib/libcbor.so.0.5.debug		comp-sys-debug	debug,compatfile
+ ./usr/libdata/debug/usr/lib/libcom_err.so.8.0.debug		comp-krb5-debug	debug,compatfile,kerberos
+ ./usr/libdata/debug/usr/lib/libcrypt.so.1.0.debug		comp-sys-debug	debug,compatfile
+diff --git a/lib/libc/compat/gen/Makefile.inc b/lib/libc/compat/gen/Makefile.inc
+index 8a76794fd..85a37199 100644
+--- a/lib/libc/compat/gen/Makefile.inc
++++ b/lib/libc/compat/gen/Makefile.inc
+@@ -9,4 +9,4 @@ SRCS+=compat_errlist.c compat_fts.c compat___fts13.c compat___fts30.c \
+     compat_time.c compat_utime.c compat_devname.c compat_alphasort.c \
+     compat_getpwent.c compat___fts32.c compat_utmp.c compat___fts50.c \
+     compat___unvis13.c compat_syslog.c compat_alloca.c \
+-    compat___getmntinfo13.c
++    compat___getmntinfo13.c compat_sysctlgetmibinfo.c
+diff --git a/lib/libc/compat/gen/compat_sysctlgetmibinfo.c b/lib/libc/compat/gen/compat_sysctlgetmibinfo.c
+new file mode 100644
+index 00000000..f490b53b
+--- /dev/null
++++ b/lib/libc/compat/gen/compat_sysctlgetmibinfo.c
+@@ -0,0 +1,42 @@
++/*	$NetBSD$	*/
++
++/*
++ * sysctlgetmibinfo(3) and __learn_tree() as they were before
++ * SYSCTL_VERS_2, for binaries that pass and walk nodes with 31-byte
++ * names.  The kernel still answers SYSCTL_VERS_1 queries.
++ */
++
++#include "namespace.h"
++#include <sys/param.h>
++#define __COMPAT_SYSCTL
++#include <sys/sysctl.h>
++
++#ifdef __weak_alias
++__weak_alias(sysctlgetmibinfo,__compat_sysctlgetmibinfo)
++__weak_alias(__learn_tree,__compat___learn_tree)
++#endif
++
++#ifdef __warn_references
++__warn_references(sysctlgetmibinfo,
++    "warning: reference to compatibility sysctlgetmibinfo(); include <sys/sysctl.h> for correct reference")
++__warn_references(__learn_tree,
++    "warning: reference to compatibility __learn_tree(); include <sys/sysctl.h> for correct reference")
++#endif
++
++#undef	SYSCTL_VERSION
++#define	SYSCTL_VERSION		SYSCTL_VERS_1
++#undef	SYSCTL_NAMELEN
++#define	SYSCTL_NAMELEN		SYSCTL_NAMELEN_V1
++#define	sysctlnode		sysctlnode_v1
++#undef	sysctlgetmibinfo
++#define	sysctlgetmibinfo	__compat_sysctlgetmibinfo
++#undef	__learn_tree
++#define	__learn_tree		__compat___learn_tree
++
++int	__compat_sysctlgetmibinfo(const char *, int *, u_int *,
++	    char *, size_t *, struct sysctlnode_v1 **, int);
++int	__compat___learn_tree(int *, u_int, struct sysctlnode_v1 *);
++
++#define	__SYSCTL_COMPAT_V1
++
++#include "gen/sysctlgetmibinfo.c"
+diff --git a/lib/libc/gen/sysctl.c b/lib/libc/gen/sysctl.c
+index 7d1683f6..77eb5403 100644
+--- a/lib/libc/gen/sysctl.c
++++ b/lib/libc/gen/sysctl.c
+@@ -261,8 +261,11 @@ user_sysctl(const int *name, unsigned int namelen,
+ 		node = newp;
+ 		if (node == NULL)
+ 			return (EINVAL);
+-		else if (SYSCTL_VERS(node->sysctl_flags) == SYSCTL_VERS_1 &&
++		else if (SYSCTL_VERS(node->sysctl_flags) == SYSCTL_VERSION &&
+ 			 newlen == sizeof(struct sysctlnode))
++			v = SYSCTL_VERSION;
++		else if (SYSCTL_VERS(node->sysctl_flags) == SYSCTL_VERS_1 &&
++			 newlen == sizeof(struct sysctlnode_v1))
+ 			v = SYSCTL_VERS_1;
+ 		else
+ 			return (EINVAL);
+@@ -283,10 +286,13 @@ user_sysctl(const int *name, unsigned int namelen,
+ 		struct sysctldesc *d1 = (void *)&buf[0], *d2 = oldp;
+ 		size_t d;
+ 
++		/* only sysctl_num is read, which both versions share */
+ 		node = newp;
+ 		if (node != NULL &&
+-		    (SYSCTL_VERS(node->sysctl_flags) < SYSCTL_VERS_1 ||
+-		     newlen != sizeof(struct sysctlnode)))
++		    !(SYSCTL_VERS(node->sysctl_flags) == SYSCTL_VERSION &&
++		      newlen == sizeof(struct sysctlnode)) &&
++		    !(SYSCTL_VERS(node->sysctl_flags) == SYSCTL_VERS_1 &&
++		      newlen == sizeof(struct sysctlnode_v1)))
+ 			return (EINVAL);
+ 
+ 		sz = 0;
+@@ -364,12 +370,29 @@ static size_t
+ __cvt_node_out(uint v, const struct sysctlnode *n, void **o, size_t *l)
+ {
+ 	const void *src = n;
++	struct sysctlnode_v1 o1;
+ 	size_t sz;
+ 
+ 	switch (v) {
+-#if (SYSCTL_VERSION != SYSCTL_VERS_1)
++	case SYSCTL_VERS_1:
++		memset(&o1, 0, sizeof(o1));
++		o1.sysctl_flags = n->sysctl_flags;
++		o1.sysctl_num = n->sysctl_num;
++		(void)strlcpy(o1.sysctl_name, n->sysctl_name,
++		    sizeof(o1.sysctl_name));
++		o1.sysctl_ver = n->sysctl_ver;
++		memcpy(&o1.sysctl_un, &n->sysctl_un, sizeof(o1.sysctl_un));
++		o1.sysctl_size = n->sysctl_size;
++		o1.sysctl_func = n->sysctl_func;
++		o1.sysctl_parent = NULL;
++		o1.sysctl_desc = n->sysctl_desc;
++		src = &o1;
++		sz = sizeof(o1);
++		break;
++
++#if (SYSCTL_VERSION != SYSCTL_VERS_2)
+ #error __cvt_node_out: no support for SYSCTL_VERSION
+-#endif /* (SYSCTL_VERSION != SYSCTL_VERS_1) */
++#endif /* (SYSCTL_VERSION != SYSCTL_VERS_2) */
+ 
+ 	case SYSCTL_VERSION:
+ 		sz = sizeof(struct sysctlnode);
+diff --git a/lib/libc/gen/sysctlgetmibinfo.c b/lib/libc/gen/sysctlgetmibinfo.c
+index 985af7f4..e0d0357f 100644
+--- a/lib/libc/gen/sysctlgetmibinfo.c
++++ b/lib/libc/gen/sysctlgetmibinfo.c
+@@ -52,11 +52,10 @@ __RCSID("$NetBSD: sysctlgetmibinfo.c,v 1.16 2024/01/20 14:52:47 christos Exp $")
+ #ifdef RUMP_ACTION
+ #include <rump/rump_syscalls.h>
+ #define sysctl(a,b,c,d,e,f) rump_sys___sysctl(a,b,c,d,e,f)
+-#else
+-#ifdef __weak_alias
+-__weak_alias(__learn_tree,___learn_tree)
+-__weak_alias(sysctlgetmibinfo,_sysctlgetmibinfo)
+-#endif
++#elif !defined(__SYSCTL_COMPAT_V1) && defined(__weak_alias)
++/* the old names are compat_sysctlgetmibinfo.c's, for SYSCTL_VERS_1 */
++__weak_alias(__learn_tree110,___learn_tree)
++__weak_alias(__sysctlgetmibinfo110,_sysctlgetmibinfo)
+ #endif
+ 
+ /*
+diff --git a/lib/libc/shlib_version b/lib/libc/shlib_version
+index 2d9c0612..57308555 100644
+--- a/lib/libc/shlib_version
++++ b/lib/libc/shlib_version
+@@ -55,4 +55,4 @@
+ # - remove tzsetwall(3), upstream has removed it
+ # - move *rand48* to libcompat
+ major=12
+-minor=224
++minor=225
+diff --git a/sys/kern/kern_sysctl.c b/sys/kern/kern_sysctl.c
+index 390ab804..49f8b36a 100644
+--- a/sys/kern/kern_sysctl.c
++++ b/sys/kern/kern_sysctl.c
+@@ -2769,6 +2769,11 @@ sysctl_log_realloc(struct sysctllog *log)
+  * Section 6: Conversion between API versions wrt the sysctlnode
+  * ********************************************************************
+  */
++
++/* the two differ only in the name; the rest is copied as it lies */
++CTASSERT(sizeof(((struct sysctlnode *)0)->sysctl_un) ==
++    sizeof(((struct sysctlnode_v1 *)0)->sysctl_un));
++
+ static int
+ sysctl_cvt_in(struct lwp *l, int *vp, const void *i, size_t sz,
+ 	      struct sysctlnode *node)
+@@ -2782,9 +2787,9 @@ sysctl_cvt_in(struct lwp *l, int *vp, const void *i, size_t sz,
+ 	if (error)
+ 		return (error);
+ 
+-#if (SYSCTL_VERSION != SYSCTL_VERS_1)
++#if (SYSCTL_VERSION != SYSCTL_VERS_2)
+ #error sysctl_cvt_in: no support for SYSCTL_VERSION
+-#endif /*  (SYSCTL_VERSION != SYSCTL_VERS_1) */
++#endif /*  (SYSCTL_VERSION != SYSCTL_VERS_2) */
+ 
+ 	if (sz == sizeof(*node) &&
+ 	    SYSCTL_VERS(flags) == SYSCTL_VERSION) {
+@@ -2795,6 +2800,36 @@ sysctl_cvt_in(struct lwp *l, int *vp, const void *i, size_t sz,
+ 		return (0);
+ 	}
+ 
++	if (sz == sizeof(struct sysctlnode_v1) &&
++	    SYSCTL_VERS(flags) == SYSCTL_VERS_1) {
++		struct sysctlnode_v1 onode;
++
++		error = sysctl_copyin(l, i, &onode, sizeof(onode));
++		if (error)
++			return (error);
++		/*
++		 * a name that filled the old array was refused by the
++		 * length check in sysctl_create(); keep refusing it
++		 */
++		if (strnlen(onode.sysctl_name, sizeof(onode.sysctl_name)) ==
++		    sizeof(onode.sysctl_name))
++			return (EINVAL);
++		memset(node, 0, sizeof(*node));
++		node->sysctl_flags = onode.sysctl_flags;
++		node->sysctl_num = onode.sysctl_num;
++		memcpy(node->sysctl_name, onode.sysctl_name,
++		    sizeof(onode.sysctl_name));
++		node->sysctl_ver = onode.sysctl_ver;
++		memcpy(&node->sysctl_un, &onode.sysctl_un,
++		    sizeof(node->sysctl_un));
++		node->sysctl_size = onode.sysctl_size;
++		node->sysctl_func = onode.sysctl_func;
++		node->sysctl_parent = (struct sysctlnode *)onode.sysctl_parent;
++		node->sysctl_desc = onode.sysctl_desc;
++		*vp = SYSCTL_VERS_1;
++		return (0);
++	}
++
+ 	return (EINVAL);
+ }
+ 
+@@ -2804,15 +2839,37 @@ sysctl_cvt_out(struct lwp *l, int v, const struct sysctlnode *i,
+ {
+ 	size_t sz = sizeof(*i);
+ 	const void *src = i;
++	struct sysctlnode_v1 onode;
+ 	int error;
+ 
+ 	switch (v) {
+ 	case SYSCTL_VERS_0:
+ 		return (EINVAL);
+ 
+-#if (SYSCTL_VERSION != SYSCTL_VERS_1)
++	case SYSCTL_VERS_1:
++		/*
++		 * a name too long for the old array is cut short; the
++		 * node is still reached by its number
++		 */
++		memset(&onode, 0, sizeof(onode));
++		onode.sysctl_flags = i->sysctl_flags;
++		onode.sysctl_num = i->sysctl_num;
++		strlcpy(onode.sysctl_name, i->sysctl_name,
++		    sizeof(onode.sysctl_name));
++		onode.sysctl_ver = i->sysctl_ver;
++		memcpy(&onode.sysctl_un, &i->sysctl_un,
++		    sizeof(onode.sysctl_un));
++		onode.sysctl_size = i->sysctl_size;
++		onode.sysctl_func = i->sysctl_func;
++		onode.sysctl_parent = (struct sysctlnode_v1 *)i->sysctl_parent;
++		onode.sysctl_desc = i->sysctl_desc;
++		sz = sizeof(onode);
++		src = &onode;
++		break;
++
++#if (SYSCTL_VERSION != SYSCTL_VERS_2)
+ #error sysctl_cvt_out: no support for SYSCTL_VERSION
+-#endif /*  (SYSCTL_VERSION != SYSCTL_VERS_1) */
++#endif /*  (SYSCTL_VERSION != SYSCTL_VERS_2) */
+ 
+ 	case SYSCTL_VERSION:
+ 		/* nothing more to do here */
+diff --git a/sys/kern/subr_hash.c b/sys/kern/subr_hash.c
+index f4772cda..5a65e23a 100644
+--- a/sys/kern/subr_hash.c
++++ b/sys/kern/subr_hash.c
+@@ -185,7 +185,7 @@ hashstat_sysctl(SYSCTLFN_ARGS)
+ {
+ 	struct hashstat_sysctl hs;
+ 	struct hashstat *hash;
+-	char queryname[SYSCTL_NAMELEN];
++	char queryname[HASHSTAT_NAMELEN];
+ 	size_t written;
+ 	bool fill, query;
+ 	int error;
+diff --git a/sys/sys/sysctl.h b/sys/sys/sysctl.h
+index 54ea3b48..9cd34dac 100644
+--- a/sys/sys/sysctl.h
++++ b/sys/sys/sysctl.h
+@@ -73,7 +73,7 @@
+ struct sysctlnode;
+ 
+ #define	CTL_MAXNAME	12	/* largest number of components supported */
+-#define	SYSCTL_NAMELEN	32	/* longest name allowed for a node */
++#define	SYSCTL_NAMELEN	256	/* longest name allowed for a node */
+ 
+ #define	CREATE_BASE	(1024)	/* start of dynamic mib allocation */
+ #define	SYSCTL_DEFSIZE	8	/* initial size of a child set */
+@@ -129,8 +129,9 @@ struct ctlname {
+  */
+ #define	SYSCTL_VERS_MASK	0xff000000
+ #define	SYSCTL_VERS_0		0x00000000
+-#define	SYSCTL_VERS_1		0x01000000
+-#define	SYSCTL_VERSION		SYSCTL_VERS_1
++#define	SYSCTL_VERS_1		0x01000000	/* names of 31 bytes */
++#define	SYSCTL_VERS_2		0x02000000	/* names of SYSCTL_NAMELEN - 1 */
++#define	SYSCTL_VERSION		SYSCTL_VERS_2
+ #define	SYSCTL_VERS(f)		((f) & SYSCTL_VERS_MASK)
+ 
+ /*
+@@ -769,9 +770,11 @@ struct evcnt_sysctl {
+  * See comments for hashstat_sysctl() in kern/subr_hash.c for details
+  * on sysctl(3) usage.
+  */
++#define	HASHSTAT_NAMELEN	32	/* fixed: SYSCTL_NAMELEN grew past it */
++
+ struct hashstat_sysctl {
+-	char		hash_name[SYSCTL_NAMELEN];
+-	char		hash_desc[SYSCTL_NAMELEN];
++	char		hash_name[HASHSTAT_NAMELEN];
++	char		hash_desc[HASHSTAT_NAMELEN];
+ 	uint64_t	hash_size;
+ 	uint64_t	hash_used;
+ 	uint64_t	hash_items;
+@@ -1231,24 +1234,30 @@ typedef void *sysctlfn;
+ __BEGIN_DECLS
+ int	sysctl(const int *, u_int, void *, size_t *, const void *, size_t);
+ int	sysctlbyname(const char *, void *, size_t *, const void *, size_t);
++/*
++ * Inside libc these keep the names that namespace.h gives them, and the
++ * new symbols are aliases; a program that links its own copy (the rump
++ * ones do) then still leaves libc's own calls alone.
++ */
++#ifdef _LIBC
++#define	__SYSCTL_RENAME(x)
++#else
++#define	__SYSCTL_RENAME(x)	__RENAME(x)
++#endif
+ int	sysctlgetmibinfo(const char *, int *, u_int *,
+-			 char *, size_t *, struct sysctlnode **, int);
++			 char *, size_t *, struct sysctlnode **, int)
++	__SYSCTL_RENAME(__sysctlgetmibinfo110);
+ int	sysctlnametomib(const char *, int *, size_t *);
+ int	proc_compare(const struct kinfo_proc2 *, const struct kinfo_lwp *,
+     const struct kinfo_proc2 *, const struct kinfo_lwp *);
+ void	*asysctl(const int *, size_t, size_t *);
+ void	*asysctlbyname(const char *, size_t *);
+-int	__learn_tree(int *, u_int, struct sysctlnode *);
++int	__learn_tree(int *, u_int, struct sysctlnode *)
++	__SYSCTL_RENAME(__learn_tree110);
+ __END_DECLS
+ 
+ #endif	/* !_KERNEL */
+ 
+-#ifdef __COMPAT_SYSCTL
+-/*
+- * old node definitions go here
+- */
+-#endif /* __COMPAT_SYSCTL */
+-
+ /*
+  * padding makes alignment magically "work" for 32/64 compatibility at
+  * the expense of making things bigger on 32 bit platforms.
+@@ -1320,6 +1329,42 @@ struct sysctlnode {
+ #define	sysctl_qdata	sysctl_un.scu_qdata
+ #define	sysctl_bdata	sysctl_un.scu_bdata
+ 
++#if defined(_KERNEL) || defined(__COMPAT_SYSCTL)
++/*
++ * The node of SYSCTL_VERS_1, the same but for the length of its name.
++ * Binaries built with it still pass and expect it: kern_sysctl.c
++ * converts, and libc keeps a sysctlgetmibinfo(3) that works in it.
++ */
++#define	SYSCTL_NAMELEN_V1	32
++
++struct sysctlnode_v1 {
++	uint32_t sysctl_flags;		/* flags and type */
++	int32_t sysctl_num;		/* mib number */
++	char sysctl_name[SYSCTL_NAMELEN_V1]; /* node name */
++	uint32_t sysctl_ver;		/* node's version vs. rest of tree */
++	uint32_t __rsvd;
++	union {
++		struct {
++			uint32_t suc_csize;	/* size of child node array */
++			uint32_t suc_clen;	/* number of valid children */
++			__sysc_pad(struct sysctlnode_v1*) _suc_child; /* array of child nodes */
++		} scu_child;
++		struct {
++			__sysc_pad(void*) _sud_data; /* pointer to external data */
++			__sysc_pad(size_t) _sud_offset; /* offset to data */
++		} scu_data;
++		int32_t scu_alias;		/* node this node refers to */
++		int32_t scu_idata;		/* immediate "int" data */
++		u_quad_t scu_qdata;		/* immediate "u_quad_t" data */
++		bool scu_bdata;			/* immediate bool data */
++	} sysctl_un;
++	__sysc_pad(size_t) _sysctl_size;	/* size of instrumented data */
++	__sysc_pad(sysctlfn) _sysctl_func;	/* access helper function */
++	__sysc_pad(struct sysctlnode_v1*) _sysctl_parent; /* parent of this node */
++	__sysc_pad(const char *) _sysctl_desc;	/* description of node */
++};
++#endif /* _KERNEL || __COMPAT_SYSCTL */
++
+ /*
+  * when requesting a description of a node (a set of nodes, actually),
+  * you get back an "array" of these, where the actual length of the

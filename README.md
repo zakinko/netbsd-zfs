@@ -72,7 +72,7 @@ The disk image is still built from stock NetBSD 11.0 and uses osnet.
 
 ## The patches
 
-[patches/](patches/) holds three diffs against the `netbsd-11` branch
+[patches/](patches/) holds four diffs against the `netbsd-11` branch
 (the revision they were made against is in
 [patches/SRC_REV](patches/SRC_REV)); `ci/build-iso.sh` applies them
 in name order.
@@ -114,6 +114,22 @@ selects the file system type and leaves the device unset, and
 it to take over.  The same form is accepted at the `root device:`
 prompt, so a mistyped pool name in `boot.cfg` lands there and can be
 corrected.  `kern.root_device` reads as an empty string in that case.
+
+[06-sysctl-namelen.diff](patches/06-sysctl-namelen.diff) lets a sysctl
+node name be 255 bytes instead of 31.  OpenZFS names its tunables and
+kstats after Linux's, where nothing limits them, and the pool name is
+one component of every per-pool kstat, so six of the module's own
+names and any pool name over 31 bytes were cut short.  The name is an
+array in `struct sysctlnode`, which crosses into user space, so this
+is `SYSCTL_VERS_2`, the second use of the version that sysctl(3) was
+designed with: a binary built with the old node still passes and
+receives it, through conversions in the kernel and in libc's user
+tree, and libc keeps a `sysctlgetmibinfo()` and `__learn_tree()` that
+work in it for programs, sysctl(8) among them, that walk the tree
+themselves.  Such a program sees a longer name cut to 31 bytes.  The
+node is larger, so kernel modules have to be built against the new
+`<sys/sysctl.h>`; the module on the CD is, and a stock 11.0 module
+loaded later is not.
 
 Not covered: MBR/disklabel disks, because the pool is looked for on
 whole disks and wedges, and GENERIC does not turn disklabel partitions
