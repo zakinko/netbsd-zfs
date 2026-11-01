@@ -1,0 +1,1082 @@
+diff --git a/distrib/sets/lists/base/shl.mi b/distrib/sets/lists/base/shl.mi
+index 483e6640..ddd7aec6 100644
+--- a/distrib/sets/lists/base/shl.mi
++++ b/distrib/sets/lists/base/shl.mi
+@@ -22,7 +22,7 @@
+ ./lib/libblocklist.so.0.1			base-sys-shlib		dynamicroot
+ ./lib/libc.so					base-sys-shlib		dynamicroot
+ ./lib/libc.so.12				base-sys-shlib		dynamicroot
+-./lib/libc.so.12.224				base-sys-shlib		dynamicroot
++./lib/libc.so.12.225				base-sys-shlib		dynamicroot
+ ./lib/libcrypt.so				base-sys-shlib		dynamicroot
+ ./lib/libcrypt.so.1				base-sys-shlib		dynamicroot
+ ./lib/libcrypt.so.1.0				base-sys-shlib		dynamicroot
+@@ -267,7 +267,7 @@
+ ./usr/lib/libc++.so.1.0				base-sys-shlib		compatfile,libcxx
+ ./usr/lib/libc.so				base-sys-shlib		compatfile
+ ./usr/lib/libc.so.12				base-sys-shlib		compatfile
+-./usr/lib/libc.so.12.224			base-sys-shlib		compatfile
++./usr/lib/libc.so.12.225			base-sys-shlib		compatfile
+ ./usr/lib/libcbor.so				base-sys-shlib		compatfile
+ ./usr/lib/libcbor.so.0				base-sys-shlib		compatfile
+ ./usr/lib/libcbor.so.0.5			base-sys-shlib		compatfile
+diff --git a/distrib/sets/lists/comp/mi b/distrib/sets/lists/comp/mi
+index f632d5fb..a3444e5f 100644
+--- a/distrib/sets/lists/comp/mi
++++ b/distrib/sets/lists/comp/mi
+@@ -7006,6 +7006,7 @@
+ ./usr/share/man/cat3/assume_default_colors.0	comp-c-catman		.cat
+ ./usr/share/man/cat3/asysctl.0			comp-c-catman		.cat
+ ./usr/share/man/cat3/asysctlbyname.0		comp-c-catman		.cat
++./usr/share/man/cat3/asysctlquery.0		comp-c-catman		.cat
+ ./usr/share/man/cat3/at_quick_exit.0		comp-c-catman		.cat
+ ./usr/share/man/cat3/atan.0			comp-c-catman		.cat
+ ./usr/share/man/cat3/atan2.0			comp-c-catman		.cat
+@@ -16051,6 +16052,7 @@
+ ./usr/share/man/html3/assume_default_colors.html	comp-c-htmlman		html
+ ./usr/share/man/html3/asysctl.html		comp-c-htmlman		html
+ ./usr/share/man/html3/asysctlbyname.html	comp-c-htmlman		html
++./usr/share/man/html3/asysctlquery.html	comp-c-htmlman		html
+ ./usr/share/man/html3/at_quick_exit.html		comp-c-htmlman		html
+ ./usr/share/man/html3/atan.html			comp-c-htmlman		html
+ ./usr/share/man/html3/atan2.html		comp-c-htmlman		html
+@@ -24935,6 +24937,7 @@
+ ./usr/share/man/man3/assume_default_colors.3	comp-c-man		.man
+ ./usr/share/man/man3/asysctl.3			comp-c-man		.man
+ ./usr/share/man/man3/asysctlbyname.3		comp-c-man		.man
++./usr/share/man/man3/asysctlquery.3		comp-c-man		.man
+ ./usr/share/man/man3/at_quick_exit.3		comp-c-man		.man
+ ./usr/share/man/man3/atan.3			comp-c-man		.man
+ ./usr/share/man/man3/atan2.3			comp-c-man		.man
+diff --git a/distrib/sets/lists/debug/shl.mi b/distrib/sets/lists/debug/shl.mi
+index 970c3823..68a355b1 100644
+--- a/distrib/sets/lists/debug/shl.mi
++++ b/distrib/sets/lists/debug/shl.mi
+@@ -12,7 +12,7 @@
+ ./usr/libdata/debug/lib						base-sys-usr	debug,dynamicroot,compatdir
+ ./usr/libdata/debug/lib/libavl.so.0.0.debug			comp-zfs-debug	debug,dynamicroot,zfs
+ ./usr/libdata/debug/lib/libblocklist.so.0.1.debug		comp-sys-debug	debug,dynamicroot
+-./usr/libdata/debug/lib/libc.so.12.224.debug			comp-sys-debug	debug,dynamicroot
++./usr/libdata/debug/lib/libc.so.12.225.debug			comp-sys-debug	debug,dynamicroot
+ ./usr/libdata/debug/lib/libcrypt.so.1.0.debug			comp-sys-debug	debug,dynamicroot
+ ./usr/libdata/debug/lib/libcrypto.so.12.0.debug			comp-sys-debug	debug,dynamicroot,openssl=10
+ ./usr/libdata/debug/lib/libcrypto.so.14.1.debug			comp-sys-debug	debug,dynamicroot,openssl=11
+@@ -96,7 +96,7 @@
+ ./usr/libdata/debug/usr/lib/libbsdmalloc.so.0.1.debug		comp-sys-debug	debug,compatfile
+ ./usr/libdata/debug/usr/lib/libbz2.so.1.1.debug			comp-sys-debug	debug,compatfile
+ ./usr/libdata/debug/usr/lib/libc++.so.1.0.debug			comp-sys-debug	debug,compatfile,libcxx
+-./usr/libdata/debug/usr/lib/libc.so.12.224.debug		comp-sys-debug	debug,compatfile
++./usr/libdata/debug/usr/lib/libc.so.12.225.debug		comp-sys-debug	debug,compatfile
+ ./usr/libdata/debug/usr/lib/libcbor.so.0.5.debug		comp-sys-debug	debug,compatfile
+ ./usr/libdata/debug/usr/lib/libcom_err.so.8.0.debug		comp-krb5-debug	debug,compatfile,kerberos
+ ./usr/libdata/debug/usr/lib/libcrypt.so.1.0.debug		comp-sys-debug	debug,compatfile
+diff --git a/lib/libc/gen/Makefile.inc b/lib/libc/gen/Makefile.inc
+index afd8c9a3..1b181b09 100644
+--- a/lib/libc/gen/Makefile.inc
++++ b/lib/libc/gen/Makefile.inc
+@@ -189,7 +189,8 @@ MLINKS+=stringlist.3 sl_init.3 stringlist.3 sl_free.3 stringlist.3 sl_add.3 \
+ 	stringlist.3 sl_find.3
+ MLINKS+=sysctl.3 sysctlbyname.3 \
+ 	sysctl.3 sysctlgetmibinfo.3 sysctl.3 sysctlnametomib.3 \
+-	sysctl.3 asysctl.3 sysctl.3 asysctlbyname.3
++	sysctl.3 asysctl.3 sysctl.3 asysctlbyname.3 \
++	sysctl.3 asysctlquery.3
+ MLINKS+=syslog.3 closelog.3 syslog.3 openlog.3 syslog.3 setlogmask.3 \
+ 	syslog.3 vsyslog.3
+ MLINKS+=syslog.3 closelog_r.3 syslog.3 openlog_r.3 syslog.3 setlogmask_r.3 \
+diff --git a/lib/libc/gen/sysctl.3 b/lib/libc/gen/sysctl.3
+index d3c4e00a..2d376607 100644
+--- a/lib/libc/gen/sysctl.3
++++ b/lib/libc/gen/sysctl.3
+@@ -29,7 +29,7 @@
+ .\"
+ .\"	@(#)sysctl.3	8.4 (Berkeley) 5/9/95
+ .\"
+-.Dd September 14, 2019
++.Dd November 2, 2026
+ .Dt SYSCTL 3
+ .Os
+ .Sh NAME
+@@ -38,7 +38,8 @@
+ .Nm sysctlgetmibinfo ,
+ .Nm sysctlnametomib ,
+ .Nm asysctl ,
+-.Nm asysctlbyname
++.Nm asysctlbyname ,
++.Nm asysctlquery
+ .Nd get or set system information
+ .Sh LIBRARY
+ .Lb libc
+@@ -60,6 +61,8 @@
+ .Fn asysctl "const int *name" "size_t namelen" "size_t *len"
+ .Ft void *
+ .Fn asysctlbyname "const char *sname" "size_t *len"
++.Ft void *
++.Fn asysctlquery "const int *name" "size_t namelen" "size_t *len"
+ .Sh DESCRIPTION
+ The
+ .Nm
+@@ -355,6 +358,45 @@ is using.
+ All dynamic operations passing nodes into sysctl require that the
+ version be explicitly specified.
+ .Pp
++A node's name may be up to
++.Dv SYSCTL_MAXNAMELEN
++bytes long, but
++.Fa sysctl_name
++holds only the first
++.Dv SYSCTL_NAMELEN
++\- 1 of them.
++With
++.Dv SYSCTL_VERS_2
++in
++.Fa sysctl_flags ,
++nodes are passed in and out instead as
++.Vt struct sysctlrec
++records, each the node followed by the whole name, which
++.Fn NEXT_SYSCTLREC
++steps through:
++.Pp
++.Bd -literal -offset indent -compact
++struct sysctlrec {
++        struct sysctlnode rec_node;    /* sysctl_name cut short */
++        uint32_t rec_len;              /* bytes in this record */
++        uint32_t rec_namelen;          /* bytes of the name, with nul */
++        char rec_name[8];              /* the name, really rec_namelen */
++};
++.Ed
++.Pp
++The
++.Fn asysctlquery
++function returns the children of the node at
++.Fa name
++as such records, in memory allocated with
++.Xr malloc 3 ,
++with
++.Fa len
++set to its size.
++On a kernel that does not know
++.Dv SYSCTL_VERS_2
++the records are made from the nodes, with the names they have.
++.Pp
+ Creation and destruction of nodes works by constructing part of a new
+ node description (or a description of the existing node) and invoking
+ .Dv CTL_CREATE
+diff --git a/lib/libc/gen/sysctl.c b/lib/libc/gen/sysctl.c
+index 3ac29a3a..eb29394a 100644
+--- a/lib/libc/gen/sysctl.c
++++ b/lib/libc/gen/sysctl.c
+@@ -285,6 +285,9 @@ user_sysctl(const int *name, unsigned int namelen,
+ 		else if (SYSCTL_VERS(node->sysctl_flags) == SYSCTL_VERS_1 &&
+ 			 newlen == sizeof(struct sysctlnode))
+ 			v = SYSCTL_VERS_1;
++		else if (SYSCTL_VERS(node->sysctl_flags) == SYSCTL_VERS_2 &&
++			 newlen >= offsetof(struct sysctlrec, rec_name))
++			v = SYSCTL_VERS_2;
+ 		else
+ 			return (EINVAL);
+ 
+@@ -304,10 +307,13 @@ user_sysctl(const int *name, unsigned int namelen,
+ 		struct sysctldesc *d1 = (void *)&buf[0], *d2 = oldp;
+ 		size_t d;
+ 
++		/* only sysctl_num is read, which a record starts with too */
+ 		node = newp;
+ 		if (node != NULL &&
+-		    (SYSCTL_VERS(node->sysctl_flags) < SYSCTL_VERS_1 ||
+-		     newlen != sizeof(struct sysctlnode)))
++		    !(SYSCTL_VERS(node->sysctl_flags) == SYSCTL_VERS_1 &&
++		      newlen == sizeof(struct sysctlnode)) &&
++		    !(SYSCTL_VERS(node->sysctl_flags) == SYSCTL_VERS_2 &&
++		      newlen >= offsetof(struct sysctlrec, rec_name)))
+ 			return (EINVAL);
+ 
+ 		sz = 0;
+@@ -384,8 +390,8 @@ user_sysctl(const int *name, unsigned int namelen,
+ static size_t
+ __cvt_node_out(uint v, const struct sysctlnode *n, void **o, size_t *l)
+ {
+-	const void *src = n;
+-	size_t sz;
++	struct sysctlrec *r;
++	size_t sz, nl = 0;
+ 
+ 	switch (v) {
+ #if (SYSCTL_VERSION != SYSCTL_VERS_1)
+@@ -396,13 +402,29 @@ __cvt_node_out(uint v, const struct sysctlnode *n, void **o, size_t *l)
+ 		sz = sizeof(struct sysctlnode);
+ 		break;
+ 
++	case SYSCTL_VERS_2:
++		/* the user nodes' names fit the node; a record still has one */
++		nl = strlen(n->sysctl_name) + 1;
++		sz = __sysc_rec_len(nl);
++		break;
++
+ 	default:
+ 		sz = 0;
+ 		break;
+ 	}
+ 
+ 	if (sz > 0 && *o != NULL && *l >= sz) {
+-		memcpy(*o, src, sz);
++		if (v == SYSCTL_VERS_2) {
++			r = *o;
++			memset(r, 0, sz);
++			r->rec_node = *n;
++			r->rec_node.sysctl_flags = SYSCTL_VERS_2 |
++			    (n->sysctl_flags & ~SYSCTL_VERS_MASK);
++			r->rec_len = (uint32_t)sz;
++			r->rec_namelen = (uint32_t)nl;
++			memcpy(r->rec_name, n->sysctl_name, nl);
++		} else
++			memcpy(*o, n, sz);
+ 		*o = sz + (caddr_t)*o;
+ 		*l -= sz;
+ 	}
+diff --git a/lib/libc/gen/sysctlgetmibinfo.c b/lib/libc/gen/sysctlgetmibinfo.c
+index 985af7f4..4a4651fc 100644
+--- a/lib/libc/gen/sysctlgetmibinfo.c
++++ b/lib/libc/gen/sysctlgetmibinfo.c
+@@ -55,6 +55,7 @@ __RCSID("$NetBSD: sysctlgetmibinfo.c,v 1.16 2024/01/20 14:52:47 christos Exp $")
+ #else
+ #ifdef __weak_alias
+ __weak_alias(__learn_tree,___learn_tree)
++__weak_alias(asysctlquery,_asysctlquery)
+ __weak_alias(sysctlgetmibinfo,_sysctlgetmibinfo)
+ #endif
+ #endif
+@@ -81,6 +82,10 @@ static struct sysctlnode sysctl_mibroot = {
+  */
+ static int compar(const void *, const void *);
+ static void free_children(struct sysctlnode *);
++static const char *__sysctl_fullname(const int *, u_int,
++    const struct sysctlnode *, void **, size_t *);
++static void *__sysctl_querybuf(const int *, u_int, const void *, size_t,
++    size_t *);
+ static void relearnhead(void);
+ 
+ /*
+@@ -263,6 +268,123 @@ relearnhead(void)
+ 	free(o);
+ }
+ 
++static void *
++__sysctl_querybuf(const int *qname, u_int qlen, const void *q, size_t qsz,
++    size_t *szp)
++{
++	void *buf = NULL;
++	size_t sz;
++
++	for (;;) {
++		sz = 0;
++		if (sysctl(qname, qlen, NULL, &sz, q, qsz) == -1)
++			break;
++		free(buf);
++		if ((buf = malloc(sz + 1)) == NULL)
++			return (NULL);
++		if (sysctl(qname, qlen, buf, &sz, q, qsz) == 0) {
++			*szp = sz;
++			return (buf);
++		}
++		if (errno != ENOMEM)	/* ENOMEM: it grew meanwhile */
++			break;
++	}
++	free(buf);
++	return (NULL);
++}
++
++/*
++ * The children of the node at name, as the SYSCTL_VERS_2 records of
++ * <sys/sysctl.h>, in memory from malloc(3) that the caller frees; *lenp
++ * is set to the bytes in it.  A kernel that does not know the records
++ * is asked for SYSCTL_VERS_1 nodes, which are made into records with
++ * the names they have.
++ *
++ * It is here and not with asysctl(3) because the rump programs build
++ * this file to talk to a rump kernel, and need this to do so too.
++ */
++void *
++asysctlquery(const int *name, size_t namelen, size_t *lenp)
++{
++	int qname[CTL_MAXNAME + 1];
++	struct sysctlrec q, *r;
++	struct sysctlnode qn, *n1;
++	size_t sz, i, nl, c1;
++	char *buf, *p;
++
++	if (namelen >= CTL_MAXNAME) {
++		errno = EINVAL;
++		return (NULL);
++	}
++	memcpy(qname, name, namelen * sizeof(int));
++	qname[namelen] = CTL_QUERY;
++
++	memset(&q, 0, sizeof(q));
++	q.rec_node.sysctl_flags = SYSCTL_VERS_2;
++	q.rec_namelen = 1;
++	q.rec_len = (uint32_t)__sysc_rec_len(1);
++	buf = __sysctl_querybuf(qname, (u_int)namelen + 1, &q, q.rec_len, &sz);
++	if (buf != NULL) {
++		*lenp = sz;
++		return (buf);
++	}
++	if (errno != EINVAL)
++		return (NULL);
++
++	memset(&qn, 0, sizeof(qn));
++	qn.sysctl_flags = SYSCTL_VERS_1;
++	buf = __sysctl_querybuf(qname, (u_int)namelen + 1, &qn, sizeof(qn),
++	    &sz);
++	if (buf == NULL)
++		return (NULL);
++
++	/*
++	 * an older kernel: make records of the nodes
++	 */
++	n1 = (void *)buf;
++	c1 = sz / sizeof(*n1);
++	for (sz = 0, i = 0; i < c1; i++)
++		sz += __sysc_rec_len(strlen(n1[i].sysctl_name) + 1);
++	if ((p = calloc(1, sz + 1)) == NULL) {
++		free(buf);
++		return (NULL);
++	}
++	for (r = (void *)p, i = 0; i < c1; i++, r = NEXT_SYSCTLREC(r)) {
++		nl = strlen(n1[i].sysctl_name) + 1;
++		r->rec_node = n1[i];
++		r->rec_len = (uint32_t)__sysc_rec_len(nl);
++		r->rec_namelen = (uint32_t)nl;
++		memcpy(r->rec_name, n1[i].sysctl_name, nl);
++	}
++	free(buf);
++	*lenp = sz;
++	return (p);
++}
++
++/*
++ * The whole name of node, a child of the node at name.  A name shorter
++ * than SYSCTL_NAMELEN - 1 bytes is whole as it is; for a longer one the
++ * children's records are fetched once into *recs, for the caller to
++ * free, and the name is taken from there.
++ */
++static const char *
++__sysctl_fullname(const int *name, u_int namelen,
++    const struct sysctlnode *node, void **recs, size_t *rlen)
++{
++	struct sysctlrec *r, *end;
++
++	if (strlen(node->sysctl_name) < SYSCTL_NAMELEN - 1)
++		return (node->sysctl_name);
++	if (*recs == NULL &&
++	    (*recs = asysctlquery(name, namelen, rlen)) == NULL)
++		return (node->sysctl_name);
++	end = (void *)((char *)*recs + *rlen);
++	for (r = *recs; r < end && r->rec_len != 0; r = NEXT_SYSCTLREC(r))
++		if (r->rec_node.sysctl_num == node->sysctl_num)
++			return (r->rec_name);
++	return (node->sysctl_name);
++}
++
+ /*
+  * sucks in the children at a given level and attaches it to the tree.
+  */
+@@ -412,11 +534,12 @@ sysctlgetmibinfo_unlocked(const char *gname, int *iname, u_int *namelenp,
+ 	int name[CTL_MAXNAME], n, haven;
+ 	u_int ni, nl;
+ 	intmax_t q;
+-	char sep[2], token[SYSCTL_NAMELEN],
+-		pname[SYSCTL_NAMELEN * CTL_MAXNAME + CTL_MAXNAME];
+-	const char *piece, *dot;
++	char sep[2], token[SYSCTL_MAXNAMELEN + 1],
++		pname[(SYSCTL_MAXNAMELEN + 1) * CTL_MAXNAME];
++	const char *piece, *dot, *nm;
+ 	char *t;
+-	size_t l;
++	size_t l, rlen;
++	void *recs;
+ 
+ 	if (rnode != NULL) {
+ 		if (*rnode == NULL) {
+@@ -482,6 +605,7 @@ sysctlgetmibinfo_unlocked(const char *gname, int *iname, u_int *namelenp,
+ 
+ 	piece = gname;
+ 	while (piece != NULL && *piece != '\0') {
++		recs = NULL;
+ 		/*
+ 		 * what was i looking for?
+ 		 */
+@@ -543,14 +667,18 @@ sysctlgetmibinfo_unlocked(const char *gname, int *iname, u_int *namelenp,
+ 		}
+ 
+ 		/*
+-		 * now...is it there?
++		 * now...is it there?  the names in the nodes are cut to
++		 * SYSCTL_NAMELEN - 1 bytes, so one that long may be longer,
++		 * and is compared whole
+ 		 */
+ 		for (ni = 0; ni < pnode->sysctl_clen; ni++)
+ 			if ((haven && ((n == node[ni].sysctl_num) ||
+ 			    (node[ni].sysctl_flags & CTLFLAG_ANYNUMBER))) ||
+-			    strcmp(token, node[ni].sysctl_name) == 0)
++			    strcmp(token, __sysctl_fullname(name, nl,
++			    &node[ni], &recs, &rlen)) == 0)
+ 				break;
+ 		if (ni >= pnode->sysctl_clen) {
++			free(recs);
+ 			COPY_OUT_DATA(token, cname, csz, namelenp, nl);
+ 			errno = ENOENT;
+ 			return (-1);
+@@ -568,9 +696,11 @@ sysctlgetmibinfo_unlocked(const char *gname, int *iname, u_int *namelenp,
+ 			name[nl] = n;
+ 		}
+ 		else {
+-			strlcat(pname, pnode->sysctl_name, sizeof(pname));
++			nm = __sysctl_fullname(name, nl, pnode, &recs, &rlen);
++			strlcat(pname, nm, sizeof(pname));
+ 			name[nl] = pnode->sysctl_num;
+ 		}
++		free(recs);
+ 		piece = (dot != NULL) ? dot + 1 : NULL;
+ 		nl++;
+ 		if (nl == CTL_MAXNAME) {
+diff --git a/lib/libc/include/namespace.h b/lib/libc/include/namespace.h
+index 6ac8288b..71701acc 100644
+--- a/lib/libc/include/namespace.h
++++ b/lib/libc/include/namespace.h
+@@ -214,6 +214,7 @@
+ #define asprintf_l		_asprintf_l
+ #define asysctl			_asysctl
+ #define asysctlbyname		_asysctlbyname
++#define asysctlquery		_asysctlquery
+ #define atoll			_atoll
+ #define authnone_create		_authnone_create
+ #define authunix_create		_authunix_create
+diff --git a/lib/libc/shlib_version b/lib/libc/shlib_version
+index 7f35c5bd..36a288fb 100644
+--- a/lib/libc/shlib_version
++++ b/lib/libc/shlib_version
+@@ -60,4 +60,4 @@
+ #   of busted, https://gnats.NetBSD.org/60858)
+ #
+ major=12
+-minor=224
++minor=225
+diff --git a/sbin/sysctl/sysctl.c b/sbin/sysctl/sysctl.c
+index 97c1e58f..f905f3c6 100644
+--- a/sbin/sysctl/sysctl.c
++++ b/sbin/sysctl/sysctl.c
+@@ -126,8 +126,8 @@ __RCSID("$NetBSD: sysctl.c,v 1.167 2026/04/19 20:08:24 rillig Exp $");
+ static const struct handlespec *findhandler(const char *, regex_t *, size_t *);
+ static void canonicalize(const char *, char *);
+ static void purge_tree(struct sysctlnode *);
+-static void print_tree(int *, u_int, struct sysctlnode *, u_int, int, regex_t *,
+-    size_t *);
++static void print_tree(int *, u_int, struct sysctlnode *, const char *, u_int,
++    int, regex_t *, size_t *);
+ static void write_number(int *, u_int, struct sysctlnode *, char *, bool);
+ static void write_string(int *, u_int, struct sysctlnode *, char *, bool);
+ static void display_number(const struct sysctlnode *, const char *,
+@@ -270,8 +270,8 @@ FILE	*warnfp = stderr;
+ /*
+  * vah-riables n stuff
+  */
+-char gsname[SYSCTL_NAMELEN * CTL_MAXNAME + CTL_MAXNAME],
+-	canonname[SYSCTL_NAMELEN * CTL_MAXNAME + CTL_MAXNAME],
++char gsname[(SYSCTL_MAXNAMELEN + 1) * CTL_MAXNAME],
++	canonname[(SYSCTL_MAXNAMELEN + 1) * CTL_MAXNAME],
+ 	gdname[10 * CTL_MAXNAME + CTL_MAXNAME];
+ char sep[] = ".";
+ const char *eq = " = ";
+@@ -359,7 +359,7 @@ main(int argc, char *argv[])
+ 		err(EXIT_FAILURE, "malloc regex");
+ 
+ 	if (aflag) {
+-		print_tree(&name[0], 0, NULL, CTLTYPE_NODE, 1,
++		print_tree(&name[0], 0, NULL, NULL, CTLTYPE_NODE, 1,
+ 		    re, &lastcompiled);
+ 		/* if (argc == 0) */
+ 		return (0);
+@@ -443,7 +443,7 @@ static void
+ canonicalize(const char *i, char *o)
+ {
+ 	const char *t;
+-	char p[SYSCTL_NAMELEN + 1];
++	char p[SYSCTL_MAXNAMELEN + 1];
+ 	size_t l;
+ 
+ 	if (i[0] != *sep) {
+@@ -590,13 +590,15 @@ appendprintf(char **bp, size_t *lbp, const char *fmt, ...)
+  * ********************************************************************
+  */
+ static void
+-print_tree(int *name, u_int namelen, struct sysctlnode *pnode, u_int type,
+-   int add, regex_t *re, size_t *lastcompiled)
++print_tree(int *name, u_int namelen, struct sysctlnode *pnode,
++   const char *pname, u_int type, int add, regex_t *re, size_t *lastcompiled)
+ {
+ 	struct sysctlnode *node;
++	struct sysctlrec *recs, *r, *rend;
+ 	int rc;
+-	size_t ni, sz, ldp, lsp;
++	size_t ni, sz, ldp, lsp, rlen;
+ 	char *sp, *dp, *tsp, *tdp;
++	const char *cname;
+ 	const struct handlespec *p;
+ 
+ 	sp = tsp = &gsname[strlen(gsname)];
+@@ -617,7 +619,7 @@ print_tree(int *name, u_int namelen, struct sysctlnode *pnode, u_int type,
+ 		pnode = &my_root;
+ 	else if (add) {
+ 		appendprintf(&tsp, &lsp, "%s%s", namelen > 1 ? sep : "", 
+-			pnode->sysctl_name);
++			pname != NULL ? pname : pnode->sysctl_name);
+ 		appendprintf(&tdp, &ldp, "%s%d", namelen > 1 ? "." : "", 
+ 			pnode->sysctl_num);
+ 	}
+@@ -737,15 +739,32 @@ print_tree(int *name, u_int namelen, struct sysctlnode *pnode, u_int type,
+ 				 */
+ 				getdesc(name, namelen, pnode);
+ 			req = 0;
++			/*
++			 * the names in the nodes are cut to
++			 * SYSCTL_NAMELEN - 1 bytes; the records have them
++			 * whole
++			 */
++			recs = asysctlquery(name, namelen, &rlen);
++			rend = recs == NULL ? NULL :
++			    (void *)((char *)recs + rlen);
+ 			for (ni = 0; ni < pnode->sysctl_clen; ni++) {
+ 				name[namelen] = node[ni].sysctl_num;
+ 				if ((node[ni].sysctl_flags & CTLFLAG_HIDDEN) &&
+ 				    !(Aflag || req))
+ 					continue;
+-				print_tree(name, namelen + 1, &node[ni],
++				cname = NULL;
++				for (r = recs; r != NULL && r < rend &&
++				    r->rec_len != 0; r = NEXT_SYSCTLREC(r))
++					if (r->rec_node.sysctl_num ==
++					    node[ni].sysctl_num) {
++						cname = r->rec_name;
++						break;
++					}
++				print_tree(name, namelen + 1, &node[ni], cname,
+ 					   SYSCTL_TYPE(node[ni].sysctl_flags),
+ 					   1, re, lastcompiled);
+ 			}
++			free(recs);
+ 		}
+ 		break;
+ 	}
+@@ -910,7 +929,8 @@ parse(char *l, regex_t *re, size_t *lastcompiled)
+ 	if (value == NULL) {
+ 		if (dodesc)
+ 			dflag = 1;
+-		print_tree(&name[0], namelen, node, type, 0, re, lastcompiled);
++		print_tree(&name[0], namelen, node, NULL, type, 0, re,
++		    lastcompiled);
+ 		if (dodesc)
+ 			dflag = 0;
+ 		gsname[0] = '\0';
+@@ -954,7 +974,8 @@ parse(char *l, regex_t *re, size_t *lastcompiled)
+ 		 * XXX old behavior is to print.  should we error instead?
+ 		 */
+ 		/* fprintf(warnfp, "you can't write to %s\n", gsname); */
+-		print_tree(&name[0], namelen, node, type, 0, re, lastcompiled);
++		print_tree(&name[0], namelen, node, NULL, type, 0, re,
++		    lastcompiled);
+ 		break;
+ 	}
+ }
+diff --git a/sys/kern/kern_sysctl.c b/sys/kern/kern_sysctl.c
+index 43f47ef1..6bb7c116 100644
+--- a/sys/kern/kern_sysctl.c
++++ b/sys/kern/kern_sysctl.c
+@@ -106,7 +106,7 @@ static int sysctl_alloc(struct sysctlnode *, int);
+ static int sysctl_realloc(struct sysctlnode *);
+ 
+ static int sysctl_cvt_in(struct lwp *, int *, const void *, size_t,
+-			 struct sysctlnode *);
++			 struct sysctlnode *, char *);
+ static int sysctl_cvt_out(struct lwp *, int, const struct sysctlnode *,
+ 			  void *, size_t, size_t *);
+ 
+@@ -623,6 +623,7 @@ sysctl_query(SYSCTLFN_ARGS)
+ 	size_t out, left, t;
+ 	const struct sysctlnode *enode, *onode;
+ 	struct sysctlnode qnode;
++	char qname[SYSCTL_MAXNAMELEN + 1];
+ 
+ 	KASSERT(rw_lock_held(&sysctl_treelock));
+ 
+@@ -645,7 +646,7 @@ sysctl_query(SYSCTLFN_ARGS)
+ 	/*
+ 	 * translate the given request to a current node
+ 	 */
+-	error = sysctl_cvt_in(l, &v, newp, newlen, &qnode);
++	error = sysctl_cvt_in(l, &v, newp, newlen, &qnode, qname);
+ 	if (error)
+ 		return error;
+ 
+@@ -726,6 +727,7 @@ sysctl_create(SYSCTLFN_ARGS)
+ 	struct sysctlnode nnode, *node, *pnode;
+ 	int error, ni, at, nm, type, nsz, sz, flags, anum, v;
+ 	void *own;
++	char nname[SYSCTL_MAXNAMELEN + 1], *nstore;
+ 
+ 	KASSERT(rw_write_held(&sysctl_treelock));
+ 
+@@ -785,9 +787,11 @@ sysctl_create(SYSCTLFN_ARGS)
+ 
+ 	if (newp == NULL)
+ 		return SET_ERROR(EINVAL);
+-	error = sysctl_cvt_in(l, &v, newp, newlen, &nnode);
++	error = sysctl_cvt_in(l, &v, newp, newlen, &nnode, nname);
+ 	if (error)
+ 		return error;
++	if (nnode.sysctl_name == NULL)
++		return SET_ERROR(EINVAL);
+ 
+ 	/*
+ 	 * nodes passed in don't *have* parents
+@@ -816,10 +820,10 @@ sysctl_create(SYSCTLFN_ARGS)
+ 
+ 	/*
+ 	 * the name must be only alphanumerics or - or _, longer than
+-	 * 0 bytes and less than SYSCTL_NAMELEN
++	 * 0 bytes and no longer than SYSCTL_MAXNAMELEN
+ 	 */
+ 	nsz = 0;
+-	while (nsz < SYSCTL_NAMELEN && nnode.sysctl_name[nsz] != '\0') {
++	while (nsz <= SYSCTL_MAXNAMELEN && nnode.sysctl_name[nsz] != '\0') {
+ 		if ((nnode.sysctl_name[nsz] >= '0' &&
+ 		     nnode.sysctl_name[nsz] <= '9') ||
+ 		    (nnode.sysctl_name[nsz] >= 'A' &&
+@@ -832,7 +836,7 @@ sysctl_create(SYSCTLFN_ARGS)
+ 		else
+ 			return SET_ERROR(EINVAL);
+ 	}
+-	if (nsz == 0 || nsz == SYSCTL_NAMELEN)
++	if (nsz == 0 || nsz > SYSCTL_MAXNAMELEN)
+ 		return SET_ERROR(EINVAL);
+ 
+ 	/*
+@@ -1181,8 +1185,9 @@ sysctl_create(SYSCTLFN_ARGS)
+ 	node = &node[at];
+ 	pnode->sysctl_clen++;
+ 
+-	strlcpy(node->sysctl_name, nnode.sysctl_name,
+-		sizeof(node->sysctl_name));
++	nstore = malloc(nsz + 1, M_SYSCTLDATA, M_WAITOK);
++	memcpy(nstore, nnode.sysctl_name, nsz + 1);
++	node->sysctl_name = nstore;
+ 	node->sysctl_num = nm;
+ 	node->sysctl_size = sz;
+ 	node->sysctl_flags = SYSCTL_VERSION|type|flags; /* XXX other trees */
+@@ -1242,10 +1247,11 @@ sysctl_create(SYSCTLFN_ARGS)
+ 	const struct sysctlnode *node;
+ 	int k, v, rc, ni, nl = namelen + (name - oname);
+ 	struct sysctlnode nnode;
++	char nname[SYSCTL_MAXNAMELEN + 1];
+ 
+ 	if (newp == NULL)
+ 		return SET_ERROR(EINVAL);
+-	int error = sysctl_cvt_in(l, &v, newp, newlen, &nnode);
++	int error = sysctl_cvt_in(l, &v, newp, newlen, &nnode, nname);
+ 	if (error)
+ 		return error;
+ 
+@@ -1284,6 +1290,7 @@ sysctl_destroy(SYSCTLFN_ARGS)
+ {
+ 	struct sysctlnode *node, *pnode, onode, nnode;
+ 	int ni, error, v;
++	char nname[SYSCTL_MAXNAMELEN + 1];
+ 
+ 	KASSERT(rw_write_held(&sysctl_treelock));
+ 
+@@ -1328,7 +1335,7 @@ sysctl_destroy(SYSCTLFN_ARGS)
+ 
+ 	if (newp == NULL)
+ 		return SET_ERROR(EINVAL);
+-	error = sysctl_cvt_in(l, &v, newp, newlen, &nnode);
++	error = sysctl_cvt_in(l, &v, newp, newlen, &nnode, nname);
+ 	if (error)
+ 		return error;
+ 	memset(&onode, 0, sizeof(struct sysctlnode));
+@@ -1339,7 +1346,8 @@ sysctl_destroy(SYSCTLFN_ARGS)
+ 			/*
+ 			 * if name specified, must match
+ 			 */
+-			if (nnode.sysctl_name[0] != '\0' &&
++			if (nnode.sysctl_name != NULL &&
++			    nnode.sysctl_name[0] != '\0' &&
+ 			    strcmp(nnode.sysctl_name, node[ni].sysctl_name))
+ 				continue;
+ 			/*
+@@ -1438,6 +1446,11 @@ sysctl_destroy(SYSCTLFN_ARGS)
+ 
+ 	error = sysctl_cvt_out(l, v, &onode, oldp, *oldlenp, oldlenp);
+ 
++	/*
++	 * the name went out with the node, and the node is gone
++	 */
++	free(__UNCONST(onode.sysctl_name), M_SYSCTLDATA);
++
+ 	return error;
+ }
+ 
+@@ -1718,6 +1731,7 @@ sysctl_describe(SYSCTLFN_ARGS)
+ 	int i, error, v = -1;
+ 	struct sysctlnode *node;
+ 	struct sysctlnode dnode;
++	char dname[SYSCTL_MAXNAMELEN + 1];
+ 
+ 	if (SYSCTL_VERS(rnode->sysctl_flags) != SYSCTL_VERSION) {
+ 		printf("sysctl_query: rnode %p wrong version\n", rnode);
+@@ -1746,7 +1760,7 @@ sysctl_describe(SYSCTLFN_ARGS)
+ 	 * request with desc set -> set descr for this node
+ 	 */
+ 	if (newp != NULL) {
+-		error = sysctl_cvt_in(l, &v, newp, newlen, &dnode);
++		error = sysctl_cvt_in(l, &v, newp, newlen, &dnode, dname);
+ 		if (error)
+ 			goto out;
+ 		if (dnode.sysctl_desc != NULL) {
+@@ -2028,9 +2042,9 @@ sysctl_createv(struct sysctllog **log, int cflags,
+ 	/*
+ 	 * what's it called
+ 	 */
+-	if (strlcpy(nnode.sysctl_name, namep, sizeof(nnode.sysctl_name)) >=
+-	    sizeof(nnode.sysctl_name))
++	if (strlen(namep) > SYSCTL_MAXNAMELEN)
+ 		return SET_ERROR(ENAMETOOLONG);
++	nnode.sysctl_name = namep;
+ 
+ 	/*
+ 	 * cons up the description of the new node
+@@ -2377,6 +2391,9 @@ sysctl_free(struct sysctlnode *rnode)
+ 						node->sysctl_desc = NULL;
+ 					}
+ 				}
++				free(__UNCONST(node->sysctl_name),
++				     M_SYSCTLDATA);
++				node->sysctl_name = NULL;
+ 				node++;
+ 			}
+ 			if (node < &pnode->sysctl_child[pnode->sysctl_clen]) {
+@@ -2781,15 +2798,42 @@ sysctl_log_realloc(struct sysctllog *log)
+  * Section 6: Conversion between API versions wrt the sysctlnode
+  * ********************************************************************
+  */
++/*
++ * The kernel keeps a node's name as a pointer; user space has the
++ * name in the node under SYSCTL_VERS_1, cut to SYSCTL_NAMELEN - 1
++ * bytes, and after it under SYSCTL_VERS_2 (struct sysctlrec).  Apart
++ * from the name the two nodes are the same.
++ */
++CTASSERT(sizeof(((struct sysctlnode *)0)->sysctl_un) ==
++    sizeof(((struct sysctlnode_v1 *)0)->sysctl_un));
++
++/*
++ * Take a node from the caller.  One from the kernel (l == NULL) is
++ * the kernel's own and is copied as it is.  One from user space gets
++ * its name copied into nbuf, of SYSCTL_MAXNAMELEN + 1 bytes, which the
++ * node then points to.
++ */
+ static int
+ sysctl_cvt_in(struct lwp *l, int *vp, const void *i, size_t sz,
+-	      struct sysctlnode *node)
++	      struct sysctlnode *node, char *nbuf)
+ {
++	struct sysctlrec rec;
++	struct sysctlnode_v1 *onode = &rec.rec_node;
+ 	int error, flags;
+ 
+ 	if (i == NULL || sz < sizeof(flags))
+ 		return SET_ERROR(EINVAL);
+ 
++	if (l == NULL) {
++		if (sz != sizeof(*node))
++			return SET_ERROR(EINVAL);
++		error = sysctl_copyin(l, i, node, sizeof(*node));
++		if (error)
++			return error;
++		*vp = SYSCTL_VERSION;
++		return (0);
++	}
++
+ 	error = sysctl_copyin(l, i, &flags, sizeof(flags));
+ 	if (error)
+ 		return error;
+@@ -2798,43 +2842,134 @@ sysctl_cvt_in(struct lwp *l, int *vp, const void *i, size_t sz,
+ #error sysctl_cvt_in: no support for SYSCTL_VERSION
+ #endif /*  (SYSCTL_VERSION != SYSCTL_VERS_1) */
+ 
+-	if (sz == sizeof(*node) &&
+-	    SYSCTL_VERS(flags) == SYSCTL_VERSION) {
+-		error = sysctl_copyin(l, i, node, sizeof(*node));
++	switch (SYSCTL_VERS(flags)) {
++	case SYSCTL_VERS_1:
++		if (sz != sizeof(*onode))
++			return SET_ERROR(EINVAL);
++		error = sysctl_copyin(l, i, onode, sizeof(*onode));
+ 		if (error)
+ 			return error;
+-		*vp = SYSCTL_VERSION;
+-		return (0);
++		/*
++		 * a name that fills the array has no end to it
++		 */
++		if (strnlen(onode->sysctl_name, sizeof(onode->sysctl_name)) ==
++		    sizeof(onode->sysctl_name))
++			return SET_ERROR(EINVAL);
++		strlcpy(nbuf, onode->sysctl_name, SYSCTL_MAXNAMELEN + 1);
++		break;
++	case SYSCTL_VERS_2:
++		if (sz < offsetof(struct sysctlrec, rec_name))
++			return SET_ERROR(EINVAL);
++		error = sysctl_copyin(l, i, &rec,
++		    offsetof(struct sysctlrec, rec_name));
++		if (error)
++			return error;
++		if (rec.rec_namelen == 0 ||
++		    rec.rec_namelen > SYSCTL_MAXNAMELEN + 1 ||
++		    rec.rec_len != __sysc_rec_len(rec.rec_namelen) ||
++		    rec.rec_len > sz)
++			return SET_ERROR(EINVAL);
++		error = sysctl_copyin(l,
++		    (const char *)i + offsetof(struct sysctlrec, rec_name),
++		    nbuf, rec.rec_namelen);
++		if (error)
++			return error;
++		if (strnlen(nbuf, rec.rec_namelen) != rec.rec_namelen - 1)
++			return SET_ERROR(EINVAL);
++		break;
++	default:
++		return SET_ERROR(EINVAL);
+ 	}
+ 
+-	return SET_ERROR(EINVAL);
++	memset(node, 0, sizeof(*node));
++	node->sysctl_flags = SYSCTL_VERSION |
++	    (onode->sysctl_flags & ~SYSCTL_VERS_MASK);
++	node->sysctl_num = onode->sysctl_num;
++	node->sysctl_name = nbuf;
++	node->sysctl_ver = onode->sysctl_ver;
++	memcpy(&node->sysctl_un, &onode->sysctl_un, sizeof(node->sysctl_un));
++	node->sysctl_size = onode->sysctl_size;
++	node->sysctl_func = onode->sysctl_func;
++	node->sysctl_parent = (struct sysctlnode *)(void *)
++	    onode->sysctl_parent;
++	node->sysctl_desc = onode->sysctl_desc;
++	*vp = SYSCTL_VERS(flags);
++
++	return (0);
+ }
+ 
++/*
++ * Hand a node to the caller as it asked for it in sysctl_cvt_in(): the
++ * kernel's own node to the kernel, a SYSCTL_VERS_1 node or a
++ * SYSCTL_VERS_2 record to user space.  *szp is set to the size even
++ * when it does not fit in left and nothing is copied.
++ */
+ static int
+ sysctl_cvt_out(struct lwp *l, int v, const struct sysctlnode *i,
+ 	       void *ovp, size_t left, size_t *szp)
+ {
+-	size_t sz = sizeof(*i);
+-	const void *src = i;
++	static const char pad[8];
++	struct sysctlrec rec;
++	struct sysctlnode_v1 *onode = &rec.rec_node;
++	size_t sz, hl, nl = 0;
+ 	int error;
+ 
+-	switch (v) {
+-	case SYSCTL_VERS_0:
+-		return SET_ERROR(EINVAL);
+-
+-#if (SYSCTL_VERSION != SYSCTL_VERS_1)
+-#error sysctl_cvt_out: no support for SYSCTL_VERSION
+-#endif /*  (SYSCTL_VERSION != SYSCTL_VERS_1) */
++	if (l == NULL) {
++		sz = sizeof(*i);
++		if (ovp != NULL && left >= sz) {
++			error = sysctl_copyout(l, i, ovp, sz);
++			if (error)
++				return error;
++		}
++		if (szp != NULL)
++			*szp = sz;
++		return (0);
++	}
+ 
+-	case SYSCTL_VERSION:
+-		/* nothing more to do here */
++	switch (v) {
++	case SYSCTL_VERS_1:
++		sz = sizeof(*onode);
++		break;
++	case SYSCTL_VERS_2:
++		nl = strlen(i->sysctl_name) + 1;
++		sz = __sysc_rec_len(nl);
+ 		break;
++	default:
++		return SET_ERROR(EINVAL);
+ 	}
+ 
+ 	if (ovp != NULL && left >= sz) {
+-		error = sysctl_copyout(l, src, ovp, sz);
+-		if (error)
+-			return error;
++		memset(&rec, 0, sizeof(rec));
++		onode->sysctl_flags = v | (i->sysctl_flags & ~SYSCTL_VERS_MASK);
++		onode->sysctl_num = i->sysctl_num;
++		strlcpy(onode->sysctl_name, i->sysctl_name,
++		    sizeof(onode->sysctl_name));
++		onode->sysctl_ver = i->sysctl_ver;
++		memcpy(&onode->sysctl_un, &i->sysctl_un,
++		    sizeof(onode->sysctl_un));
++		onode->sysctl_size = i->sysctl_size;
++		onode->sysctl_func = i->sysctl_func;
++		onode->sysctl_parent = (struct sysctlnode_v1 *)(void *)
++		    i->sysctl_parent;
++		onode->sysctl_desc = i->sysctl_desc;
++		if (v == SYSCTL_VERS_1) {
++			error = sysctl_copyout(l, onode, ovp, sz);
++			if (error)
++				return error;
++		} else {
++			hl = offsetof(struct sysctlrec, rec_name);
++			rec.rec_len = sz;
++			rec.rec_namelen = nl;
++			error = sysctl_copyout(l, &rec, ovp, hl);
++			if (error == 0)
++				error = sysctl_copyout(l, i->sysctl_name,
++				    (char *)ovp + hl, nl);
++			if (error == 0)
++				error = sysctl_copyout(l, pad,
++				    (char *)ovp + hl + nl, sz - hl - nl);
++			if (error)
++				return error;
++		}
+ 	}
+ 
+ 	if (szp != NULL)
+diff --git a/sys/sys/sysctl.h b/sys/sys/sysctl.h
+index 6492ec0d..85e32060 100644
+--- a/sys/sys/sysctl.h
++++ b/sys/sys/sysctl.h
+@@ -73,7 +73,8 @@
+ struct sysctlnode;
+ 
+ #define	CTL_MAXNAME	12	/* largest number of components supported */
+-#define	SYSCTL_NAMELEN	32	/* longest name allowed for a node */
++#define	SYSCTL_NAMELEN	32	/* name in a SYSCTL_VERS_1 node, with nul */
++#define	SYSCTL_MAXNAMELEN 255	/* longest name allowed for a node */
+ 
+ #define	CREATE_BASE	(1024)	/* start of dynamic mib allocation */
+ #define	SYSCTL_DEFSIZE	8	/* initial size of a child set */
+@@ -130,6 +131,7 @@ struct ctlname {
+ #define	SYSCTL_VERS_MASK	0xff000000
+ #define	SYSCTL_VERS_0		0x00000000
+ #define	SYSCTL_VERS_1		0x01000000
++#define	SYSCTL_VERS_2		0x02000000	/* records with whole names */
+ #define	SYSCTL_VERSION		SYSCTL_VERS_1
+ #define	SYSCTL_VERS(f)		((f) & SYSCTL_VERS_MASK)
+ 
+@@ -1242,6 +1244,7 @@ int	proc_compare(const struct kinfo_proc2 *, const struct kinfo_lwp *,
+     const struct kinfo_proc2 *, const struct kinfo_lwp *);
+ void	*asysctl(const int *, size_t, size_t *);
+ void	*asysctlbyname(const char *, size_t *);
++void	*asysctlquery(const int *, size_t, size_t *);
+ int	__learn_tree(int *, u_int, struct sysctlnode *);
+ __END_DECLS
+ 
+@@ -1276,7 +1279,11 @@ __END_DECLS
+ struct sysctlnode {
+ 	uint32_t sysctl_flags;		/* flags and type */
+ 	int32_t sysctl_num;		/* mib number */
++#ifdef _KERNEL
++	const char *sysctl_name;	/* node name, see sysctl_cvt_out() */
++#else
+ 	char sysctl_name[SYSCTL_NAMELEN]; /* node name */
++#endif
+ 	uint32_t sysctl_ver;		/* node's version vs. rest of tree */
+ 	uint32_t __rsvd;
+ 	union {
+@@ -1300,6 +1307,39 @@ struct sysctlnode {
+ 	__sysc_pad(const char *) _sysctl_desc;	/* description of node */
+ };
+ 
++#ifdef _KERNEL
++/*
++ * The node as user space has it under SYSCTL_VERS_1, with the first
++ * SYSCTL_NAMELEN - 1 bytes of the name in an array.
++ */
++struct sysctlnode_v1 {
++	uint32_t sysctl_flags;		/* flags and type */
++	int32_t sysctl_num;		/* mib number */
++	char sysctl_name[SYSCTL_NAMELEN]; /* node name */
++	uint32_t sysctl_ver;		/* node's version vs. rest of tree */
++	uint32_t __rsvd;
++	union {
++		struct {
++			uint32_t suc_csize;	/* size of child node array */
++			uint32_t suc_clen;	/* number of valid children */
++			__sysc_pad(struct sysctlnode_v1*) _suc_child; /* array of child nodes */
++		} scu_child;
++		struct {
++			__sysc_pad(void*) _sud_data; /* pointer to external data */
++			__sysc_pad(size_t) _sud_offset; /* offset to data */
++		} scu_data;
++		int32_t scu_alias;		/* node this node refers to */
++		int32_t scu_idata;		/* immediate "int" data */
++		u_quad_t scu_qdata;		/* immediate "u_quad_t" data */
++		bool scu_bdata;			/* immediate bool data */
++	} sysctl_un;
++	__sysc_pad(size_t) _sysctl_size;	/* size of instrumented data */
++	__sysc_pad(sysctlfn) _sysctl_func;	/* access helper function */
++	__sysc_pad(struct sysctlnode_v1*) _sysctl_parent; /* parent of this node */
++	__sysc_pad(const char *) _sysctl_desc;	/* description of node */
++};
++#endif /* _KERNEL */
++
+ /*
+  * padded data
+  */
+@@ -1348,6 +1388,34 @@ struct sysctldesc {
+ 	__UNCONST(((const char*)(d)) + __sysc_desc_len(l)))
+ #define	NEXT_DESCR(d) __sysc_desc_adv((d), (d)->descr_len)
+ 
++/*
++ * SYSCTL_VERS_2 passes nodes in and out as records, so that a name is
++ * not cut short: the node as SYSCTL_VERS_1 has it, with SYSCTL_VERS_2
++ * in its sysctl_flags and the first SYSCTL_NAMELEN - 1 bytes of the
++ * name in its sysctl_name, then the length of the record and of the
++ * name, then the whole name with its nul, padded to a multiple of eight
++ * bytes.  A query returns the records end to end, as a request for
++ * descriptions does; NEXT_SYSCTLREC() steps from one to the next.
++ */
++#ifdef _KERNEL
++#define	__SYSCTL_NODE_V1	struct sysctlnode_v1
++#else
++#define	__SYSCTL_NODE_V1	struct sysctlnode
++#endif
++
++struct sysctlrec {
++	__SYSCTL_NODE_V1 rec_node;	/* the node, its name cut short */
++	uint32_t	rec_len;	/* bytes in this record */
++	uint32_t	rec_namelen;	/* bytes of rec_name, with the nul */
++	char		rec_name[8];	/* not really 8...see above */
++};
++
++#define	__sysc_rec_len(namelen) \
++	((offsetof(struct sysctlrec, rec_name) + (namelen) + 7) & ~(size_t)7)
++#define	NEXT_SYSCTLREC(r) \
++	(/*XXXUNCONST ptr cast*/(struct sysctlrec *) \
++	__UNCONST(((const char *)(r)) + (r)->rec_len))
++
+ static __inline const struct sysctlnode *
+ sysctl_rootof(const struct sysctlnode *n)
+ {
