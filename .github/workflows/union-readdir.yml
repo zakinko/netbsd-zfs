@@ -1,0 +1,71 @@
+name: union-readdir
+
+# Scratch: build NetBSD-current (amd64) with ci/union-readdir.diff
+# applied, install the release with anita and run the ATF tests that
+# cover vn_readdir, the union hooks and directory reading in libc.
+# Runs only on pushes to this branch.
+
+on:
+  push:
+    branches: [union-readdir-current]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Make room on the runner
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+              /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+
+      - name: Check out NetBSD src at the diff's base
+        run: |
+          git init -q src
+          git -C src remote add origin https://github.com/NetBSD/src.git
+          git -C src fetch -q --depth 1 origin e868aa493cb246d91937a658f3642e230041d973
+          git -C src checkout -q FETCH_HEAD
+          git -C src log -1 --format='%H %cd'
+          git -C src apply "$GITHUB_WORKSPACE/ci/union-readdir.diff"
+          git -C src status --short
+
+      - name: Does it apply to today's trunk?
+        run: |
+          git init -q head
+          git -C head remote add origin https://github.com/NetBSD/src.git
+          git -C head fetch -q --depth 1 origin trunk
+          git -C head checkout -q FETCH_HEAD
+          git -C head log -1 --format='%H %cd'
+          git -C head apply --check "$GITHUB_WORKSPACE/ci/union-readdir.diff" && \
+              echo "APPLIES-TO-TRUNK" || echo "DOES-NOT-APPLY-TO-TRUNK"
+          rm -rf head
+
+      - name: Build the release
+        run: |
+          cd src
+          set -o pipefail
+          ./build.sh -U -u -m amd64 -j$(nproc) \
+              -O ../obj -T ../tools -D ../dest -R ../rel \
+              -V MKDEBUG=no -V MKX11=no -V MKCOMPAT=no \
+              release 2>&1 | tail -40
+          ls -l ../rel/amd64/binary/sets/
+
+      - name: Install, boot and run the tests
+        run: |
+          sudo apt-get -q update && sudo apt-get -q install -y qemu-system-x86 python3-pexpect
+          sudo chmod 666 /dev/kvm
+          rm -rf obj tools dest
+          sh ci/test-union.sh "$PWD/rel/amd64/"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: anita-log
+          path: work/anita.log

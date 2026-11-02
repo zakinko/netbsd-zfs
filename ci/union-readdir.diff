@@ -1,0 +1,261 @@
+diff --git a/external/cddl/osnet/dist/lib/libzfs/common/libzfs_import.c b/external/cddl/osnet/dist/lib/libzfs/common/libzfs_import.c
+index 1147c292..bf7b9c45 100644
+--- a/external/cddl/osnet/dist/lib/libzfs/common/libzfs_import.c
++++ b/external/cddl/osnet/dist/lib/libzfs/common/libzfs_import.c
+@@ -1231,7 +1231,7 @@ zpool_find_import_impl(libzfs_handle_t *hdl, importargs_t *iarg)
+ 	for (i = 0; i < dirs; i++) {
+ 		tpool_t *t;
+ 		char rdsk[MAXPATHLEN];
+-		int dfd;
++		int dfd, rfd;
+ 		boolean_t config_failed = B_FALSE;
+ 		DIR *dirp;
+ 
+@@ -1258,8 +1258,19 @@ zpool_find_import_impl(libzfs_handle_t *hdl, importargs_t *iarg)
+ #endif
+ 			(void) strlcpy(rdsk, path, sizeof (rdsk));
+ 
++		/*
++		 * Read the directory through a descriptor of its own.  On a
++		 * mount point mounted with MNT_UNION, reading the directory
++		 * to its end leaves the descriptor on the covered directory,
++		 * and the openat()s in zpool_open_func() through it would not
++		 * find the entries in the upper layer.
++		 */
++		rfd = -1;
+ 		if ((dfd = open64(rdsk, O_RDONLY)) < 0 ||
+-		    (dirp = fdopendir(dfd)) == NULL) {
++		    (rfd = open64(rdsk, O_RDONLY)) < 0 ||
++		    (dirp = fdopendir(rfd)) == NULL) {
++			if (rfd >= 0)
++				(void) close(rfd);
+ 			if (dfd >= 0)
+ 				(void) close(dfd);
+ 			zfs_error_aux(hdl, strerror(errno));
+@@ -1324,6 +1335,7 @@ zpool_find_import_impl(libzfs_handle_t *hdl, importargs_t *iarg)
+ 
+ 				avl_destroy(&slice_cache);
+ 				(void) closedir(dirp);
++				(void) close(dfd);
+ 				goto error;
+ 			}
+ 			disknames = zfs_alloc(hdl, len + 2);
+@@ -1422,6 +1434,7 @@ skipdir:
+ 		avl_destroy(&slice_cache);
+ 
+ 		(void) closedir(dirp);
++		(void) close(dfd);
+ 
+ 		if (config_failed)
+ 			goto error;
+diff --git a/sys/fs/union/union_subr.c b/sys/fs/union/union_subr.c
+index 19ddd015..a9936fb7 100644
+--- a/sys/fs/union/union_subr.c
++++ b/sys/fs/union/union_subr.c
+@@ -1193,7 +1193,10 @@ union_check_rmdir(struct union_node *un, kauth_cred_t cred)
+ 
+ /*
+  * This hook is called from vn_readdir() to switch to lower directory
+- * entry after the upper directory is read.
++ * entry after the upper directory is read.  On success *vpp is the
++ * lower directory, referenced and open for reading; vn_readdir()
++ * keeps it in f_dirvp and closes it.  The directory in *vpp on entry
++ * is left as it is.
+  */
+ int
+ union_readdirhook(struct vnode **vpp, struct file *fp, struct lwp *l)
+@@ -1224,11 +1227,6 @@ union_readdirhook(struct vnode **vpp, struct file *fp, struct lwp *l)
+ 		return (error);
+ 	}
+ 	VOP_UNLOCK(lvp);
+-	fp->f_vnode = lvp;
+-	fp->f_offset = 0;
+-	error = vn_close(vp, FREAD, fp->f_cred);
+-	if (error)
+-		return (error);
+ 	*vpp = lvp;
+ 	return (0);
+ }
+diff --git a/sys/kern/kern_descrip.c b/sys/kern/kern_descrip.c
+index 69818154..c9c4fb42 100644
+--- a/sys/kern/kern_descrip.c
++++ b/sys/kern/kern_descrip.c
+@@ -1168,6 +1168,7 @@ fd_allocfile(file_t **resultfp, int *resultfd)
+ 
+ 	fp->f_advice = 0;
+ 	fp->f_offset = 0;
++	KASSERT(fp->f_dirvp == NULL);
+ 	*resultfp = fp;
+ 
+ 	return 0;
+diff --git a/sys/kern/vfs_vnops.c b/sys/kern/vfs_vnops.c
+index c6090471..305a35f6 100644
+--- a/sys/kern/vfs_vnops.c
++++ b/sys/kern/vfs_vnops.c
+@@ -573,11 +573,20 @@ out:
+ 	return error;
+ }
+ 
++/*
++ * Read a directory.  When the directory has a lower layer, a union
++ * mount or a mount point mounted with MNT_UNION, the entries of the
++ * lower layer follow those of the upper one.  The lower directory is
++ * kept in f_dirvp, open and referenced, and f_offset is its offset.
++ * f_vnode stays the directory that was opened: replacing it would
++ * leave the descriptor naming the lower directory for openat(2),
++ * fchdir(2) and fstat(2) as well, once the upper one had been read.
++ */
+ int
+ vn_readdir(file_t *fp, char *bf, int segflg, u_int count, int *done,
+     struct lwp *l, off_t **cookies, int *ncookies)
+ {
+-	struct vnode *vp = fp->f_vnode;
++	struct vnode *vp, *nvp, *ovp;
+ 	struct iovec aiov;
+ 	struct uio auio;
+ 	int error, eofflag;
+@@ -585,9 +594,16 @@ vn_readdir(file_t *fp, char *bf, int segflg, u_int count, int *done,
+ 	/* Limit the size on any kernel buffers used by VOP_READDIR */
+ 	count = uimin(MAXBSIZE, count);
+ 
++	mutex_enter(&fp->f_lock);
++	vp = fp->f_dirvp != NULL ? fp->f_dirvp : fp->f_vnode;
++	vref(vp);
++	mutex_exit(&fp->f_lock);
++
+ unionread:
+-	if (vp->v_type != VDIR)
+-		return SET_ERROR(EINVAL);
++	if (vp->v_type != VDIR) {
++		error = SET_ERROR(EINVAL);
++		goto out;
++	}
+ 	aiov.iov_base = bf;
+ 	aiov.iov_len = count;
+ 	auio.uio_iov = &aiov;
+@@ -611,31 +627,45 @@ unionread:
+ 	mutex_exit(&fp->f_lock);
+ 	VOP_UNLOCK(vp);
+ 	if (error)
+-		return error;
+-
+-	if (count == auio.uio_resid && vn_union_readdir_hook) {
+-		struct vnode *ovp = vp;
++		goto out;
+ 
+-		error = (*vn_union_readdir_hook)(&vp, fp, l);
+-		if (error)
+-			return error;
+-		if (vp != ovp)
++	if (count == auio.uio_resid) {
++		nvp = NULL;
++		if (vn_union_readdir_hook) {
++			nvp = vp;
++			error = (*vn_union_readdir_hook)(&nvp, fp, l);
++			if (error)
++				goto out;
++			if (nvp == vp)
++				nvp = NULL;
++		}
++		if (nvp == NULL && (vp->v_vflag & VV_ROOT) &&
++		    (vp->v_mount->mnt_flag & MNT_UNION)) {
++			nvp = vp->v_mount->mnt_vnodecovered;
++			vn_lock(nvp, LK_EXCLUSIVE | LK_RETRY);
++			error = VOP_OPEN(nvp, FREAD, fp->f_cred);
++			VOP_UNLOCK(nvp);
++			if (error)
++				goto out;
++			vref(nvp);
++		}
++		if (nvp != NULL) {
++			mutex_enter(&fp->f_lock);
++			ovp = fp->f_dirvp;
++			fp->f_dirvp = nvp;
++			fp->f_offset = 0;
++			mutex_exit(&fp->f_lock);
++			if (ovp != NULL)
++				(void)vn_close(ovp, FREAD, fp->f_cred);
++			vrele(vp);
++			vp = nvp;
++			vref(vp);
+ 			goto unionread;
+-	}
+-
+-	if (count == auio.uio_resid && (vp->v_vflag & VV_ROOT) &&
+-	    (vp->v_mount->mnt_flag & MNT_UNION)) {
+-		struct vnode *tvp = vp;
+-		vp = vp->v_mount->mnt_vnodecovered;
+-		vref(vp);
+-		mutex_enter(&fp->f_lock);
+-		fp->f_vnode = vp;
+-		fp->f_offset = 0;
+-		mutex_exit(&fp->f_lock);
+-		vrele(tvp);
+-		goto unionread;
++		}
+ 	}
+ 	*done = count - auio.uio_resid;
++out:
++	vrele(vp);
+ 	return error;
+ }
+ 
+@@ -1154,7 +1184,7 @@ vn_seek(struct file *fp, off_t delta, int whence, off_t *newoffp, int flags)
+ 	const off_t OFF_MAX = __type_max(off_t);
+ 	kauth_cred_t cred = fp->f_cred;
+ 	off_t oldoff, newoff;
+-	struct vnode *vp = fp->f_vnode;
++	struct vnode *vp = fp->f_vnode, *ovp = NULL;
+ 	struct vattr vattr;
+ 	int error;
+ 
+@@ -1214,11 +1244,25 @@ vn_seek(struct file *fp, off_t delta, int whence, off_t *newoffp, int flags)
+ 	/* Success!  */
+ 	if (newoffp)
+ 		*newoffp = newoff;
+-	if (flags & FOF_UPDATE_OFFSET)
++	if (flags & FOF_UPDATE_OFFSET) {
+ 		fp->f_offset = newoff;
++		/*
++		 * Offset 0 of a directory is the start of its upper
++		 * layer, so that rewinddir(3) lists the whole union
++		 * again rather than the lower layer alone.
++		 */
++		if (vp->v_type == VDIR && newoff == 0) {
++			mutex_enter(&fp->f_lock);
++			ovp = fp->f_dirvp;
++			fp->f_dirvp = NULL;
++			mutex_exit(&fp->f_lock);
++		}
++	}
+ 	error = 0;
+ 
+ out:	VOP_UNLOCK(vp);
++	if (ovp != NULL)
++		(void)vn_close(ovp, FREAD, fp->f_cred);
+ 	return error;
+ }
+ 
+@@ -1410,6 +1454,10 @@ static int
+ vn_closefile(file_t *fp)
+ {
+ 
++	if (fp->f_dirvp != NULL) {
++		(void)vn_close(fp->f_dirvp, FREAD, fp->f_cred);
++		fp->f_dirvp = NULL;
++	}
+ 	return vn_close(fp->f_vnode, fp->f_flag, fp->f_cred);
+ }
+ 
+diff --git a/sys/sys/file.h b/sys/sys/file.h
+index 49386504..bf18650e 100644
+--- a/sys/sys/file.h
++++ b/sys/sys/file.h
+@@ -151,6 +151,7 @@ struct file {
+ 	u_int		f_msgcount;	/* references from message queue */
+ 	u_int		f_unpcount;	/* deferred close: see uipc_usrreq.c */
+ 	SLIST_ENTRY(file) f_unplist;	/* deferred close: see uipc_usrreq.c */
++	struct vnode	*f_dirvp;	/* lower layer readdir got to, or NULL */
+ };
+ 
+ #define f_vnode		f_undata.fd_vp
