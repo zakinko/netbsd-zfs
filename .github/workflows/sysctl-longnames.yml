@@ -57,4 +57,4 @@ jobs:
               -V MKDEBUG=yes -V MKX11=no -V MKCOMPAT=no \
               tools kernel=GENERIC distribution sets 2>&1 | tail -40
           ls -l ../rel/amd64/binary/sets/ ../obj/sys/arch/amd64/compile/GENERIC/netbsd
-          tar -tzf ../rel/amd64/binary/sets/base.tgz | grep -E 'libc\.so\.12\.|sbin/sysctl$'
+          tar -tJf ../rel/amd64/binary/sets/base.tar.xz | grep -E 'libc\.so\.12\.|sbin/sysctl$'
