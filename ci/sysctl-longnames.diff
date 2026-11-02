@@ -835,6 +835,19 @@ index 97c1e58f..fb78190b 100644
  		break;
  	}
  }
+diff --git a/sys/compat/freebsd/freebsd_sysctl.c b/sys/compat/freebsd/freebsd_sysctl.c
+index b3268657..cf3257b5 100644
+--- a/sys/compat/freebsd/freebsd_sysctl.c
++++ b/sys/compat/freebsd/freebsd_sysctl.c
+@@ -136,7 +136,7 @@ freebsd_sys_sysctl(struct lwp *l, const struct freebsd_sys_sysctl_args *uap, reg
+ 		new = SCARG(uap, new);
+ 		newlen = SCARG(uap, newlen);
+ 		if (new == NULL || newlen < 1 ||
+-		    newlen > (SYSCTL_NAMELEN * CTL_MAXNAME))
++		    newlen > ((SYSCTL_MAXNAMELEN + 1) * CTL_MAXNAME))
+ 			return(EINVAL);
+ 
+ 		old = SCARG(uap, old);
 diff --git a/sys/kern/kern_sysctl.c b/sys/kern/kern_sysctl.c
 index 43f47ef1..2bbf6c6e 100644
 --- a/sys/kern/kern_sysctl.c
