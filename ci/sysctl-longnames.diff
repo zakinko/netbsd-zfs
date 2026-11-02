@@ -235,7 +235,7 @@ index 3ac29a3a..eb29394a 100644
  		*l -= sz;
  	}
 diff --git a/lib/libc/gen/sysctlgetmibinfo.c b/lib/libc/gen/sysctlgetmibinfo.c
-index 985af7f4..4a4651fc 100644
+index 985af7f4..e87bbaae 100644
 --- a/lib/libc/gen/sysctlgetmibinfo.c
 +++ b/lib/libc/gen/sysctlgetmibinfo.c
 @@ -55,6 +55,7 @@ __RCSID("$NetBSD: sysctlgetmibinfo.c,v 1.16 2024/01/20 14:52:47 christos Exp $")
@@ -246,7 +246,7 @@ index 985af7f4..4a4651fc 100644
  __weak_alias(sysctlgetmibinfo,_sysctlgetmibinfo)
  #endif
  #endif
-@@ -81,6 +82,10 @@ static struct sysctlnode sysctl_mibroot = {
+@@ -81,6 +82,11 @@ static struct sysctlnode sysctl_mibroot = {
   */
  static int compar(const void *, const void *);
  static void free_children(struct sysctlnode *);
@@ -254,10 +254,11 @@ index 985af7f4..4a4651fc 100644
 +    const struct sysctlnode *, void **, size_t *);
 +static void *__sysctl_querybuf(const int *, u_int, const void *, size_t,
 +    size_t *);
++static int __sysctl_pcat(char **, size_t *, const char *);
  static void relearnhead(void);
  
  /*
-@@ -263,6 +268,123 @@ relearnhead(void)
+@@ -263,6 +269,142 @@ relearnhead(void)
  	free(o);
  }
  
@@ -355,6 +356,25 @@ index 985af7f4..4a4651fc 100644
 +}
 +
 +/*
++ * Append s to the string in *p, of *szp bytes, growing it as needed.
++ */
++static int
++__sysctl_pcat(char **p, size_t *szp, const char *s)
++{
++	size_t need = strlen(*p) + strlen(s) + 1;
++	char *np;
++
++	if (need > *szp) {
++		if ((np = realloc(*p, need)) == NULL)
++			return (-1);
++		*p = np;
++		*szp = need;
++	}
++	strlcat(*p, s, *szp);
++	return (0);
++}
++
++/*
 + * The whole name of node, a child of the node at name.  A name shorter
 + * than SYSCTL_NAMELEN - 1 bytes is whole as it is; for a longer one the
 + * children's records are fetched once into *recs, for the caller to
@@ -381,24 +401,51 @@ index 985af7f4..4a4651fc 100644
  /*
   * sucks in the children at a given level and attaches it to the tree.
   */
-@@ -412,11 +534,12 @@ sysctlgetmibinfo_unlocked(const char *gname, int *iname, u_int *namelenp,
+@@ -412,11 +554,11 @@ sysctlgetmibinfo_unlocked(const char *gname, int *iname, u_int *namelenp,
  	int name[CTL_MAXNAME], n, haven;
  	u_int ni, nl;
  	intmax_t q;
 -	char sep[2], token[SYSCTL_NAMELEN],
 -		pname[SYSCTL_NAMELEN * CTL_MAXNAME + CTL_MAXNAME];
 -	const char *piece, *dot;
-+	char sep[2], token[SYSCTL_MAXNAMELEN + 1],
-+		pname[(SYSCTL_MAXNAMELEN + 1) * CTL_MAXNAME];
-+	const char *piece, *dot, *nm;
- 	char *t;
+-	char *t;
 -	size_t l;
-+	size_t l, rlen;
++	char sep[2], *token, *pname, *t;
++	const char *piece, *dot, *nm;
++	size_t rlen, pnsz;
 +	void *recs;
++	int rv, serrno;
  
  	if (rnode != NULL) {
  		if (*rnode == NULL) {
-@@ -482,6 +605,7 @@ sysctlgetmibinfo_unlocked(const char *gname, int *iname, u_int *namelenp,
+@@ -452,6 +594,16 @@ sysctlgetmibinfo_unlocked(const char *gname, int *iname, u_int *namelenp,
+ 	if (pnode == &sysctl_mibroot)
+ 		relearnhead();
+ 
++	/*
++	 * no piece of gname is longer than gname, and the name built
++	 * from the nodes' names grows as it needs to; the length of a
++	 * name is the kernel's to limit
++	 */
++	pnsz = strlen(gname) + 2;
++	token = malloc(pnsz);
++	pname = malloc(pnsz);
++	if (token == NULL || pname == NULL)
++		goto fail;
+ 	nl = ni = 0;
+ 	token[0] = '\0';
+ 	pname[0] = '\0';
+@@ -467,7 +619,8 @@ sysctlgetmibinfo_unlocked(const char *gname, int *iname, u_int *namelenp,
+ 		sep[0] = dot[0];
+ 	sep[1] = '\0';
+ 	if (gname[0] == sep[0]) {
+-		strlcat(pname, sep, sizeof(pname));
++		if (__sysctl_pcat(&pname, &pnsz, sep) == -1)
++			goto fail;
+ 		gname++;
+ 	}
+ 
+@@ -482,25 +635,15 @@ sysctlgetmibinfo_unlocked(const char *gname, int *iname, u_int *namelenp,
  
  	piece = gname;
  	while (piece != NULL && *piece != '\0') {
@@ -406,7 +453,55 @@ index 985af7f4..4a4651fc 100644
  		/*
  		 * what was i looking for?
  		 */
-@@ -543,14 +667,18 @@ sysctlgetmibinfo_unlocked(const char *gname, int *iname, u_int *namelenp,
+ 		dot = strchr(piece, sep[0]);
+-		if (dot == NULL) {
+-			l = strlcpy(token, piece, sizeof(token));
+-			if (l > sizeof(token)) {
+-				COPY_OUT_DATA(piece, cname, csz, namelenp, nl);
+-				errno = ENAMETOOLONG;
+-				return (-1);
+-			}
+-		}
+-		else if (dot - piece > (intptr_t)(sizeof(token) - 1)) {
+-			COPY_OUT_DATA(token, cname, csz, namelenp, nl);
+-			errno = ENAMETOOLONG;
+-			return (-1);
+-		}
++		if (dot == NULL)
++			strcpy(token, piece);
+ 		else {
+-			strncpy(token, piece, (size_t)(dot - piece));
++			memcpy(token, piece, (size_t)(dot - piece));
+ 			token[dot - piece] = '\0';
+ 		}
+ 
+@@ -522,61 +665,72 @@ sysctlgetmibinfo_unlocked(const char *gname, int *iname, u_int *namelenp,
+ 		 */
+ 		if (SYSCTL_TYPE(pnode->sysctl_flags) != CTLTYPE_NODE) {
+ 			if (haven && nl > 0) {
+-				strlcat(pname, sep, sizeof(pname));
++				if (__sysctl_pcat(&pname, &pnsz, sep) == -1)
++					goto fail;
+ 				goto just_numbers;
+ 			}
+ 			COPY_OUT_DATA(token, cname, csz, namelenp, nl);
+ 			errno = ENOTDIR;
+-			return (-1);
++			goto fail;
+ 		}
+ 		if (pnode->sysctl_child == NULL) {
+ 			if (__learn_tree(name, nl, pnode) == -1) {
+ 				COPY_OUT_DATA(token, cname, csz, namelenp, nl);
+-				return (-1);
++				goto fail;
+ 			}
+ 		}
+ 		node = pnode->sysctl_child;
+ 		if (node == NULL) {
+ 			COPY_OUT_DATA(token, cname, csz, namelenp, nl);
+ 			errno = ENOENT;
+-			return (-1);
++			goto fail;
  		}
  
  		/*
@@ -426,20 +521,70 @@ index 985af7f4..4a4651fc 100644
 +			free(recs);
  			COPY_OUT_DATA(token, cname, csz, namelenp, nl);
  			errno = ENOENT;
- 			return (-1);
-@@ -568,9 +696,11 @@ sysctlgetmibinfo_unlocked(const char *gname, int *iname, u_int *namelenp,
+-			return (-1);
++			goto fail;
+ 		}
+ 
+ 		/*
+ 		 * ah...it is.
+ 		 */
+ 		pnode = &node[ni];
+-		if (nl > 0)
+-			strlcat(pname, sep, sizeof(pname));
++		if (nl > 0 && __sysctl_pcat(&pname, &pnsz, sep) == -1) {
++			free(recs);
++			goto fail;
++		}
+ 		if (haven && n != pnode->sysctl_num) {
+  just_numbers:
+-			strlcat(pname, token, sizeof(pname));
++			nm = token;
  			name[nl] = n;
  		}
  		else {
 -			strlcat(pname, pnode->sysctl_name, sizeof(pname));
 +			nm = __sysctl_fullname(name, nl, pnode, &recs, &rlen);
-+			strlcat(pname, nm, sizeof(pname));
  			name[nl] = pnode->sysctl_num;
  		}
++		rv = __sysctl_pcat(&pname, &pnsz, nm);
 +		free(recs);
++		if (rv == -1)
++			goto fail;
  		piece = (dot != NULL) ? dot + 1 : NULL;
  		nl++;
  		if (nl == CTL_MAXNAME) {
+ 			COPY_OUT_DATA(token, cname, csz, namelenp, nl);
+ 			errno = ERANGE;
+-			return (-1);
++			goto fail;
+ 		}
+ 	}
+ 
+@@ -584,7 +738,7 @@ sysctlgetmibinfo_unlocked(const char *gname, int *iname, u_int *namelenp,
+ 		if (namelenp != NULL)
+ 			*namelenp = 0;
+ 		errno = EINVAL;
+-		return (-1);
++		goto fail;
+ 	}
+ 
+ 	COPY_OUT_DATA(pname, cname, csz, namelenp, nl);
+@@ -614,5 +768,14 @@ sysctlgetmibinfo_unlocked(const char *gname, int *iname, u_int *namelenp,
+ 		}
+ 	}
+ 
+-	return (0);
++	rv = 0;
++	goto out;
++ fail:
++	rv = -1;
++ out:
++	serrno = errno;
++	free(token);
++	free(pname);
++	errno = serrno;
++	return (rv);
+ }
 diff --git a/lib/libc/include/namespace.h b/lib/libc/include/namespace.h
 index 6ac8288b..71701acc 100644
 --- a/lib/libc/include/namespace.h
@@ -463,12 +608,15 @@ index 7f35c5bd..36a288fb 100644
 -minor=224
 +minor=225
 diff --git a/sbin/sysctl/sysctl.c b/sbin/sysctl/sysctl.c
-index 97c1e58f..f905f3c6 100644
+index 97c1e58f..72ae9a8d 100644
 --- a/sbin/sysctl/sysctl.c
 +++ b/sbin/sysctl/sysctl.c
-@@ -126,8 +126,8 @@ __RCSID("$NetBSD: sysctl.c,v 1.167 2026/04/19 20:08:24 rillig Exp $");
+@@ -124,10 +124,10 @@ __RCSID("$NetBSD: sysctl.c,v 1.167 2026/04/19 20:08:24 rillig Exp $");
+  * generic routines
+  */
  static const struct handlespec *findhandler(const char *, regex_t *, size_t *);
- static void canonicalize(const char *, char *);
+-static void canonicalize(const char *, char *);
++static void canonicalize(const char *, char *, size_t);
  static void purge_tree(struct sysctlnode *);
 -static void print_tree(int *, u_int, struct sysctlnode *, u_int, int, regex_t *,
 -    size_t *);
@@ -484,7 +632,7 @@ index 97c1e58f..f905f3c6 100644
 -char gsname[SYSCTL_NAMELEN * CTL_MAXNAME + CTL_MAXNAME],
 -	canonname[SYSCTL_NAMELEN * CTL_MAXNAME + CTL_MAXNAME],
 +char gsname[(SYSCTL_MAXNAMELEN + 1) * CTL_MAXNAME],
-+	canonname[(SYSCTL_MAXNAMELEN + 1) * CTL_MAXNAME],
++	canonname[(SYSCTL_MAXNAMELEN + 1) * CTL_MAXNAME + 1],
  	gdname[10 * CTL_MAXNAME + CTL_MAXNAME];
  char sep[] = ".";
  const char *eq = " = ";
@@ -497,16 +645,51 @@ index 97c1e58f..f905f3c6 100644
  		    re, &lastcompiled);
  		/* if (argc == 0) */
  		return (0);
-@@ -443,7 +443,7 @@ static void
- canonicalize(const char *i, char *o)
+@@ -440,32 +440,28 @@ findhandler(const char *s, regex_t *re, size_t *lastcompiled)
+  * separators to / and stuff one at the front if it was missing
+  */
+ static void
+-canonicalize(const char *i, char *o)
++canonicalize(const char *i, char *o, size_t osz)
  {
  	const char *t;
 -	char p[SYSCTL_NAMELEN + 1];
-+	char p[SYSCTL_MAXNAMELEN + 1];
- 	size_t l;
+-	size_t l;
++	size_t ol;
  
- 	if (i[0] != *sep) {
-@@ -590,13 +590,15 @@ appendprintf(char **bp, size_t *lbp, const char *fmt, ...)
+-	if (i[0] != *sep) {
+-		o[0] = '/';
+-		o[1] = '\0';
+-	}
+-	else
+-		o[0] = '\0';
++	/*
++	 * the pieces of i are copied straight into o, which is never
++	 * overrun, rather than through a buffer of one name's length:
++	 * that is the kernel's to choose
++	 */
++	strlcpy(o, i[0] != *sep ? "/" : "", osz);
+ 
+ 	t = i;
+ 	do {
+ 		i = t;
+ 		t = strchr(i, sep[0]);
+ 		if (t == NULL)
+-			strcat(o, i);
++			strlcat(o, i, osz);
+ 		else {
+-			l = t - i;
++			ol = strlen(o);
++			snprintf(o + ol, osz - ol, "%.*s/", (int)(t - i), i);
+ 			t++;
+-			memcpy(p, i, l);
+-			p[l] = '\0';
+-			strcat(o, p);
+-			strcat(o, "/");
+ 		}
+ 	} while (t != NULL);
+ }
+@@ -590,13 +586,15 @@ appendprintf(char **bp, size_t *lbp, const char *fmt, ...)
   * ********************************************************************
   */
  static void
@@ -525,7 +708,7 @@ index 97c1e58f..f905f3c6 100644
  	const struct handlespec *p;
  
  	sp = tsp = &gsname[strlen(gsname)];
-@@ -617,7 +619,7 @@ print_tree(int *name, u_int namelen, struct sysctlnode *pnode, u_int type,
+@@ -617,7 +615,7 @@ print_tree(int *name, u_int namelen, struct sysctlnode *pnode, u_int type,
  		pnode = &my_root;
  	else if (add) {
  		appendprintf(&tsp, &lsp, "%s%s", namelen > 1 ? sep : "", 
@@ -534,7 +717,16 @@ index 97c1e58f..f905f3c6 100644
  		appendprintf(&tdp, &ldp, "%s%d", namelen > 1 ? "." : "", 
  			pnode->sysctl_num);
  	}
-@@ -737,15 +739,32 @@ print_tree(int *name, u_int namelen, struct sysctlnode *pnode, u_int type,
+@@ -685,7 +683,7 @@ print_tree(int *name, u_int namelen, struct sysctlnode *pnode, u_int type,
+ 		return;
+ 	}
+ 
+-	canonicalize(gsname, canonname);
++	canonicalize(gsname, canonname, sizeof(canonname));
+ 	p = findhandler(canonname, re, lastcompiled);
+ 	if (type != CTLTYPE_NODE && p != NULL) {
+ 		if (p->ps_p == NULL) {
+@@ -737,15 +735,32 @@ print_tree(int *name, u_int namelen, struct sysctlnode *pnode, u_int type,
  				 */
  				getdesc(name, namelen, pnode);
  			req = 0;
@@ -568,7 +760,7 @@ index 97c1e58f..f905f3c6 100644
  		}
  		break;
  	}
-@@ -910,7 +929,8 @@ parse(char *l, regex_t *re, size_t *lastcompiled)
+@@ -910,7 +925,8 @@ parse(char *l, regex_t *re, size_t *lastcompiled)
  	if (value == NULL) {
  		if (dodesc)
  			dflag = 1;
@@ -578,7 +770,16 @@ index 97c1e58f..f905f3c6 100644
  		if (dodesc)
  			dflag = 0;
  		gsname[0] = '\0';
-@@ -954,7 +974,8 @@ parse(char *l, regex_t *re, size_t *lastcompiled)
+@@ -925,7 +941,7 @@ parse(char *l, regex_t *re, size_t *lastcompiled)
+ 		exit(EXIT_FAILURE);
+ 	}
+ 
+-	canonicalize(gsname, canonname);
++	canonicalize(gsname, canonname, sizeof(canonname));
+ 	if (type != CTLTYPE_NODE && (w = findhandler(canonname, re,
+ 	    lastcompiled)) != NULL) {
+ 		if (w->ps_w == NULL) {
+@@ -954,7 +970,8 @@ parse(char *l, regex_t *re, size_t *lastcompiled)
  		 * XXX old behavior is to print.  should we error instead?
  		 */
  		/* fprintf(warnfp, "you can't write to %s\n", gsname); */
