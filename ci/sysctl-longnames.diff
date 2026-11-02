@@ -85,7 +85,7 @@ index afd8c9a3..1b181b09 100644
  	syslog.3 vsyslog.3
  MLINKS+=syslog.3 closelog_r.3 syslog.3 openlog_r.3 syslog.3 setlogmask_r.3 \
 diff --git a/lib/libc/gen/sysctl.3 b/lib/libc/gen/sysctl.3
-index d3c4e00a..2d376607 100644
+index d3c4e00a..179905c4 100644
 --- a/lib/libc/gen/sysctl.3
 +++ b/lib/libc/gen/sysctl.3
 @@ -29,7 +29,7 @@
@@ -116,7 +116,7 @@ index d3c4e00a..2d376607 100644
  .Sh DESCRIPTION
  The
  .Nm
-@@ -355,6 +358,45 @@ is using.
+@@ -355,6 +358,51 @@ is using.
  All dynamic operations passing nodes into sysctl require that the
  version be explicitly specified.
  .Pp
@@ -135,7 +135,13 @@ index d3c4e00a..2d376607 100644
 +.Vt struct sysctlrec
 +records, each the node followed by the whole name, which
 +.Fn NEXT_SYSCTLREC
-+steps through:
++steps through.
++The node in a record carries none of the kernel's pointers:
++.Fa sysctl_func ,
++.Fa sysctl_parent ,
++.Fa sysctl_desc
++and the child or data pointer are
++.Dv NULL :
 +.Pp
 +.Bd -literal -offset indent -compact
 +struct sysctlrec {
@@ -235,7 +241,7 @@ index 3ac29a3a..eb29394a 100644
  		*l -= sz;
  	}
 diff --git a/lib/libc/gen/sysctlgetmibinfo.c b/lib/libc/gen/sysctlgetmibinfo.c
-index 985af7f4..e87bbaae 100644
+index 985af7f4..6907b641 100644
 --- a/lib/libc/gen/sysctlgetmibinfo.c
 +++ b/lib/libc/gen/sysctlgetmibinfo.c
 @@ -55,6 +55,7 @@ __RCSID("$NetBSD: sysctlgetmibinfo.c,v 1.16 2024/01/20 14:52:47 christos Exp $")
@@ -246,7 +252,7 @@ index 985af7f4..e87bbaae 100644
  __weak_alias(sysctlgetmibinfo,_sysctlgetmibinfo)
  #endif
  #endif
-@@ -81,6 +82,11 @@ static struct sysctlnode sysctl_mibroot = {
+@@ -81,6 +82,12 @@ static struct sysctlnode sysctl_mibroot = {
   */
  static int compar(const void *, const void *);
  static void free_children(struct sysctlnode *);
@@ -255,10 +261,11 @@ index 985af7f4..e87bbaae 100644
 +static void *__sysctl_querybuf(const int *, u_int, const void *, size_t,
 +    size_t *);
 +static int __sysctl_pcat(char **, size_t *, const char *);
++static int __sysctl_recs_ok(const void *, size_t);
  static void relearnhead(void);
  
  /*
-@@ -263,6 +269,142 @@ relearnhead(void)
+@@ -263,6 +270,176 @@ relearnhead(void)
  	free(o);
  }
  
@@ -319,6 +326,11 @@ index 985af7f4..e87bbaae 100644
 +	q.rec_len = (uint32_t)__sysc_rec_len(1);
 +	buf = __sysctl_querybuf(qname, (u_int)namelen + 1, &q, q.rec_len, &sz);
 +	if (buf != NULL) {
++		if (__sysctl_recs_ok(buf, sz) == -1) {
++			free(buf);
++			errno = EINVAL;
++			return (NULL);
++		}
 +		*lenp = sz;
 +		return (buf);
 +	}
@@ -375,10 +387,39 @@ index 985af7f4..e87bbaae 100644
 +}
 +
 +/*
++ * Whether buf, of len bytes, is SYSCTL_VERS_2 records end to end, each
++ * long enough for its name and ending its name with a nul, so that
++ * NEXT_SYSCTLREC() and rec_name can be used without further checks.
++ */
++static int
++__sysctl_recs_ok(const void *buf, size_t len)
++{
++	const struct sysctlrec *r;
++	const char *p = buf, *end = p + len;
++
++	while (p < end) {
++		if ((size_t)(end - p) < offsetof(struct sysctlrec, rec_name))
++			return (-1);
++		r = (const void *)p;
++		if (r->rec_namelen == 0 ||
++		    r->rec_namelen > (size_t)(end - p) ||
++		    r->rec_len < __sysc_rec_len(r->rec_namelen) ||
++		    r->rec_len > (size_t)(end - p) ||
++		    (r->rec_len & 7) != 0 ||
++		    r->rec_name[r->rec_namelen - 1] != '\0')
++			return (-1);
++		p += r->rec_len;
++	}
++	return (0);
++}
++
++/*
 + * The whole name of node, a child of the node at name.  A name shorter
 + * than SYSCTL_NAMELEN - 1 bytes is whole as it is; for a longer one the
 + * children's records are fetched once into *recs, for the caller to
-+ * free, and the name is taken from there.
++ * free, and the name is taken from there.  NULL if it cannot be had:
++ * the name in the node may be cut short, and comparing that could match
++ * the wrong node.
 + */
 +static const char *
 +__sysctl_fullname(const int *name, u_int namelen,
@@ -390,18 +431,18 @@ index 985af7f4..e87bbaae 100644
 +		return (node->sysctl_name);
 +	if (*recs == NULL &&
 +	    (*recs = asysctlquery(name, namelen, rlen)) == NULL)
-+		return (node->sysctl_name);
++		return (NULL);
 +	end = (void *)((char *)*recs + *rlen);
-+	for (r = *recs; r < end && r->rec_len != 0; r = NEXT_SYSCTLREC(r))
++	for (r = *recs; r < end; r = NEXT_SYSCTLREC(r))
 +		if (r->rec_node.sysctl_num == node->sysctl_num)
 +			return (r->rec_name);
-+	return (node->sysctl_name);
++	return (NULL);
 +}
 +
  /*
   * sucks in the children at a given level and attaches it to the tree.
   */
-@@ -412,11 +554,11 @@ sysctlgetmibinfo_unlocked(const char *gname, int *iname, u_int *namelenp,
+@@ -412,11 +589,11 @@ sysctlgetmibinfo_unlocked(const char *gname, int *iname, u_int *namelenp,
  	int name[CTL_MAXNAME], n, haven;
  	u_int ni, nl;
  	intmax_t q;
@@ -418,7 +459,7 @@ index 985af7f4..e87bbaae 100644
  
  	if (rnode != NULL) {
  		if (*rnode == NULL) {
-@@ -452,6 +594,16 @@ sysctlgetmibinfo_unlocked(const char *gname, int *iname, u_int *namelenp,
+@@ -452,6 +629,16 @@ sysctlgetmibinfo_unlocked(const char *gname, int *iname, u_int *namelenp,
  	if (pnode == &sysctl_mibroot)
  		relearnhead();
  
@@ -435,7 +476,7 @@ index 985af7f4..e87bbaae 100644
  	nl = ni = 0;
  	token[0] = '\0';
  	pname[0] = '\0';
-@@ -467,7 +619,8 @@ sysctlgetmibinfo_unlocked(const char *gname, int *iname, u_int *namelenp,
+@@ -467,7 +654,8 @@ sysctlgetmibinfo_unlocked(const char *gname, int *iname, u_int *namelenp,
  		sep[0] = dot[0];
  	sep[1] = '\0';
  	if (gname[0] == sep[0]) {
@@ -445,7 +486,7 @@ index 985af7f4..e87bbaae 100644
  		gname++;
  	}
  
-@@ -482,25 +635,15 @@ sysctlgetmibinfo_unlocked(const char *gname, int *iname, u_int *namelenp,
+@@ -482,25 +670,15 @@ sysctlgetmibinfo_unlocked(const char *gname, int *iname, u_int *namelenp,
  
  	piece = gname;
  	while (piece != NULL && *piece != '\0') {
@@ -475,7 +516,7 @@ index 985af7f4..e87bbaae 100644
  			token[dot - piece] = '\0';
  		}
  
-@@ -522,61 +665,72 @@ sysctlgetmibinfo_unlocked(const char *gname, int *iname, u_int *namelenp,
+@@ -522,61 +700,77 @@ sysctlgetmibinfo_unlocked(const char *gname, int *iname, u_int *namelenp,
  		 */
  		if (SYSCTL_TYPE(pnode->sysctl_flags) != CTLTYPE_NODE) {
  			if (haven && nl > 0) {
@@ -514,8 +555,8 @@ index 985af7f4..e87bbaae 100644
  			if ((haven && ((n == node[ni].sysctl_num) ||
  			    (node[ni].sysctl_flags & CTLFLAG_ANYNUMBER))) ||
 -			    strcmp(token, node[ni].sysctl_name) == 0)
-+			    strcmp(token, __sysctl_fullname(name, nl,
-+			    &node[ni], &recs, &rlen)) == 0)
++			    ((nm = __sysctl_fullname(name, nl, &node[ni],
++			    &recs, &rlen)) != NULL && strcmp(token, nm) == 0))
  				break;
  		if (ni >= pnode->sysctl_clen) {
 +			free(recs);
@@ -544,6 +585,11 @@ index 985af7f4..e87bbaae 100644
  		else {
 -			strlcat(pname, pnode->sysctl_name, sizeof(pname));
 +			nm = __sysctl_fullname(name, nl, pnode, &recs, &rlen);
++			if (nm == NULL) {
++				free(recs);
++				errno = ENOENT;
++				goto fail;
++			}
  			name[nl] = pnode->sysctl_num;
  		}
 +		rv = __sysctl_pcat(&pname, &pnsz, nm);
@@ -560,7 +606,7 @@ index 985af7f4..e87bbaae 100644
  		}
  	}
  
-@@ -584,7 +738,7 @@ sysctlgetmibinfo_unlocked(const char *gname, int *iname, u_int *namelenp,
+@@ -584,7 +778,7 @@ sysctlgetmibinfo_unlocked(const char *gname, int *iname, u_int *namelenp,
  		if (namelenp != NULL)
  			*namelenp = 0;
  		errno = EINVAL;
@@ -569,7 +615,7 @@ index 985af7f4..e87bbaae 100644
  	}
  
  	COPY_OUT_DATA(pname, cname, csz, namelenp, nl);
-@@ -614,5 +768,14 @@ sysctlgetmibinfo_unlocked(const char *gname, int *iname, u_int *namelenp,
+@@ -614,5 +808,14 @@ sysctlgetmibinfo_unlocked(const char *gname, int *iname, u_int *namelenp,
  		}
  	}
  
@@ -608,7 +654,7 @@ index 7f35c5bd..36a288fb 100644
 -minor=224
 +minor=225
 diff --git a/sbin/sysctl/sysctl.c b/sbin/sysctl/sysctl.c
-index 97c1e58f..72ae9a8d 100644
+index 97c1e58f..fb78190b 100644
 --- a/sbin/sysctl/sysctl.c
 +++ b/sbin/sysctl/sysctl.c
 @@ -124,10 +124,10 @@ __RCSID("$NetBSD: sysctl.c,v 1.167 2026/04/19 20:08:24 rillig Exp $");
@@ -745,8 +791,8 @@ index 97c1e58f..72ae9a8d 100644
  					continue;
 -				print_tree(name, namelen + 1, &node[ni],
 +				cname = NULL;
-+				for (r = recs; r != NULL && r < rend &&
-+				    r->rec_len != 0; r = NEXT_SYSCTLREC(r))
++				for (r = recs; r != NULL && r < rend;
++				    r = NEXT_SYSCTLREC(r))
 +					if (r->rec_node.sysctl_num ==
 +					    node[ni].sysctl_num) {
 +						cname = r->rec_name;
@@ -790,7 +836,7 @@ index 97c1e58f..72ae9a8d 100644
  	}
  }
 diff --git a/sys/kern/kern_sysctl.c b/sys/kern/kern_sysctl.c
-index 43f47ef1..6bb7c116 100644
+index 43f47ef1..2bbf6c6e 100644
 --- a/sys/kern/kern_sysctl.c
 +++ b/sys/kern/kern_sysctl.c
 @@ -106,7 +106,7 @@ static int sysctl_alloc(struct sysctlnode *, int);
@@ -862,6 +908,15 @@ index 43f47ef1..6bb7c116 100644
  		return SET_ERROR(EINVAL);
  
  	/*
+@@ -928,7 +932,7 @@ sysctl_create(SYSCTLFN_ARGS)
+ 			return SET_ERROR(EINVAL);
+ 		if (flags & CTLFLAG_OWNDATA)
+ 			return SET_ERROR(EINVAL);
+-		sz = sizeof(struct sysctlnode);
++		sz = sizeof(struct sysctlnode_v1);
+ 		break;
+ 	case CTLTYPE_INT:
+ 		/*
 @@ -1181,8 +1185,9 @@ sysctl_create(SYSCTLFN_ARGS)
  	node = &node[at];
  	pnode->sysctl_clen++;
@@ -926,7 +981,29 @@ index 43f47ef1..6bb7c116 100644
  	return error;
  }
  
-@@ -1718,6 +1731,7 @@ sysctl_describe(SYSCTLFN_ARGS)
+@@ -1662,7 +1675,8 @@ sysctl_mmap(SYSCTLFN_ARGS)
+ {
+ 	const struct sysctlnode *node;
+ 	struct sysctlnode nnode;
+-	int error;
++	char nname[SYSCTL_MAXNAMELEN + 1];
++	int error, v;
+ 	int sysctl_num;
+ 
+ 	if (SYSCTL_VERS(rnode->sysctl_flags) != SYSCTL_VERSION) {
+@@ -1679,9 +1693,9 @@ sysctl_mmap(SYSCTLFN_ARGS)
+ 	/*
+ 	 * is this a sysctlnode description of an mmap request?
+ 	 */
+-	if (newp == NULL || newlen != sizeof(struct sysctlnode))
++	if (newp == NULL)
+ 		return SET_ERROR(EINVAL);
+-	error = sysctl_copyin(l, newp, &nnode, sizeof(nnode));
++	error = sysctl_cvt_in(l, &v, newp, newlen, &nnode, nname);
+ 	if (error)
+ 		return error;
+ 
+@@ -1718,6 +1732,7 @@ sysctl_describe(SYSCTLFN_ARGS)
  	int i, error, v = -1;
  	struct sysctlnode *node;
  	struct sysctlnode dnode;
@@ -934,7 +1011,7 @@ index 43f47ef1..6bb7c116 100644
  
  	if (SYSCTL_VERS(rnode->sysctl_flags) != SYSCTL_VERSION) {
  		printf("sysctl_query: rnode %p wrong version\n", rnode);
-@@ -1746,7 +1760,7 @@ sysctl_describe(SYSCTLFN_ARGS)
+@@ -1746,7 +1761,7 @@ sysctl_describe(SYSCTLFN_ARGS)
  	 * request with desc set -> set descr for this node
  	 */
  	if (newp != NULL) {
@@ -943,7 +1020,7 @@ index 43f47ef1..6bb7c116 100644
  		if (error)
  			goto out;
  		if (dnode.sysctl_desc != NULL) {
-@@ -2028,9 +2042,9 @@ sysctl_createv(struct sysctllog **log, int cflags,
+@@ -2028,9 +2043,9 @@ sysctl_createv(struct sysctllog **log, int cflags,
  	/*
  	 * what's it called
  	 */
@@ -955,7 +1032,7 @@ index 43f47ef1..6bb7c116 100644
  
  	/*
  	 * cons up the description of the new node
-@@ -2377,6 +2391,9 @@ sysctl_free(struct sysctlnode *rnode)
+@@ -2377,6 +2392,9 @@ sysctl_free(struct sysctlnode *rnode)
  						node->sysctl_desc = NULL;
  					}
  				}
@@ -965,7 +1042,7 @@ index 43f47ef1..6bb7c116 100644
  				node++;
  			}
  			if (node < &pnode->sysctl_child[pnode->sysctl_clen]) {
-@@ -2781,15 +2798,42 @@ sysctl_log_realloc(struct sysctllog *log)
+@@ -2781,15 +2799,42 @@ sysctl_log_realloc(struct sysctllog *log)
   * Section 6: Conversion between API versions wrt the sysctlnode
   * ********************************************************************
   */
@@ -1009,7 +1086,7 @@ index 43f47ef1..6bb7c116 100644
  	error = sysctl_copyin(l, i, &flags, sizeof(flags));
  	if (error)
  		return error;
-@@ -2798,43 +2842,134 @@ sysctl_cvt_in(struct lwp *l, int *vp, const void *i, size_t sz,
+@@ -2798,43 +2843,148 @@ sysctl_cvt_in(struct lwp *l, int *vp, const void *i, size_t sz,
  #error sysctl_cvt_in: no support for SYSCTL_VERSION
  #endif /*  (SYSCTL_VERSION != SYSCTL_VERS_1) */
  
@@ -1117,11 +1194,11 @@ index 43f47ef1..6bb7c116 100644
 +	switch (v) {
 +	case SYSCTL_VERS_1:
 +		sz = sizeof(*onode);
-+		break;
+ 		break;
 +	case SYSCTL_VERS_2:
 +		nl = strlen(i->sysctl_name) + 1;
 +		sz = __sysc_rec_len(nl);
- 		break;
++		break;
 +	default:
 +		return SET_ERROR(EINVAL);
  	}
@@ -1143,6 +1220,20 @@ index 43f47ef1..6bb7c116 100644
 +		onode->sysctl_parent = (struct sysctlnode_v1 *)(void *)
 +		    i->sysctl_parent;
 +		onode->sysctl_desc = i->sysctl_desc;
++		/*
++		 * SYSCTL_VERS_1 has always handed out the kernel's
++		 * pointers in the node; the records leave them out
++		 */
++		if (v == SYSCTL_VERS_2) {
++			onode->sysctl_func = NULL;
++			onode->sysctl_parent = NULL;
++			onode->sysctl_desc = NULL;
++			if (SYSCTL_TYPE(i->sysctl_flags) == CTLTYPE_NODE) {
++				if (!(i->sysctl_flags & CTLFLAG_ALIAS))
++					onode->sysctl_child = NULL;
++			} else if (!(i->sysctl_flags & CTLFLAG_IMMEDIATE))
++				onode->sysctl_data = NULL;
++		}
 +		if (v == SYSCTL_VERS_1) {
 +			error = sysctl_copyout(l, onode, ovp, sz);
 +			if (error)
