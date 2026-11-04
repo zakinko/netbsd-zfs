@@ -21,7 +21,7 @@ jobs:
             python3-setuptools linux-headers-$(uname -r) nfs4-acl-tools attr vim rsync
       - name: Build
         run: |
-          git clone -q --depth 1 -b linux-chmodwrite https://github.com/zakinko/zfs zfs
+          git clone -q --depth 1 -b linux-aclownerdeny https://github.com/zakinko/zfs zfs
           cd zfs; git log -1 --format='%h %s'
           ./autogen.sh
           ./configure --enable-debug --with-config=all > configure.log

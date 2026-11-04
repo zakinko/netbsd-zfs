@@ -78,22 +78,23 @@ echo pub > $a/p; chown root:root $a/p; chmod 644 $a/p; cat $a/p >/dev/null
 as ou "stat -c %A $a/p"; as ou "cat $a/p"
 mkdir /tank/s/pl; chmod 700 /tank/s/pl; echo pub > /tank/s/pl/p; chmod 644 /tank/s/pl/p; cat /tank/s/pl/p >/dev/null
 as ou "stat -c %A /tank/s/pl/p"; as ou "cat /tank/s/pl/p"
-echo '##### suiddir and chmodwrite'
-useradd -m -u 3007 -s /bin/sh so
-zfs set suiddir=on tank/s
-g=/tank/s/gate; mkdir $g; chmod 755 $g
-d=$g/share; mkdir $d; chown so:so $d; chmod 4755 $d
-sed 's/A:fdg:2002:.*/A:fdg:2002:rwaDdxtTnNcy/; /^D:/d' /var/tmp/acl > /var/tmp/acl2; nfs4_setfacl -S /var/tmp/acl2 $d; echo "  setfacl rc=$?"
-t2() { f=$d/f; for t in \
- "vim -u NONE --cmd 'set backupcopy=no' -es -c 'normal Ay' -c wq $f" \
- "sh -c 'echo new > $d/t && mv $d/t $f'" "rsync -a /var/tmp/src $f" "tar -xpf /var/tmp/t.tar -C $d" \
- "install -m 640 /var/tmp/src $f" "cp -p /var/tmp/src $f" "chmod 666 $f" "nfs4_setfacl -a A:g:2003:rw $f"; do
-	rm -f $f; su -s /bin/sh te -c "umask 022; echo a > $f"; pst $f
-	as t2 "$t"; echo "  content: $(tr '\n' '|' < $f 2>/dev/null | cut -c1-30)"; rights $f
-done; }
-echo '--- chmodwrite off'; t2
-zfs set chmodwrite=on tank/s
-echo '--- chmodwrite on'; t2
-su -s /bin/sh te -c "echo a > $d/h"; a0=$(nfs4_getfacl $d/h | wc -l); as t2 "chmod 6777 $d/h"; pst $d/h; rights $d/h; echo "  acl lines $a0 -> $(nfs4_getfacl $d/h | wc -l)"
-as st "chmod 666 $d/h"
+echo '##### aclownerdeny'
+d=/tank/s/od; mkdir $d; chmod 755 $d; cp /var/tmp/acl /var/tmp/acl3; sed -i 's/A:fdg:2002:.*/A:fdg:2002:rwaDdxtTnNcy/' /var/tmp/acl3; nfs4_setfacl -S /var/tmp/acl3 $d
+for v in off on; do echo "--- aclownerdeny=$v"; zfs set aclownerdeny=$v tank/s; zfs get -H -o value aclownerdeny tank/s
+ f=$d/f; fresh $f; pst $f
+ as te "nfs4_setfacl -a A:g:2003:rw $f"; rights $f
+ fresh $f; as te "chmod 600 $f"; pst $f; echo "  named $(named $f)"; rights $f
+ as te "chmod 644 $f"
+ for t in "rsync -a /var/tmp/src $f" "tar -xpf /var/tmp/t.tar -C $d" "install -m 640 /var/tmp/src $f" "cp -p /var/tmp/src $f" "sh -c 'echo new > $d/t && mv $d/t $f'"; do
+  fresh $f; as t2 "$t"; pst $f; echo "  content: $(tr '\n' '|' < $f | cut -c1-20) named $(named $f)"
+ done
+ echo '  -- renamed-in owner t2 tries the ACL'
+ fresh $f; as t2 "sh -c 'echo n > $d/t && mv $d/t $f'"; pst $f; as t2 "nfs4_setfacl -a A:g:2003:rw $f"; rights $f
+ nfs4_setfacl -a A:g:2003:r $f; echo "  root rc=$?"
+ setpriv --reuid 0 --bounding-set -all --inh-caps -all --ambient-caps -all nfs4_setfacl -a A:g:2003:r $d/f 2>&1 | head -2; echo "  root without caps rc=$?"
+done
+echo '--- deny on EVERYONE@'
+zfs set aclownerdeny=on tank/s; b2=/tank/s/ev; mkdir $b2; chmod 777 $b2; fresh $b2/f
+nfs4_setfacl -a D::EVERYONE@:C $b2/f; as te "nfs4_setfacl -a A:g:2003:rw $b2/f"; as te "chmod 644 $b2/f"; as te "nfs4_setfacl -a A:g:2003:rw $b2/f"; nfs4_getfacl $b2/f | grep -v '^#' | head -4
+zfs set aclownerdeny=off tank/s
 echo '##### done'

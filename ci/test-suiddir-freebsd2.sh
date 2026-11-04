@@ -53,5 +53,10 @@ for v in off on; do echo "--- aclownerdeny=$v"; zfs set aclownerdeny=$v tank/s; 
  rm -f $f; su -m te -c "umask 022; echo a > $f"; as t2 "sh -c 'echo n > $d/t && mv $d/t $f'"; stat -f '  mode %Sp owner %Su' $f; as t2 "setfacl -m g:students:rw::allow $f"; rights $f
  as ad "setfacl -m g:students:r::allow $f"; setfacl -m g:students:r::allow $f; echo "  root rc=$?"
 done
+echo '--- deny on everyone@ does not survive chmod (expected bypass)'
+zfs set aclownerdeny=on tank/s
+b2=/tank/s/ev; mkdir $b2; chmod 777 $b2; rm -f $b2/f; su -m te -c "umask 022; echo a > $b2/f"
+setfacl -m "everyone@:C::deny" $b2/f; getfacl -q $b2/f | head -3
+as te "setfacl -m g:students:rw::allow $b2/f"; as te "chmod 644 $b2/f"; as te "setfacl -m g:students:rw::allow $b2/f"; getfacl -q $b2/f | head -3
 zfs set aclownerdeny=off tank/s
 echo '##### done'
