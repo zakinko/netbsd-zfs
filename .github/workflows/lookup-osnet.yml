@@ -1,0 +1,20 @@
+name: lookup-osnet
+on:
+  push:
+    branches: [acl-passthrough-test]
+    paths: ['ci/test-lookup-osnet.sh', '.github/workflows/lookup-osnet.yml']
+concurrency:
+  group: lookup-osnet
+  cancel-in-progress: true
+jobs:
+  netbsd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: vmactions/netbsd-vm@v1
+        with:
+          release: '11.0'
+          sync: rsync
+          run: |
+            sh ci/test-lookup-osnet.sh 2>&1
