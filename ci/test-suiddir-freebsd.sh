@@ -6,7 +6,7 @@ fetch -q -o src.txz https://download.freebsd.org/releases/amd64/15.0-RELEASE/src
 tar xJf src.txz -C / usr/src/sys usr/src/include 2>/dev/null; ls /usr/src/sys | head -2
 git clone -q --depth 1 -b suiddir https://github.com/zakinko/zfs zfs; git -C zfs log -1 --format='%h %s'
 cd zfs || exit 1
-(sh autogen.sh && ./configure --with-config=all && gmake -j4 && gmake install) > $W/b.log 2>&1; echo "build rc=$?"; tail -3 $W/b.log
+(sh autogen.sh && MAKE=gmake ./configure --with-config=all && gmake -j4 && gmake install) > $W/b.log 2>&1; echo "build rc=$?"; tail -3 $W/b.log
 ls -l module/openzfs.ko || { grep -n ' error' $W/b.log | head; exit 1; }
 kldunload zfs 2>/dev/null; kldload ./module/openzfs.ko; echo "kld rc=$?"; kldstat | grep -i zfs
 export PATH=/usr/local/sbin:/usr/local/bin:$PATH LD_LIBRARY_PATH=/usr/local/lib
@@ -60,6 +60,10 @@ tools2() { f=$d/f; for t in \
 	echo "  content: $(tr '\n' '|' < $f | cut -c1-30)"; rights $f
 done; }
 tools2
+echo '--- same tools, teachers with write_acl'
+d0=$d; d=$g/sharewa; mkdir $d; chown so:wheel $d; chmod 4755 $d
+setfacl -m "$base,g:teachers:rwxpDdaARWcCs:fd:allow,g:students:rxaRcs:fd:allow" $d
+tools2; d=$d0
 echo '--- creator cannot touch the ACL or mode of what they made'
 rm -f $d/m; su -m te -c "echo a > $d/m"; as te "chmod 666 $d/m"; as te "setfacl -m g:students:rw::allow $d/m"; rights $d/m; getfacl -q $d/m | head -5
 echo '--- execute and subdirectory'

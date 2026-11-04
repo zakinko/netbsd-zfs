@@ -124,6 +124,10 @@ tools2() { f=$d/f; for t in \
 	echo "  content: $(tr '\n' '|' < $f | cut -c1-30)"; rights $f
 done; }
 tools2
+echo '--- same tools, teachers with write_acl'
+d0=$d; d=$g/sharewa; mkdir $d; chown so:wheel $d; chmod 4755 $d
+setfacl -m "$base,g:teachers:rwxpDdaARWcCs:fd:allow,g:students:rxaRcs:fd:allow" $d
+tools2; d=$d0
 echo '--- creator cannot touch the ACL or mode of what they made'
 rm -f $d/m; su -m te -c "echo a > $d/m"; as te "chmod 666 $d/m"; as te "setfacl -m g:students:rw::allow $d/m"; rights $d/m; getfacl -q $d/m | head -5
 echo '--- execute and subdirectory'
