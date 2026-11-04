@@ -59,7 +59,7 @@ jobs:
           ps -ef | grep -E 'qemu' | grep -v grep | cut -c1-900 || true
           ls -la /tmp ~/.anyvm* 2>/dev/null | tail -30 || true
           sleep 150
-          ssh -o ConnectTimeout=20 netbsd "uptime; dmesg | grep -iE -A25 'panic|fatal' | tail -60; dmesg | tail -5; mkdir -p /var/crash; savecore /var/crash; ls -la /var/crash; gunzip -f /var/crash/netbsd.*.gz; c=\$(ls -t /var/crash/netbsd.*.core | head -1); [ -n \"\$c\" ] && printf 'ps\\n' | crash -M \$c -N \${c%.core} 2>&1 | tail -70 | cut -c1-90; tar czf /var/tmp/res.tgz -C /var/tmp test_results" 2>&1 || true
+          ssh -o ConnectTimeout=20 netbsd "uptime; dmesg | grep -iE -A25 'panic|fatal' | tail -60; dmesg | tail -5; mkdir -p /var/crash; savecore /var/crash; ls -la /var/crash; gunzip -f /var/crash/netbsd.*.gz; c=\$(ls -t /var/crash/netbsd.*.core | head -1); [ -n \"\$c\" ] && printf 'ps\\n' | crash -M \$c -N \${c%.core} 2>&1 | grep -v ' 0  *[0-9]* [0-9]  *[0-9]  *[0-9]* ' | head -50 | cut -c1-90; tar czf /var/tmp/res.tgz -C /var/tmp test_results" 2>&1 || true
           scp -o ConnectTimeout=20 netbsd:/var/tmp/res.tgz . || true
       - uses: actions/upload-artifact@v4
         if: always()
