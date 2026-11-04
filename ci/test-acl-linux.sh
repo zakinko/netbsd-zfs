@@ -78,4 +78,22 @@ echo pub > $a/p; chown root:root $a/p; chmod 644 $a/p; cat $a/p >/dev/null
 as ou "stat -c %A $a/p"; as ou "cat $a/p"
 mkdir /tank/s/pl; chmod 700 /tank/s/pl; echo pub > /tank/s/pl/p; chmod 644 /tank/s/pl/p; cat /tank/s/pl/p >/dev/null
 as ou "stat -c %A /tank/s/pl/p"; as ou "cat /tank/s/pl/p"
+echo '##### suiddir and chmodwrite'
+useradd -m -u 3007 -s /bin/sh so
+zfs set suiddir=on tank/s
+g=/tank/s/gate; mkdir $g; chmod 755 $g
+d=$g/share; mkdir $d; chown so:so $d; chmod 4755 $d
+sed 's/A:fdg:2002:.*/A:fdg:2002:rwaDdxtTnNcy/; /^D:/d' /var/tmp/acl > /var/tmp/acl2; nfs4_setfacl -S /var/tmp/acl2 $d; echo "  setfacl rc=$?"
+t2() { f=$d/f; for t in \
+ "vim -u NONE --cmd 'set backupcopy=no' -es -c 'normal Ay' -c wq $f" \
+ "sh -c 'echo new > $d/t && mv $d/t $f'" "rsync -a /var/tmp/src $f" "tar -xpf /var/tmp/t.tar -C $d" \
+ "install -m 640 /var/tmp/src $f" "cp -p /var/tmp/src $f" "chmod 666 $f" "nfs4_setfacl -a A:g:2003:rw $f"; do
+	rm -f $f; su -s /bin/sh te -c "umask 022; echo a > $f"; pst $f
+	as t2 "$t"; echo "  content: $(tr '\n' '|' < $f 2>/dev/null | cut -c1-30)"; rights $f
+done; }
+echo '--- chmodwrite off'; t2
+zfs set chmodwrite=on tank/s
+echo '--- chmodwrite on'; t2
+su -s /bin/sh te -c "echo a > $d/h"; a0=$(nfs4_getfacl $d/h | wc -l); as t2 "chmod 6777 $d/h"; pst $d/h; rights $d/h; echo "  acl lines $a0 -> $(nfs4_getfacl $d/h | wc -l)"
+as st "chmod 666 $d/h"
 echo '##### done'
