@@ -59,7 +59,7 @@ jobs:
           ps -ef | grep -E 'qemu' | grep -v grep | cut -c1-900 || true
           ls -la /tmp ~/.anyvm* 2>/dev/null | tail -30 || true
           sleep 150
-          ssh -o ConnectTimeout=20 netbsd "uptime; dmesg | grep -iE -A25 'panic|fatal' | tail -60; dmesg | tail -30; tar czf /var/tmp/res.tgz -C /var/tmp test_results" 2>&1 || true
+          ssh -o ConnectTimeout=20 netbsd "uptime; dmesg | grep -iE -A25 'panic|fatal' | tail -60; dmesg | tail -5; mkdir -p /var/crash; savecore /var/crash; ls -la /var/crash; for c in /var/crash/netbsd.*.core*; do [ -f \"\$c\" ] && gunzip -f \"\$c\" 2>/dev/null; done; c=\$(ls -t /var/crash/netbsd.*.core | head -1); [ -n \"\$c\" ] && printf 'ps\\ntrace\\n' | crash -M \$c -N \${c%.core} 2>&1 | grep -E -i ' (R|O|7) |zfs|zpool|find|lua|vnd|mv ' | head -60; tar czf /var/tmp/res.tgz -C /var/tmp test_results" 2>&1 || true
           scp -o ConnectTimeout=20 netbsd:/var/tmp/res.tgz . || true
       - uses: actions/upload-artifact@v4
         if: always()

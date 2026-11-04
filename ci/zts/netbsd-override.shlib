@@ -33,3 +33,15 @@ function get_num_cpus
 {
 	sysctl -n hw.ncpu
 }
+
+# NetBSD's setextattr -i names a value file; FreeBSD's reads stdin.
+function set_xattr_stdin # name path
+{
+	typeset t=$(mktemp)
+
+	cat > $t
+	setextattr -i $t user "$1" "$2"
+	typeset rc=$?
+	rm -f $t
+	return $rc
+}

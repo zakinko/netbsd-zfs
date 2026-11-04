@@ -1,0 +1,16 @@
+#!/bin/sh
+# FreeBSD's sysctl takes name=value bare and has vfs.usermount; NetBSD's wants
+# -w and calls it vfs.generic.usermount.
+w=
+n=$#
+while [ $n -gt 0 ]; do
+	a=$1; shift; n=$((n - 1))
+	case $a in
+	*=*) w=-w ;;
+	esac
+	case $a in
+	vfs.usermount*) a=vfs.generic.usermount${a#vfs.usermount} ;;
+	esac
+	set -- "$@" "$a"
+done
+exec /sbin/sysctl $w "$@"

@@ -14,6 +14,8 @@ sysctl -w ddb.onpanic=0 >/dev/null
 ln -fs /usr/pkg/bin/ksh93 /bin/ksh; /bin/ksh --version 2>&1 | head -1
 ln -fs /usr/pkg/bin/python3.13 /usr/pkg/bin/python3
 Z=/usr/share/zfs
+echo "--- probes"; setextattr 2>&1 | head -4; getextattr 2>&1 | head -4; touch /var/tmp/g; stat -f 'gen ffs root %v' /var/tmp/g; rm /var/tmp/g
+grep -E 'savecore|dumpdev' /etc/rc.conf /etc/defaults/rc.conf | head -3
 sh "$HERE/port-tests.sh" $Z || exit 1
 cp "$HERE"/*.run $Z/runfiles/
 grep -q '^zts:' /etc/passwd || useradd -m -g wheel -s /bin/sh zts
