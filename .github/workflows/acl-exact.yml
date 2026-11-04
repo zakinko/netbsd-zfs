@@ -1,0 +1,40 @@
+name: acl-exact
+on:
+  push:
+    branches: [acl-passthrough-test]
+    paths: ['ci/test-acl-exact.sh', '.github/workflows/acl-exact.yml']
+  workflow_dispatch:
+concurrency:
+  group: acl-exact
+  cancel-in-progress: true
+jobs:
+  netbsd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: vmactions/netbsd-vm@v1
+        with:
+          release: '11.0'
+          mem: 8192
+          cpu: 4
+          sync: rsync
+          prepare: |
+            /usr/sbin/pkg_info pkgin >/dev/null 2>&1 || true
+            export PKG_PATH=http://cdn.netbsd.org/pub/pkgsrc/packages/NetBSD/x86_64/11.0/All
+            /usr/sbin/pkg_add -u pkgin || true
+            /usr/pkg/bin/pkgin -y update
+            /usr/pkg/bin/pkgin -y install autoconf automake libtool-base gmake pkgconf git-base gettext-tools gettext-m4 python313 rsync vim
+          run: |
+            sh ci/test-acl-exact.sh 2>&1
+  freebsd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: vmactions/freebsd-vm@v1
+        with:
+          release: "15.0"
+          usesh: true
+          prepare: pkg install -y rsync vim
+          run: sh ci/test-acl-exact.sh 2>&1
