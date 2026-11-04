@@ -18,6 +18,8 @@ echo "--- probes"; setextattr 2>&1 | head -4; getextattr 2>&1 | head -4; touch /
 grep -E 'savecore|dumpdev' /etc/rc.conf /etc/defaults/rc.conf | head -3
 sh "$HERE/port-tests.sh" $Z || exit 1
 cp "$HERE"/*.run $Z/runfiles/
+# MAKEDEV leaves /dev/zfs 600; FreeBSD's is 666 and the suite expects that.
+ls -l /dev/zfs; chmod 666 /dev/zfs
 grep -q '^zts:' /etc/passwd || useradd -m -g wheel -s /bin/sh zts
 printf 'zts ALL=(ALL) NOPASSWD:SETENV: ALL\n' > /usr/pkg/etc/sudoers.d/zts
 P=/usr/bin:/bin:/usr/sbin:/sbin:/usr/pkg/bin:/usr/pkg/sbin:/usr/pkg/gnu/bin
