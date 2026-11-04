@@ -18,7 +18,7 @@ sh "$HERE/port-tests.sh" $Z || exit 1
 cp "$HERE"/*.run $Z/runfiles/
 grep -q '^zts:' /etc/passwd || useradd -m -g wheel -s /bin/sh zts
 printf 'zts ALL=(ALL) NOPASSWD:SETENV: ALL\n' > /usr/pkg/etc/sudoers.d/zts
-P=/usr/bin:/bin:/usr/sbin:/sbin:/usr/pkg/bin:/usr/pkg/sbin
+P=/usr/bin:/bin:/usr/sbin:/sbin:/usr/pkg/bin:/usr/pkg/sbin:/usr/pkg/gnu/bin
 su zts -c "cd /var/tmp && PATH=$P $Z/zfs-tests.sh -v -f -x -s 4G -r $RUN"
 rc=$?; echo "zfs-tests.sh rc=$rc"
 exit 0
