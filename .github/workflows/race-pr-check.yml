@@ -1,0 +1,46 @@
+name: race-pr-check
+on:
+  push:
+    branches: [zts-fixes]
+    paths: ['ci/race/pr-check.sh', 'ci/race/module-vm.sh', '.github/workflows/race-pr-check.yml']
+  workflow_dispatch:
+concurrency:
+  group: race-pr-check
+  cancel-in-progress: true
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [module, trunk]
+    env:
+      MARK: RACE${{ matrix.mode == 'trunk' && 'CUR' || 'MOD' }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh ci/race/pr-check.sh ${{ matrix.mode }} "$PWD/nb" "$PWD/out" ci/race/pseudo-disk-race.diff
+      - uses: vmactions/netbsd-vm@v1
+        with:
+          release: '11.0'
+          cpu: 4
+          mem: 4096
+          sync: rsync
+          copyback: false
+          run: uname -a
+      - run: sh ci/race/swap.sh out/netbsd "$MARK" ssh netbsd
+      - name: Test
+        run: |
+          ssh netbsd "mkdir -p /var/tmp/race"; scp ci/race/* netbsd:/var/tmp/race/
+          [ ! -f out/vnd.kmod ] || scp out/vnd.kmod netbsd:/var/tmp/race/
+          O="-o ServerAliveInterval=10 -o ServerAliveCountMax=3"
+          if [ ${{ matrix.mode }} = trunk ]; then
+            ssh $O netbsd "uname -a; REGRESS=1 sh /var/tmp/race/in-vm.sh 240 vnd cgd"
+          else
+            ssh $O netbsd "sh /var/tmp/race/module-vm.sh"
+          fi
+      - name: What happened
+        if: failure()
+        run: |
+          sleep 120
+          ssh -o ConnectTimeout=20 netbsd "uptime; dmesg | tail -40" || echo no answer
