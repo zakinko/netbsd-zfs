@@ -10,14 +10,13 @@ find "$Z/zfs-tests" -type f \( -name '*.ksh' -o -name '*.kshlib' -o -name '*.shl
     -e 's/^([[:space:]]*)FreeBSD\)/\1FreeBSD|NetBSD)/' \
     -e 's/\[ "\$UNAME" = "FreeBSD" \]/[ "$UNAME" = "FreeBSD" -o "$UNAME" = "NetBSD" ]/' {} +
 # The tunable table has one column per system.
-sed -i 's/^while read name FreeBSD Linux; do$/&\n\tNetBSD=$FreeBSD/' \
+sed -i 's/^while read name FreeBSD Linux; do$/& NetBSD=$FreeBSD/' \
     "$Z/zfs-tests/include/tunables.cfg"
-grep -q 'NetBSD=' "$Z/zfs-tests/include/tunables.cfg"
-# NetBSD's sed takes the \n; check it, since this file decides every tunable.
+grep -q 'do NetBSD=' "$Z/zfs-tests/include/tunables.cfg"
 sed -i -E \
     -e 's/\[ "\$UNAME" = "FreeBSD" \]/[ "$UNAME" = "FreeBSD" -o "$UNAME" = "NetBSD" ]/' \
     -e 's|/usr/local/bin/ksh93|/usr/pkg/bin/ksh93|g' \
-    -e 's|^(\s*)SYSTEM_DIRS="\$SYSTEM_DIRS /usr/bin /usr/sbin /bin /sbin \$LIBEXEC_DIR"|\1SYSTEM_DIRS="$SYSTEM_DIRS /usr/bin /usr/sbin /bin /sbin /usr/pkg/bin /usr/pkg/sbin /usr/pkg/gnu/bin $LIBEXEC_DIR"|' \
+    -e 's|^([[:space:]]*)SYSTEM_DIRS="\$SYSTEM_DIRS /usr/bin /usr/sbin /bin /sbin \$LIBEXEC_DIR"|\1SYSTEM_DIRS="$SYSTEM_DIRS /usr/bin /usr/sbin /bin /sbin /usr/pkg/bin /usr/pkg/sbin /usr/pkg/gnu/bin $LIBEXEC_DIR"|' \
     "$Z/zfs-tests.sh"
 grep -q /usr/pkg/gnu/bin "$Z/zfs-tests.sh"
 cat "$HERE/netbsd-override.shlib" >> "$Z/zfs-tests/include/libtest.shlib"

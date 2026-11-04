@@ -10,7 +10,8 @@ git init -q zfs; cd zfs
 git fetch -q --depth 1 https://github.com/zakinko/zfs "$SHA"; git checkout -q FETCH_HEAD
 git log -1 --format='%H %cs %s'
 (sh autogen.sh && MAKE=gmake ./configure --with-config=all && gmake -j4 &&
-    gmake install DESTDIR="$W/inst") > "$W/b.log" 2>&1 || { grep -n ' error' "$W/b.log" | head; tail -5 "$W/b.log"; exit 1; }
+    mkdir -p "$W/inst/boot/modules" "$W/inst/usr/lib/debug/boot/modules" &&
+    gmake install DESTDIR="$W/inst") > "$W/b.log" 2>&1 || { tail -25 "$W/b.log"; exit 1; }
 tar czf "$OUT/fb-inst.tgz" -C "$W/inst" .
 cp module/openzfs.ko "$OUT/"
 ls -l "$OUT"
