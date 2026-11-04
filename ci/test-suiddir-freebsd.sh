@@ -8,12 +8,15 @@ git clone -q --depth 1 -b suiddir https://github.com/zakinko/zfs zfs; git -C zfs
 cd zfs || exit 1
 (sh autogen.sh && MAKE=gmake ./configure --with-config=all && gmake -j4 && gmake install) > $W/b.log 2>&1; echo "build rc=$?"; tail -3 $W/b.log
 ls -l module/openzfs.ko || { grep -n ' error' $W/b.log | head; exit 1; }
-kldunload zfs 2>/dev/null; kldload ./module/openzfs.ko; echo "kld rc=$?"; kldstat | grep -i zfs
+mount | grep -c ' zfs' ; zpool list 2>&1 | head -3; kldstat | grep -E 'zfs|Id'
+kldunload zfs; echo "unload rc=$?"
+kldload ./module/openzfs.ko; rc=$?; echo "kld rc=$rc"; kldstat | grep -i zfs
+[ $rc = 0 ] || exit 1
 export PATH=/usr/local/sbin:/usr/local/bin:$PATH LD_LIBRARY_PATH=/usr/local/lib
 cd /var/tmp; hash -r 2>/dev/null; which zfs zpool
 truncate -s 1g /var/tmp/q.img
 md=$(mdconfig -a -t vnode -f /var/tmp/q.img)
-zpool create -f -m /tank tank $md
+zpool create -f -m /tank tank $md || exit 1
 zfs create -o aclinherit=passthrough -o aclmode=passthrough tank/s
 pw groupadd admins; pw groupadd teachers; pw groupadd students; pw groupadd everybody
 for u in ad te t2 st ou lo; do pw useradd $u -m -s /bin/sh; done
