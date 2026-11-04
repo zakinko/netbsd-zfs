@@ -19,7 +19,7 @@ share() { # dir teacher-perms
 	mkdir -p $1; chown root:wheel $1; chmod 755 $1; setfacl -b $1
 	setfacl -m "$base,g:teachers:$2:fd:allow,g:students:rxaRcs:fd:allow,$deny" $1
 }
-as() { su -m "$1" -c "$2" >/dev/null 2>&1; echo "  rc=$? $1: $2" | cut -c1-90; }
+as() { o=$(su -m "$1" -c "$2" 2>&1 </dev/null); r=$?; echo "  rc=$r $1: $2" | cut -c1-90; [ -z "$o" ] || echo "$o" | head -5 | sed 's/^/    out: /' | cut -c1-140; }
 rights() { # file
 	stat -f '  mode %Sp owner %Su %N' $1
 	for v in ad te t2 st ou lo; do
@@ -32,7 +32,7 @@ named() { getfacl -q $1 | grep -c 'group:\(admins\|teachers\|students\|everybody
 fresh() { rm -f $1; su -m te -c "umask 022; echo a > $1"; }
 try() { # dir user tool...
 	d=$1; u=$2; shift 2; f=$d/f; fresh $f
-	as $u "$*"; rights $f; [ "$(named $f)" = 4 ] || echo "  ACL CHANGED: $(named $f) named ACEs"
+	as $u "$*"; echo "  content: $(tr '\n' '|' < $f | cut -c1-40)"; rights $f; [ "$(named $f)" = 4 ] || echo "  ACL CHANGED: $(named $f) named ACEs"
 }
 tools() { # dir label
 	d=$1; f=$d/f; echo "##### $2"
@@ -46,6 +46,8 @@ tools() { # dir label
 	try $d $u "vim -u NONE --cmd 'set backupcopy=no' -es -c 'normal Ay' -c wq $f"
 	try $d $u "vim -u NONE --cmd 'set backupcopy=yes' -es -c 'normal Ay' -c wq $f"
 	try $d $u "ex -s -c '%s/a/b/' -c wq $f"
+	try $d $u "sh -c 'printf \"%%s/a/b/\\nwq\\n\" | ex -s $f'"
+	try $d $u "cp /var/tmp/src $f"
 	try $d $u "sed -i '' s/a/b/ $f"
 	try $d $u "cp -p /var/tmp/src $f"
 	try $d $u "install -m 640 /var/tmp/src $f"
