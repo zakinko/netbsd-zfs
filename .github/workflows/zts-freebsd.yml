@@ -30,10 +30,10 @@ jobs:
       - name: Build
         if: steps.c.outputs.cache-hit != 'true'
         run: |
-          ssh freebsd "mkdir -p /var/tmp/ci /var/tmp/out"
+          ssh freebsd "mkdir -p /var/tmp/ci /var/tmp/zc"
           scp -r ci/zts freebsd:/var/tmp/ci/
-          ssh -o ServerAliveInterval=30 freebsd "sh /var/tmp/ci/zts/build-freebsd.sh $ZFS_SHA /var/tmp/out" 2>&1
-          mkdir -p zts-cache; scp "freebsd:/var/tmp/out/*" zts-cache/
+          ssh -o ServerAliveInterval=30 freebsd "sh /var/tmp/ci/zts/build-freebsd.sh $ZFS_SHA /var/tmp/zc" 2>&1
+          mkdir -p zts-cache; scp "freebsd:/var/tmp/zc/*" zts-cache/
       - uses: actions/cache/save@v4
         if: steps.c.outputs.cache-hit != 'true'
         with:
@@ -41,11 +41,11 @@ jobs:
           key: zts-fb-${{ env.ZFS_SHA }}-${{ hashFiles('ci/zts/build-freebsd.sh') }}
       - name: Swap zfs.ko and reboot
         run: |
-          ssh freebsd "mkdir -p /var/tmp/ci /var/tmp/out"
+          ssh freebsd "mkdir -p /var/tmp/ci /var/tmp/zc"
           scp -r ci/zts freebsd:/var/tmp/ci/
-          scp zts-cache/* freebsd:/var/tmp/out/
+          scp zts-cache/* freebsd:/var/tmp/zc/
           # The VM boots from ZFS, so zfs.ko cannot be unloaded.
-          ssh freebsd "tar xzpf /var/tmp/out/fb-inst.tgz -C / && cp /var/tmp/out/openzfs.ko /boot/kernel/zfs.ko && kldxref /boot/kernel && sync"
+          ssh freebsd "tar xzpf /var/tmp/zc/fb-inst.tgz -C / && cp /var/tmp/zc/openzfs.ko /boot/kernel/zfs.ko && kldxref /boot/kernel && sync"
           ssh freebsd "(sleep 3; shutdown -r now) >/dev/null 2>&1 &" || true
           sleep 45
           for i in $(seq 1 60); do ssh -o ConnectTimeout=5 freebsd true && break; sleep 5; done

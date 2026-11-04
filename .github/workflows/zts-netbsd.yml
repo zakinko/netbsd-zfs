@@ -35,10 +35,10 @@ jobs:
       - name: Build
         if: steps.c.outputs.cache-hit != 'true'
         run: |
-          ssh netbsd "mkdir -p /var/tmp/ci /var/tmp/out"
+          ssh netbsd "mkdir -p /var/tmp/ci /var/tmp/zc"
           scp -r ci/zts netbsd:/var/tmp/ci/
-          ssh -o ServerAliveInterval=30 netbsd "PATH=\$PATH:/usr/pkg/bin:/usr/pkg/sbin sh /var/tmp/ci/zts/build-netbsd.sh $ZFS_SHA /var/tmp/out" 2>&1
-          mkdir -p zts-cache; scp "netbsd:/var/tmp/out/*" zts-cache/
+          ssh -o ServerAliveInterval=30 netbsd "PATH=\$PATH:/usr/pkg/bin:/usr/pkg/sbin sh /var/tmp/ci/zts/build-netbsd.sh $ZFS_SHA /var/tmp/zc" 2>&1
+          mkdir -p zts-cache; scp "netbsd:/var/tmp/zc/*" zts-cache/
       - uses: actions/cache/save@v4
         if: steps.c.outputs.cache-hit != 'true'
         with:
@@ -47,11 +47,11 @@ jobs:
       - name: Run the suite
         timeout-minutes: 170
         run: |
-          ssh netbsd "mkdir -p /var/tmp/ci /var/tmp/out"
+          ssh netbsd "mkdir -p /var/tmp/ci /var/tmp/zc"
           scp -r ci/zts netbsd:/var/tmp/ci/
-          scp zts-cache/* netbsd:/var/tmp/out/
+          scp zts-cache/* netbsd:/var/tmp/zc/
           ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=6 netbsd \
-            "PATH=\$PATH:/usr/pkg/bin:/usr/pkg/sbin sh /var/tmp/ci/zts/run-netbsd.sh /var/tmp/ci/zts /var/tmp/out" 2>&1 | tee zts-console.log
+            "PATH=\$PATH:/usr/pkg/bin:/usr/pkg/sbin sh /var/tmp/ci/zts/run-netbsd.sh /var/tmp/ci/zts /var/tmp/zc" 2>&1 | tee zts-console.log
       - name: Collect
         if: always()
         run: |
