@@ -58,5 +58,10 @@ zfs set aclownerdeny=on tank/s
 b2=/tank/s/ev; mkdir $b2; chmod 777 $b2; rm -f $b2/f; su -m te -c "umask 022; echo a > $b2/f"
 setfacl -m "everyone@:C::deny" $b2/f; getfacl -q $b2/f | head -3
 as te "setfacl -m g:students:rw::allow $b2/f"; as te "chmod 644 $b2/f"; as te "setfacl -m g:students:rw::allow $b2/f"; getfacl -q $b2/f | head -3
+echo '--- controls with aclownerdeny=on'
+zfs set aclownerdeny=on tank/s
+b3=/tank/s/ctl; mkdir $b3; chmod 777 $b3; rm -f $b3/f; su -m te -c "umask 022; echo a > $b3/f"
+as te "setfacl -m g:students:rw::allow $b3/f"; getfacl -q $b3/f | head -2
+as te "setfacl -m u:ou:r::allow $b3/f"; getfacl -q $b3/f | head -2
 zfs set aclownerdeny=off tank/s
 echo '##### done'

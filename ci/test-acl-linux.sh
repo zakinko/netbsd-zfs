@@ -96,5 +96,11 @@ done
 echo '--- deny on EVERYONE@'
 zfs set aclownerdeny=on tank/s; b2=/tank/s/ev; mkdir $b2; chmod 777 $b2; fresh $b2/f
 nfs4_setfacl -a D::EVERYONE@:C $b2/f; as te "nfs4_setfacl -a A:g:2003:rw $b2/f"; as te "chmod 644 $b2/f"; as te "nfs4_setfacl -a A:g:2003:rw $b2/f"; nfs4_getfacl $b2/f | grep -v '^#' | head -4
+echo '--- controls with aclownerdeny=on'
+b3=/tank/s/ctl; mkdir $b3; chmod 777 $b3; fresh $b3/f
+as te "nfs4_setfacl -a A:g:2003:rw $b3/f"; nfs4_getfacl $b3/f | grep -v '^#' | head -2
+as te "nfs4_setfacl -a A::3005:r $b3/f"; nfs4_getfacl $b3/f | grep -v '^#' | head -2
+echo '  -- owner with only CAP_FOWNER, ACL denies write_acl'
+fresh $d/f; setpriv --reuid 3002 --regid 3002 --init-groups --inh-caps +fowner --ambient-caps +fowner nfs4_setfacl -a A:g:2003:rw $d/f; echo "  fowner rc=$?"; rights $d/f
 zfs set aclownerdeny=off tank/s
 echo '##### done'
