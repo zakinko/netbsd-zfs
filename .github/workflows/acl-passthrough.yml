@@ -2,6 +2,7 @@ name: acl-passthrough
 on:
   push:
     branches: [acl-passthrough-test]
+    paths: ['ci/test-acl-tools.sh']
 concurrency:
   group: acl-passthrough
   cancel-in-progress: true

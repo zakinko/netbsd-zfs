@@ -1,0 +1,22 @@
+name: suiddir-freebsd
+on:
+  push:
+    branches: [acl-passthrough-test]
+    paths: ['ci/test-suiddir-freebsd.sh', '.github/workflows/suiddir-freebsd.yml']
+concurrency:
+  group: suiddir-freebsd
+  cancel-in-progress: true
+jobs:
+  freebsd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@v4
+      - uses: vmactions/freebsd-vm@v1
+        with:
+          release: "15.0"
+          mem: 8192
+          cpu: 4
+          usesh: true
+          prepare: pkg install -y rsync vim autoconf automake libtool gmake git python3 pkgconf bash
+          run: sh ci/test-suiddir-freebsd.sh 2>&1
