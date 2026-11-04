@@ -1,0 +1,12 @@
+--- a/lib/libzfs/os/bsd/libzfs_zmount.c
++++ b/lib/libzfs/os/bsd/libzfs_zmount.c
+@@ -46,7 +46,8 @@
+ 	za.optlen = (int)strlen(za.optptr);
+ 	za.mflag = flags;
+ 
+-	if (mount(MNTTYPE_ZFS, mntpt, flags & MS_RDONLY ? MNT_RDONLY : 0,
++	if (mount(MNTTYPE_ZFS, mntpt, (flags & MS_RDONLY ? MNT_RDONLY : 0) |
++	    (strstr(opts, MNTOPT_REMOUNT) != NULL ? MNT_UPDATE : 0),
+ 	    &za, sizeof (za)) == -1)
+ 		return (errno);
+ 	return (0);

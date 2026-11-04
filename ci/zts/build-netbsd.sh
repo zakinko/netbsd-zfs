@@ -1,6 +1,6 @@
 #!/bin/sh
 # Scratch: build the OpenZFS NetBSD port, its tests included, against 11.0 sys.
-#   sh build-netbsd.sh <commit> <out dir>
+#   sh build-netbsd.sh <commit> <out dir> [probe diff]
 set -eu
 SHA=$1; OUT=$2; W=/var/tmp/zb
 export TERM=vt100
@@ -10,6 +10,8 @@ mkdir nb; tar xzf sys.tgz -C nb
 git init -q zfs; cd zfs
 git fetch -q --depth 1 https://github.com/zakinko/zfs "$SHA"; git checkout -q FETCH_HEAD
 git log -1 --format='%H %cs %s'
+# Measurement only, never for the port's tree: see behind a known failure.
+[ -z "${3:-}" ] || patch -p1 < "$3"
 sh autogen.sh > "$W/ub.log" 2>&1
 PKG_CONFIG_LIBDIR=/usr/lib/pkgconfig PKG_CONFIG_PATH= MAKE=gmake \
     ./configure --with-config=user --prefix=/usr --exec-prefix= \

@@ -45,3 +45,15 @@ function set_xattr_stdin # name path
 	rm -f $t
 	return $rc
 }
+
+# NetBSD's getextattr ends the value with a newline; FreeBSD's -qq does not.
+function get_xattr # name path
+{
+	typeset t=$(mktemp) rc
+
+	getextattr -q user "$1" "$2" > $t
+	rc=$?
+	[ $rc -eq 0 ] && /usr/pkg/bin/ghead -c -1 $t
+	rm -f $t
+	return $rc
+}

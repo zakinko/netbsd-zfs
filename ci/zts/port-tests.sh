@@ -30,9 +30,8 @@ cat >> "$Z/zfs-tests/include/default.cfg" <<'EOT'
 ZVOL_DEVDIR=/dev/zvol/dsk
 ZVOL_RDEVDIR=/dev/zvol/rdsk
 EOT
-sed -i 's/ls -U /ls -f /' "$Z/zfs-tests/tests/functional/cp_files/cp_files_001_pos.ksh"
-sed -i 's|dd if=/dev/zero of=$TESTDIR/sync conv=fdatasync,fsync|/usr/pkg/bin/gdd if=/dev/zero of=$TESTDIR/sync conv=fdatasync,fsync|' \
-    "$Z/zfs-tests/tests/functional/suid/suid_write_zil_replay.ksh"
+sed -i 's/ls -U /ls -A /' "$Z/zfs-tests/tests/functional/cp_files/cp_files_001_pos.ksh"
+sed -i 's/ dd if=/ \/usr\/pkg\/bin\/gdd if=/' "$Z/zfs-tests/tests/functional/suid/suid_write_zil_replay.ksh"
 # GNU dd's K suffix and iflag=fullblock.
 sed -i 's/| dd bs=10K/| \/usr\/pkg\/bin\/gdd bs=10K/' "$Z/zfs-tests/include/libtest.shlib"
 grep -q 'gdd bs=10K' "$Z/zfs-tests/include/libtest.shlib"
