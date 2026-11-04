@@ -6,7 +6,7 @@ export TERM=vt100
 W=/var/tmp/z; mkdir -p $W; cd $W || exit 1
 ftp -o sys.tgz https://cdn.netbsd.org/pub/NetBSD/NetBSD-11.0/source/sets/syssrc.tgz || exit 1
 mkdir nb; tar xzf sys.tgz -C nb; ls nb/usr/src | head -3
-git clone -q --depth 1 -b suiddir https://github.com/zakinko/zfs zfs; git -C zfs log -1 --format='%h %cs %s'
+git clone -q --depth 1 -b chmodwrite https://github.com/zakinko/zfs zfs; git -C zfs log -1 --format='%h %cs %s'
 cd zfs || exit 1
 (sh autogen.sh && PKG_CONFIG_LIBDIR=/usr/lib/pkgconfig PKG_CONFIG_PATH= MAKE=gmake \
     ./configure --with-config=user --prefix=/usr --exec-prefix= --sysconfdir=/etc \
@@ -140,4 +140,10 @@ chmod 777 $d/m; chmod 777 $d; rm -f $d/m2; echo a > $d/m2; chmod 666 $d/m2
 as lo "cat $d/m2"; as lo "ls $g"; as lo "stat -f %Sp $d/m2"; as st "cat $d/m2"; as ou "cat $d/m2"
 echo '--- off: the property really is what changed this'
 zfs set suiddir=off tank/s; rm -f $d/o; su -m te -c "echo a > $d/o"; stat -f '  mode %Sp owner %Su' $d/o
+echo '##### chmodwrite on, teachers without write_acl'
+zfs set suiddir=on tank/s; zfs set chmodwrite=on tank/s; zfs get -H -o value chmodwrite tank/s
+tools2
+fresh $d/h; a0=$(getfacl -q $d/h 2>/dev/null | wc -l); as t2 "chmod 6777 $d/h"; stat -f '  mode %Sp owner %Su' $d/h; rights $d/h; echo "  acl lines $a0 -> $(getfacl -q $d/h | wc -l)"
+as st "chmod 666 $d/h"; as lo "cat $d/h"
+zfs set chmodwrite=off tank/s
 echo '##### done'
