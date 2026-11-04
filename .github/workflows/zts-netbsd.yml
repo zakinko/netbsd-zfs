@@ -1,13 +1,13 @@
 name: zts-netbsd
 on:
   push:
-    branches: [zts-port]
+    branches: [zts-fixes]
     paths: ['ci/zts/**', '.github/workflows/zts-netbsd.yml']
 concurrency:
   group: zts-netbsd
   cancel-in-progress: true
 env:
-  ZFS_SHA: 93161431b57c292bc12c0ccdec8953677f876b8c
+  ZFS_SHA: 04fb524fc27cc9b610fa9a4f8f81c5829905e6af
 jobs:
   netbsd:
     runs-on: ubuntu-latest

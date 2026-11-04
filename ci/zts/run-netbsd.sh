@@ -35,8 +35,7 @@ one() {
 	echo "##### zfs-tests.sh $1 rc=$?"
 	tar czf /var/tmp/res.tgz -C /var/tmp test_results; sync
 }
-# xattr_007_neg panics ("dirtying snapshot"); see the record.
-sed -i "s/'xattr_007_neg', *//" $Z/runfiles/early.run
+sh "$HERE/remount-check.sh" 2>&1 | tail -50
 one early
 for t in $LATE; do
 	f=$(echo "$t" | tr / _)
