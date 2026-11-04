@@ -1,0 +1,36 @@
+--- a/sys/dev/cgd.c
++++ b/sys/dev/cgd.c
+@@ -34,6 +34,7 @@
+ 
+ #include <sys/types.h>
+ #include <sys/param.h>
++#include <sys/proc.h>
+ #include <sys/buf.h>
+ #include <sys/bufq.h>
+ #include <sys/conf.h>
+@@ -726,6 +727,7 @@
+ 	cgd_unlock();
+ 	if (sc == NULL)
+ 		return ENXIO;
++	kpause("racew", false, 1, NULL);
+ 
+ 	return dk_open(&sc->sc_dksc, dev, flags, fmt, l);
+ }
+--- a/sys/dev/md.c
++++ b/sys/dev/md.c
+@@ -49,6 +49,7 @@
+ #endif
+ 
+ #include <sys/param.h>
++#include <sys/proc.h>
+ #include <sys/kernel.h>
+ #include <sys/kmem.h>
+ #include <sys/systm.h>
+@@ -365,6 +366,7 @@
+ 
+ 	mutex_exit(&dk->dk_openlock);
+ 
++	kpause("racew", false, 1, NULL);
+ 	mutex_enter(&md_device_lock);
+ 	cf = device_cfdata(sc->sc_dev);
+ 	error = config_detach(sc->sc_dev, DETACH_QUIET);

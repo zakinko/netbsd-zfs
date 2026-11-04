@@ -14,11 +14,10 @@ done
 set -ex
 dd if=/dev/zero of=/var/tmp/img bs=1m count=32
 vnconfig vnd0 /var/tmp/img
-newfs -q /dev/rvnd0a 2>&1 | tail -1 || newfs /dev/rvnd0d
-disklabel vnd0 >/dev/null
-./race 10 /dev/vnd0d /dev/rvnd0d /dev/vnd0a /dev/rvnd0a
-mount /dev/vnd0a /mnt; echo hello >/mnt/x; sync; umount /mnt
-mount -r /dev/vnd0a /mnt; cat /mnt/x; umount /mnt
+newfs /dev/rvnd0d | tail -1
+./race 10 /dev/vnd0d /dev/rvnd0d
+mount /dev/vnd0d /mnt; echo hello >/mnt/x; sync; umount /mnt
+mount -r /dev/vnd0d /mnt; cat /mnt/x; umount /mnt
 vnconfig -u vnd0
 vnconfig -l | head -2
 dd if=/dev/urandom of=/var/tmp/key bs=32 count=1

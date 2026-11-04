@@ -2,7 +2,7 @@ name: zts-netbsd
 on:
   push:
     branches: [zts-fixes]
-    paths: ['ci/zts/**', '.github/workflows/zts-netbsd.yml']
+    paths: ['ci/zts/**', 'ci/race/swap.sh', '.github/workflows/zts-netbsd.yml']
 concurrency:
   group: zts-netbsd
   cancel-in-progress: true
@@ -32,6 +32,13 @@ jobs:
             /usr/pkg/bin/pkgin -y update
             /usr/pkg/bin/pkgin -y install autoconf automake libtool-base gmake pkgconf git-base gettext-tools gettext-m4 python313 rsync bash ksh93 sudo fio jq coreutils xxhash
           run: echo vm ready
+      - uses: actions/download-artifact@v4
+        with:
+          name: racekernel
+          path: racekernel
+          run-id: 41906980157
+          github-token: ${{ github.token }}
+      - run: sh ci/race/swap.sh racekernel/netbsd RACEFIX ssh netbsd
       - name: Build
         if: steps.c.outputs.cache-hit != 'true'
         run: |

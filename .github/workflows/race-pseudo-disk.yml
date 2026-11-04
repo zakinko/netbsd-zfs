@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        driver: [vnd, cgd, md]
+        driver: [vnd]
     steps:
       - uses: actions/checkout@v4
       - uses: vmactions/netbsd-vm@v1
@@ -31,6 +31,55 @@ jobs:
         run: |
           ssh netbsd "mkdir -p /var/tmp/race"; scp ci/race/* netbsd:/var/tmp/race/
           ssh -o ServerAliveInterval=10 -o ServerAliveCountMax=3 netbsd "sh /var/tmp/race/in-vm.sh 240 ${{ matrix.driver }}" || echo "SSH LOST rc=$?"
+      - name: What happened
+        if: always()
+        run: |
+          sleep 120
+          ssh -o ConnectTimeout=20 netbsd "uptime; dmesg | grep -E -A14 'fatal|panic:|uvm_fault' | head -40" || echo no answer
+  widen-kernel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      MARK: RACEWIDE
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: nb/tools
+          key: racetools-11.0-amd64
+      - run: sh ci/race/kernel.sh "$PWD/nb" "$PWD/out" ci/race/widen-stock.diff
+      - uses: actions/upload-artifact@v4
+        with:
+          name: widekernel
+          path: out/netbsd
+          retention-days: 14
+  widened:
+    needs: widen-kernel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        driver: [cgd, md]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: widekernel
+          path: out
+      - uses: vmactions/netbsd-vm@v1
+        with:
+          release: '11.0'
+          cpu: 4
+          mem: 4096
+          sync: rsync
+          copyback: false
+          run: uname -a
+      - run: sh ci/race/swap.sh out/netbsd RACEWIDE ssh netbsd
+      - name: Hammer with the window held open
+        run: |
+          ssh netbsd "mkdir -p /var/tmp/race"; scp ci/race/* netbsd:/var/tmp/race/
+          ssh -o ServerAliveInterval=10 -o ServerAliveCountMax=3 netbsd "sh /var/tmp/race/in-vm.sh 120 ${{ matrix.driver }}" || echo "SSH LOST rc=$?"
       - name: What happened
         if: always()
         run: |
