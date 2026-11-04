@@ -23,6 +23,9 @@ $B -u kernel="$MARK" >"$OUT/kernel.log" 2>&1 || { tail -40 "$OUT/kernel.log"; ex
 cp "$W/obj/sys/arch/amd64/compile/$MARK/netbsd" "$OUT/netbsd"
 if [ "$M" = module ]; then
 	(cd sys/modules/vnd && "$W/tools/bin/nbmake-amd64" -j "$J" MKDEBUG=no dependall) >"$OUT/module.log" 2>&1 || { tail -40 "$OUT/module.log"; exit 1; }
-	cp "$W/obj/sys/modules/vnd/vnd.kmod" "$OUT/vnd.kmod"
+	# No obj target was run, so it may have landed beside the source.
+	k=$(find "$W/obj/sys/modules/vnd" sys/modules/vnd -name vnd.kmod 2>/dev/null | head -1)
+	[ -n "$k" ] || { tail -40 "$OUT/module.log"; exit 1; }
+	cp "$k" "$OUT/vnd.kmod"
 fi
 sha256sum "$OUT"/netbsd
