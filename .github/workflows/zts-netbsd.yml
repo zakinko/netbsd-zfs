@@ -36,7 +36,7 @@ jobs:
         with:
           name: racekernel
           path: racekernel
-          run-id: 41906980157
+          run-id: 41915577701
           github-token: ${{ github.token }}
       - run: sh ci/race/swap.sh racekernel/netbsd RACEFIX ssh netbsd
       - name: Build
