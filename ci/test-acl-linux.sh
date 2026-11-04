@@ -1,5 +1,5 @@
 #!/bin/bash
-# Scratch: aclmode=passthrough on zakinko/zfs linux-decoupled, same cases as BSD.
+# Scratch: suiddir, chmodwrite and passthrough on zakinko/zfs linux-chmodwrite.
 set -u
 export TERM=vt100
 uname -r
