@@ -8,11 +8,12 @@ concurrency:
 jobs:
   freebsd:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: vmactions/freebsd-vm@v1
         with:
           release: "15.0"
           usesh: true
-          run: sh ci/test-acl-passthrough.sh
+          prepare: pkg install -y rsync vim
+          run: sh ci/test-acl-tools.sh
