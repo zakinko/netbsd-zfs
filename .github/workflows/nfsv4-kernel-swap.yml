@@ -1,0 +1,91 @@
+name: nfsv4-kernel-swap
+
+# Can a kernel built here replace the one in a NetBSD 11.0 VM and boot?  The
+# server work needs that on every push, so it is tried in the two forms it
+# could take: inside the vmactions VM, and on the same image under a qemu of
+# our own, where the console can be read if the kernel does not come up.
+
+on:
+  push:
+    branches: [nfsv4-m0]
+    paths:
+      - 'ci/nfsv4/kernel-*'
+      - '.github/workflows/nfsv4-kernel-swap.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  MARK: M0SWAP
+
+jobs:
+  kernel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: nb/tools
+          key: nbtools-11.0-amd64-${{ hashFiles('ci/nfsv4/kernel-build.sh') }}
+      - run: sh ci/nfsv4/kernel-build.sh "$PWD/nb" "$PWD/out"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel
+          path: out/
+          retention-days: 14
+
+  vmactions:
+    needs: kernel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: kernel
+          path: out
+      - name: Start the VM
+        uses: vmactions/netbsd-vm@v1
+        with:
+          release: '11.0'
+          sync: rsync
+          copyback: false
+          nat: |
+            "12049": "2049"
+          run: uname -a
+      - name: Swap the kernel over the action's own ssh alias
+        run: sh ci/nfsv4/kernel-swap.sh out/netbsd "$MARK" out/swap-vmactions.log ssh netbsd
+      - name: Reach nfsd through the forwarded port
+        run: |
+          nc -vz -w 5 127.0.0.1 12049 2>&1 | tee -a out/swap-vmactions.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: swap-vmactions
+          path: out/swap-vmactions.log
+
+  qemu:
+    needs: kernel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: kernel
+          path: out
+      - name: Boot the image under qemu, swap and read the console
+        run: sh ci/nfsv4/kernel-qemu.sh out/netbsd "$MARK" out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: swap-qemu
+          path: |
+            out/swap-qemu.log
+            out/console.log
