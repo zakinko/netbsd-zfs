@@ -34,6 +34,6 @@ sed -i 's/ls -U /ls -f /' "$Z/zfs-tests/tests/functional/cp_files/cp_files_001_p
 sed -i 's|dd if=/dev/zero of=$TESTDIR/sync conv=fdatasync,fsync|/usr/pkg/bin/gdd if=/dev/zero of=$TESTDIR/sync conv=fdatasync,fsync|' \
     "$Z/zfs-tests/tests/functional/suid/suid_write_zil_replay.ksh"
 # GNU dd's K suffix and iflag=fullblock.
-find "$Z/zfs-tests/tests/functional/cli_root/zfs_rename" -name '*.ksh*' \
-    -exec sed -i 's/| dd bs=/| \/usr\/pkg\/bin\/gdd bs=/' {} +
+sed -i 's/| dd bs=10K/| \/usr\/pkg\/bin\/gdd bs=10K/' "$Z/zfs-tests/include/libtest.shlib"
+grep -q 'gdd bs=10K' "$Z/zfs-tests/include/libtest.shlib"
 cat "$HERE/netbsd-override.shlib" >> "$Z/zfs-tests/include/libtest.shlib"
