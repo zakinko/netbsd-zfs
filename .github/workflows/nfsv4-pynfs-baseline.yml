@@ -1,0 +1,42 @@
+name: nfsv4-pynfs-baseline
+
+# Run pynfs against the Linux knfsd.  A failure seen later against the NetBSD
+# server can only be blamed on that server if the rig is known to work on a
+# server that is not under development, so this is the reference.
+
+on:
+  push:
+    branches: [nfsv4-m0]
+    paths:
+      - 'ci/nfsv4/pynfs-*'
+      - '.github/workflows/nfsv4-pynfs-baseline.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pynfs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        minor: ['4.0', '4.1']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run pynfs
+        run: sudo -E sh ci/nfsv4/pynfs-baseline.sh ${{ matrix.minor }} "$PWD/out"
+      - name: Summarise
+        if: always()
+        run: python3 ci/nfsv4/pynfs-summary.py out/pynfs-${{ matrix.minor }}.json out/pynfs-${{ matrix.minor }}.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary-${{ matrix.minor }}.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pynfs-${{ matrix.minor }}
+          path: out/
+          retention-days: 90
