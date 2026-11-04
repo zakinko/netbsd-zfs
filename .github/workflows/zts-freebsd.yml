@@ -1,0 +1,69 @@
+name: zts-freebsd
+on:
+  push:
+    branches: [zts-port]
+    paths: ['ci/zts/acl-lookup.run', 'ci/zts/*freebsd*', '.github/workflows/zts-freebsd.yml']
+concurrency:
+  group: zts-freebsd
+  cancel-in-progress: true
+env:
+  ZFS_SHA: 93161431b57c292bc12c0ccdec8953677f876b8c
+jobs:
+  freebsd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        id: c
+        with:
+          path: zts-cache
+          key: zts-fb-${{ env.ZFS_SHA }}-${{ hashFiles('ci/zts/build-freebsd.sh') }}
+      - uses: vmactions/freebsd-vm@v1
+        with:
+          release: "15.0"
+          mem: 8192
+          cpu: 4
+          usesh: true
+          prepare: pkg install -y rsync autoconf automake libtool gmake git python3 pkgconf bash ksh93 sudo fio jq coreutils xxhash
+          run: echo vm ready
+      - name: Build
+        if: steps.c.outputs.cache-hit != 'true'
+        run: |
+          ssh freebsd "mkdir -p /var/tmp/ci /var/tmp/out"
+          scp -r ci/zts freebsd:/var/tmp/ci/
+          ssh -o ServerAliveInterval=30 freebsd "sh /var/tmp/ci/zts/build-freebsd.sh $ZFS_SHA /var/tmp/out" 2>&1
+          mkdir -p zts-cache; scp "freebsd:/var/tmp/out/*" zts-cache/
+      - uses: actions/cache/save@v4
+        if: steps.c.outputs.cache-hit != 'true'
+        with:
+          path: zts-cache
+          key: zts-fb-${{ env.ZFS_SHA }}-${{ hashFiles('ci/zts/build-freebsd.sh') }}
+      - name: Swap zfs.ko and reboot
+        run: |
+          ssh freebsd "mkdir -p /var/tmp/ci /var/tmp/out"
+          scp -r ci/zts freebsd:/var/tmp/ci/
+          scp zts-cache/* freebsd:/var/tmp/out/
+          # The VM boots from ZFS, so zfs.ko cannot be unloaded.
+          ssh freebsd "tar xzpf /var/tmp/out/fb-inst.tgz -C / && cp /var/tmp/out/openzfs.ko /boot/kernel/zfs.ko && kldxref /boot/kernel && sync"
+          ssh freebsd "(sleep 3; shutdown -r now) >/dev/null 2>&1 &" || true
+          sleep 45
+          for i in $(seq 1 60); do ssh -o ConnectTimeout=5 freebsd true && break; sleep 5; done
+      - name: Run the suite
+        timeout-minutes: 170
+        run: |
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=6 freebsd \
+            "sh /var/tmp/ci/zts/run-freebsd.sh /var/tmp/ci/zts" 2>&1 | tee zts-console.log
+      - name: Collect
+        if: always()
+        run: |
+          ssh -o ConnectTimeout=20 freebsd "dmesg | tail -60; tar czf /var/tmp/res.tgz -C /var/tmp test_results" 2>&1 || true
+          scp -o ConnectTimeout=20 freebsd:/var/tmp/res.tgz . || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zts-freebsd
+          path: |
+            zts-console.log
+            res.tgz
+          retention-days: 14

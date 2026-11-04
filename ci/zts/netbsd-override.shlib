@@ -1,0 +1,35 @@
+
+# Appended to libtest.shlib by port-tests.sh.  NetBSD takes the FreeBSD arms
+# throughout; these are the arms whose commands NetBSD does not have.
+function add_user_freebsd #<group_name> <user_name> <basedir>
+{
+	typeset group=$1 user=$2 basedir=$3
+
+	id $user > /dev/null 2>&1 && return 0
+	useradd -g $group -d $basedir/$user -m -s /bin/sh $user || return 1
+	touch $basedir/$user/.hushlogin
+	return 0
+}
+
+function del_user_freebsd #<logname>
+{
+	id $1 > /dev/null 2>&1 && log_must userdel $1
+	return 0
+}
+
+function add_group_freebsd #<group_name>
+{
+	grep -q "^$1:" /etc/group && return 0
+	groupadd $1
+}
+
+function del_group_freebsd #<group_name>
+{
+	grep -q "^$1:" /etc/group || return 0
+	groupdel $1
+}
+
+function get_num_cpus
+{
+	sysctl -n hw.ncpu
+}
