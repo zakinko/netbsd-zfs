@@ -1,0 +1,18 @@
+name: acl-passthrough
+on:
+  push:
+    branches: [acl-passthrough-test]
+concurrency:
+  group: acl-passthrough
+  cancel-in-progress: true
+jobs:
+  freebsd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: vmactions/freebsd-vm@v1
+        with:
+          release: "15.0"
+          usesh: true
+          run: sh ci/test-acl-passthrough.sh
