@@ -13,8 +13,8 @@ done
 [ "${REGRESS:-}" ] || exit 0
 set -ex
 dd if=/dev/zero of=/var/tmp/img bs=1m count=32
+newfs -F -s 32m /var/tmp/img | tail -1
 vnconfig vnd0 /var/tmp/img
-newfs /dev/rvnd0d | tail -1
 ./race 10 /dev/vnd0d /dev/rvnd0d
 mount /dev/vnd0d /mnt; echo hello >/mnt/x; sync; umount /mnt
 mount -r /dev/vnd0d /mnt; cat /mnt/x; umount /mnt

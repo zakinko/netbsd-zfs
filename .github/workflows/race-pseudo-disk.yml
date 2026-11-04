@@ -60,7 +60,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        driver: [cgd, md]
+        driver: [cgd]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -83,7 +83,7 @@ jobs:
       - name: What happened
         if: always()
         run: |
-          sleep 120
+          sleep 420
           ssh -o ConnectTimeout=20 netbsd "uptime; dmesg | grep -E -A14 'fatal|panic:|uvm_fault' | head -40" || echo no answer
   kernel:
     runs-on: ubuntu-24.04

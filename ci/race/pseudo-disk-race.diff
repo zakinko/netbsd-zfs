@@ -218,39 +218,3 @@
  }
  
  static int
---- a/sys/dev/md.c
-+++ b/sys/dev/md.c
-@@ -341,9 +341,17 @@
- 	struct md_softc *sc;
- 	struct disk *dk;
- 
--	sc = device_lookup_private(&md_cd, MD_UNIT(dev));
--	if (sc == NULL)
-+	/*
-+	 * All of this under md_device_lock, as mdopen() is.  Taking it only
-+	 * for the detach let an open, or a second close, in between the
-+	 * look at dk_openmask and config_detach() of a unit gone by then.
-+	 */
-+	mutex_enter(&md_device_lock);
-+	sc = device_lookup_private(&md_cd, MD_UNIT(dev));
-+	if (sc == NULL) {
-+		mutex_exit(&md_device_lock);
- 		return ENXIO;
-+	}
- 
- 	dk = &sc->sc_dkdev;
- 
-@@ -360,12 +368,12 @@
- 	dk->dk_openmask = dk->dk_copenmask | dk->dk_bopenmask;
- 	if (dk->dk_openmask != 0) {
- 		mutex_exit(&dk->dk_openlock);
-+		mutex_exit(&md_device_lock);
- 		return 0;
- 	}
- 
- 	mutex_exit(&dk->dk_openlock);
- 
--	mutex_enter(&md_device_lock);
- 	cf = device_cfdata(sc->sc_dev);
- 	error = config_detach(sc->sc_dev, DETACH_QUIET);
- 	if (! error)
