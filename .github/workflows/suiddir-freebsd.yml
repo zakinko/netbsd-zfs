@@ -2,7 +2,7 @@ name: suiddir-freebsd
 on:
   push:
     branches: [acl-passthrough-test]
-    paths: ['ci/test-suiddir-freebsd.sh', '.github/workflows/suiddir-freebsd.yml']
+    paths: ['ci/test-suiddir-freebsd.sh', 'ci/test-suiddir-freebsd2.sh', '.github/workflows/suiddir-freebsd.yml']
 concurrency:
   group: suiddir-freebsd
   cancel-in-progress: true
@@ -20,3 +20,8 @@ jobs:
           usesh: true
           prepare: pkg install -y rsync vim autoconf automake libtool gmake git python3 pkgconf bash
           run: sh ci/test-suiddir-freebsd.sh 2>&1
+      - name: Measure after reboot
+        run: |
+          sleep 30
+          for i in $(seq 1 40); do ssh -o ConnectTimeout=5 freebsd true && break; sleep 5; done
+          ssh freebsd sh -s < ci/test-suiddir-freebsd2.sh 2>&1
