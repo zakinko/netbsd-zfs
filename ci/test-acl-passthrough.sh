@@ -22,7 +22,7 @@ check() {
 }
 acl() {
 	setfacl -b $1
-	setfacl -m g:admins:full_set:fd:allow,g:teachers:modify_set:fd:allow,g:students:read_set:fd:allow,g:everybody:full_set:fd:deny $1
+	setfacl -m g:admins:full_set:fd:allow,g:teachers:modify_set:fd:allow,g:students:read_set:fi:allow,g:everybody:full_set:fi:deny $1
 }
 d=/tank/s/share
 mkdir $d; chown root:wheel $d; chmod 755 $d
@@ -43,6 +43,15 @@ echo "=== cp from outside with umask 022"
 echo b > /var/tmp/o; chmod 644 /var/tmp/o
 su -m te -c "umask 022; cp /var/tmp/o $d/g"
 check $d/g
+echo "=== control: the same share without the deny"
+c=/tank/s/nodeny
+mkdir $c; chown root:wheel $c; chmod 755 $c
+setfacl -b $c
+setfacl -m g:admins:full_set:fd:allow,g:teachers:modify_set:fd:allow,g:students:read_set:fi:allow $c
+su -m te -c "umask 077; echo c > $c/f"
+check $c/f
+su -m te -c "chmod 666 $c/f"
+check $c/f
 echo "=== chmod to the same mode under restricted"
 zfs set aclmode=restricted tank/s
 su -m te -c "umask 022; echo r > $d/r"
