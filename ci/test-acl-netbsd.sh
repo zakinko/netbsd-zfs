@@ -6,7 +6,7 @@ export TERM=vt100
 W=/var/tmp/z; mkdir -p $W; cd $W || exit 1
 ftp -o sys.tgz https://cdn.netbsd.org/pub/NetBSD/NetBSD-11.0/source/sets/syssrc.tgz || exit 1
 mkdir nb; tar xzf sys.tgz -C nb; ls nb/usr/src | head -3
-git clone -q --depth 1 -b bsd-kernel https://github.com/zakinko/zfs zfs; git -C zfs log -1 --format='%h %cs %s'
+git clone -q --depth 1 -b bsd-lookup-access https://github.com/zakinko/zfs zfs; git -C zfs log -1 --format='%h %cs %s'
 cd zfs || exit 1
 (sh autogen.sh && PKG_CONFIG_LIBDIR=/usr/lib/pkgconfig PKG_CONFIG_PATH= MAKE=gmake \
     ./configure --with-config=user --prefix=/usr --exec-prefix= --sysconfdir=/etc \
