@@ -1,0 +1,75 @@
+name: race-pseudo-disk
+on:
+  push:
+    branches: [zts-fixes]
+    paths: ['ci/race/**', '.github/workflows/race-pseudo-disk.yml']
+  workflow_dispatch:
+concurrency:
+  group: race-pseudo-disk
+  cancel-in-progress: true
+env:
+  MARK: RACEFIX
+jobs:
+  stock:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        driver: [vnd, cgd, md]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: vmactions/netbsd-vm@v1
+        with:
+          release: '11.0'
+          cpu: 4
+          mem: 4096
+          sync: rsync
+          copyback: false
+          run: uname -a
+      - name: Hammer the stock kernel
+        run: |
+          ssh netbsd "mkdir -p /var/tmp/race"; scp ci/race/* netbsd:/var/tmp/race/
+          ssh -o ServerAliveInterval=10 -o ServerAliveCountMax=3 netbsd "sh /var/tmp/race/in-vm.sh 240 ${{ matrix.driver }}" || echo "SSH LOST rc=$?"
+      - name: What happened
+        if: always()
+        run: |
+          sleep 120
+          ssh -o ConnectTimeout=20 netbsd "uptime; dmesg | grep -E -A14 'fatal|panic:|uvm_fault' | head -40" || echo no answer
+  kernel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: nb/tools
+          key: racetools-11.0-amd64
+      - run: sh ci/race/kernel.sh "$PWD/nb" "$PWD/out" ci/race/pseudo-disk-race.diff
+      - uses: actions/upload-artifact@v4
+        with:
+          name: racekernel
+          path: out/netbsd
+          retention-days: 14
+  fixed:
+    needs: kernel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: racekernel
+          path: out
+      - uses: vmactions/netbsd-vm@v1
+        with:
+          release: '11.0'
+          cpu: 4
+          mem: 4096
+          sync: rsync
+          copyback: false
+          run: uname -a
+      - run: sh ci/race/swap.sh out/netbsd "$MARK" ssh netbsd
+      - run: |
+          ssh netbsd "mkdir -p /var/tmp/race"; scp ci/race/* netbsd:/var/tmp/race/
+          ssh -o ServerAliveInterval=10 -o ServerAliveCountMax=3 netbsd "REGRESS=1 sh /var/tmp/race/in-vm.sh 240 vnd cgd md"

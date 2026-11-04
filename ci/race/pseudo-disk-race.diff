@@ -1,0 +1,256 @@
+--- a/sys/dev/vnd.c
++++ b/sys/dev/vnd.c
+@@ -238,7 +238,12 @@
+ 
+ static struct vnd_softc	*vnd_spawn(int);
+ static int	vnd_destroy(device_t);
++static struct vnd_softc	*vnd_acquire(int, bool);
++static int	vnd_release(struct vnd_softc *);
+ 
++/* Keeps a unit from going away under an open or a close of it. */
++static kmutex_t	vnd_device_lock;
++
+ static const struct	dkdriver vnddkdriver = {
+ 	.d_strategy = vndstrategy,
+ 	.d_minphys = minphys
+@@ -249,6 +254,7 @@
+ {
+ 	int error;
+ 
++	mutex_init(&vnd_device_lock, MUTEX_DEFAULT, IPL_NONE);
+ 	error = config_cfattach_attach(vnd_cd.cd_name, &vnd_ca);
+ 	if (error)
+ 		aprint_error("%s: unable to register cfattach, error = %d\n",
+@@ -324,7 +330,54 @@
+ 	return 0;
+ }
+ 
++/*
++ * Find a unit, or make one, and hold it until vnd_release().  vndlock()
++ * cannot do this: it lives in the softc, and vndclose() used to free
++ * that with no regard for an open sleeping there, or for a partition
++ * still open, as soon as it had seen the unit unconfigured.  Opening
++ * /dev/vnd0d and /dev/rvnd0d from two threads was enough.
++ */
++static struct vnd_softc *
++vnd_acquire(int unit, bool spawn)
++{
++	struct vnd_softc *sc;
++
++	mutex_enter(&vnd_device_lock);
++	sc = device_lookup_private(&vnd_cd, unit);
++	if (sc == NULL && spawn) {
++		sc = vnd_spawn(unit);
++		if (sc != NULL) {
++			/* compatibility, keep disklabel after close */
++			sc->sc_flags = VNF_KLABEL;
++		}
++	}
++	if (sc != NULL)
++		sc->sc_refs++;
++	mutex_exit(&vnd_device_lock);
++	return sc;
++}
++
++/*
++ * Let go of a unit, the last one out destroying it if it is not
++ * configured and nothing has it open.
++ */
+ static int
++vnd_release(struct vnd_softc *sc)
++{
++	int error = 0;
++
++	mutex_enter(&vnd_device_lock);
++	if (--sc->sc_refs == 0 && (sc->sc_flags & VNF_INITED) == 0 &&
++	    sc->sc_dkdev.dk_openmask == 0) {
++		if ((error = vnd_destroy(sc->sc_dev)) != 0)
++			aprint_error_dev(sc->sc_dev,
++			    "unable to detach instance\n");
++	}
++	mutex_exit(&vnd_device_lock);
++	return error;
++}
++
++static int
+ vndopen(dev_t dev, int flags, int mode, struct lwp *l)
+ {
+ 	int unit = vndunit(dev);
+@@ -336,19 +389,15 @@
+ 	if (vnddebug & VDB_FOLLOW)
+ 		printf("vndopen(0x%"PRIx64", 0x%x, 0x%x, %p)\n", dev, flags, mode, l);
+ #endif
+-	sc = device_lookup_private(&vnd_cd, unit);
+-	if (sc == NULL) {
+-		sc = vnd_spawn(unit);
+-		if (sc == NULL)
+-			return ENOMEM;
++	sc = vnd_acquire(unit, true);
++	if (sc == NULL)
++		return ENOMEM;
+ 
+-		/* compatibility, keep disklabel after close */
+-		sc->sc_flags = VNF_KLABEL;
++	if ((error = vndlock(sc)) != 0) {
++		(void)vnd_release(sc);
++		return error;
+ 	}
+ 
+-	if ((error = vndlock(sc)) != 0)
+-		return error;
+-
+ 	mutex_enter(&sc->sc_dkdev.dk_openlock);
+ 
+ 	if ((sc->sc_flags & VNF_CLEARING) != 0) {
+@@ -413,6 +462,7 @@
+  done:
+ 	mutex_exit(&sc->sc_dkdev.dk_openlock);
+ 	vndunlock(sc);
++	(void)vnd_release(sc);
+ 	return error;
+ }
+ 
+@@ -427,12 +477,14 @@
+ 	if (vnddebug & VDB_FOLLOW)
+ 		printf("vndclose(0x%"PRIx64", 0x%x, 0x%x, %p)\n", dev, flags, mode, l);
+ #endif
+-	sc = device_lookup_private(&vnd_cd, unit);
++	sc = vnd_acquire(unit, false);
+ 	if (sc == NULL)
+ 		return ENXIO;
+ 
+-	if ((error = vndlock(sc)) != 0)
++	if ((error = vndlock(sc)) != 0) {
++		(void)vnd_release(sc);
+ 		return error;
++	}
+ 
+ 	mutex_enter(&sc->sc_dkdev.dk_openlock);
+ 
+@@ -461,15 +513,7 @@
+ 
+ 	vndunlock(sc);
+ 
+-	if ((sc->sc_flags & VNF_INITED) == 0) {
+-		if ((error = vnd_destroy(sc->sc_dev)) != 0) {
+-			aprint_error_dev(sc->sc_dev,
+-			    "unable to detach instance\n");
+-			return error;
+-		}
+-	}
+-
+-	return 0;
++	return vnd_release(sc);
+ }
+ 
+ /*
+@@ -2148,12 +2192,14 @@
+ 	switch (cmd) {
+ 	case MODULE_CMD_INIT:
+ #ifdef _MODULE
++		mutex_init(&vnd_device_lock, MUTEX_DEFAULT, IPL_NONE);
+                 /*
+                  * Attach the {b,c}devsw's
+                  */
+ 		error = devsw_attach("vnd", &vnd_bdevsw, &vnd_bmajor,
+ 		    &vnd_cdevsw, &vnd_cmajor);
+ 		if (error) {
++			mutex_destroy(&vnd_device_lock);
+ #ifdef DIAGNOSTIC
+                         aprint_error("%s: unable to attach %s devsw, "
+                             "error %d", __func__, vnd_cd.cd_name, error);
+@@ -2164,6 +2210,7 @@
+ 		error = config_cfdriver_attach(&vnd_cd);
+ 		if (error) {
+ 			devsw_detach(&vnd_bdevsw, &vnd_cdevsw);
++			mutex_destroy(&vnd_device_lock);
+ 			break;
+ 		}
+ 
+@@ -2171,6 +2218,7 @@
+ 	        if (error) {
+ 			config_cfdriver_detach(&vnd_cd);
+ 			devsw_detach(&vnd_bdevsw, &vnd_cdevsw);
++			mutex_destroy(&vnd_device_lock);
+ #ifdef DIAGNOSTIC
+ 			aprint_error("%s: unable to register cfattach for \n"
+ 			    "%s, error %d", __func__, vnd_cd.cd_name, error);
+@@ -2206,6 +2254,7 @@
+                  * Remove {b,c}devsw's
+                  */
+ 		devsw_detach(&vnd_bdevsw, &vnd_cdevsw);
++		mutex_destroy(&vnd_device_lock);
+ 
+ #endif
+ 		break;
+--- a/sys/dev/vndvar.h
++++ b/sys/dev/vndvar.h
+@@ -131,6 +131,7 @@
+ 	unsigned char	*sc_comp_decombuf;/* decompressed data buffer */
+ 	int32_t		 sc_comp_buffblk;/*current decompressed block */
+ 	z_stream	 sc_comp_stream;/* decompress descriptor */
++	u_int		 sc_refs;	/* opens and closes in progress */
+ };
+ #endif
+ 
+--- a/sys/dev/cgd.c
++++ b/sys/dev/cgd.c
+@@ -723,11 +723,19 @@
+ 	sc = getcgd_softc(dev);
+ 	if (sc == NULL)
+ 		sc = cgd_spawn(CGDUNIT(dev));
+-	cgd_unlock();
+-	if (sc == NULL)
++	if (sc == NULL) {
++		cgd_unlock();
+ 		return ENXIO;
++	}
+ 
+-	return dk_open(&sc->sc_dksc, dev, flags, fmt, l);
++	/*
++	 * Under the lock, or the last close of an unconfigured unit
++	 * destroys the softc between here and dk_open().
++	 */
++	error = dk_open(&sc->sc_dksc, dev, flags, fmt, l);
++	cgd_unlock();
++
++	return error;
+ }
+ 
+ static int
+--- a/sys/dev/md.c
++++ b/sys/dev/md.c
+@@ -341,9 +341,17 @@
+ 	struct md_softc *sc;
+ 	struct disk *dk;
+ 
+-	sc = device_lookup_private(&md_cd, MD_UNIT(dev));
+-	if (sc == NULL)
++	/*
++	 * All of this under md_device_lock, as mdopen() is.  Taking it only
++	 * for the detach let an open, or a second close, in between the
++	 * look at dk_openmask and config_detach() of a unit gone by then.
++	 */
++	mutex_enter(&md_device_lock);
++	sc = device_lookup_private(&md_cd, MD_UNIT(dev));
++	if (sc == NULL) {
++		mutex_exit(&md_device_lock);
+ 		return ENXIO;
++	}
+ 
+ 	dk = &sc->sc_dkdev;
+ 
+@@ -360,12 +368,12 @@
+ 	dk->dk_openmask = dk->dk_copenmask | dk->dk_bopenmask;
+ 	if (dk->dk_openmask != 0) {
+ 		mutex_exit(&dk->dk_openlock);
++		mutex_exit(&md_device_lock);
+ 		return 0;
+ 	}
+ 
+ 	mutex_exit(&dk->dk_openlock);
+ 
+-	mutex_enter(&md_device_lock);
+ 	cf = device_cfdata(sc->sc_dev);
+ 	error = config_detach(sc->sc_dev, DETACH_QUIET);
+ 	if (! error)
