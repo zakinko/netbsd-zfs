@@ -79,6 +79,16 @@ as te "chmod 777 $a/sub"; rights $a/sub/f
 as ou "ls $a/sub"; as ou "touch $a/sub/x"; as lo "ls $a/sub"; as st "ls $a/sub"
 echo '--- chmod of the share itself by root'
 chmod 777 $a; as ou "ls $a"; as ou "touch $a/x"; chmod 755 $a
+echo '##### traversal: may ou pass a directory that denies it execute?'
+echo pub > $a/p; chown root:wheel $a/p; setfacl -b $a/p; chmod 644 $a/p; getfacl -q $a/p | head -4
+as ou "stat -f %Sp $a/p"; as ou "cat $a/p"; as ou "ls -l $a/p"; as ou "chmod 666 $a/o"
+as ou "sh -c 'cd $a && pwd'"
+echo '--- control: plain mode 700 directory, no ACL'
+mkdir /tank/s/pl; chmod 700 /tank/s/pl; echo pub > /tank/s/pl/p; chmod 644 /tank/s/pl/p
+as ou "stat -f %Sp /tank/s/pl/p"; as ou "cat /tank/s/pl/p"
+echo '--- control: same with one deny ACE, no group trick'
+mkdir /tank/s/pd; chmod 755 /tank/s/pd; setfacl -m u:ou:x::deny /tank/s/pd; echo pub > /tank/s/pd/p; chmod 644 /tank/s/pd/p; getfacl -q /tank/s/pd | head -3
+as ou "stat -f %Sp /tank/s/pd/p"; as ou "cat /tank/s/pd/p"
 echo '##### NFSv4 over loopback'
 sysctl vfs.nfs.enable_uidtostring=1 vfs.nfsd.enable_stringtouid=1
 sysrc -q rpcbind_enable=YES nfs_server_enable=YES nfsv4_server_enable=YES nfsuserd_enable=YES mountd_enable=YES nfscbd_enable=YES >/dev/null

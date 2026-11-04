@@ -2,6 +2,7 @@
 # Scratch: aclmode=passthrough on the OpenZFS NetBSD port, same cases as FreeBSD.
 # Builds zakinko/zfs bsd-kernel against 11.0 sys and runs on the stock kernel.
 set -u
+export TERM=vt100
 W=/var/tmp/z; mkdir -p $W; cd $W || exit 1
 ftp -o sys.tgz https://cdn.netbsd.org/pub/NetBSD/NetBSD-11.0/source/sets/syssrc.tgz || exit 1
 mkdir nb; tar xzf sys.tgz -C nb; ls nb/usr/src | head -3
@@ -64,7 +65,7 @@ tools() { # dir label
 	try $d $u "ex -s -c 'wq' $f"
 	try $d $u "sh -c 'printf \"%%s/a/b/\\nwq\\n\" | ex -s $f'"
 	try $d $u "cp /var/tmp/src $f"
-	try $d $u "sed -i '' s/a/b/ $f"
+	try $d $u "sed -i s/a/b/ $f"
 	try $d $u "cp -p /var/tmp/src $f"
 	try $d $u "install -m 640 /var/tmp/src $f"
 	try $d $u "tar -xpf /var/tmp/t.tar -C $d"
@@ -95,4 +96,14 @@ as te "chmod 777 $a/sub"; rights $a/sub/f
 as ou "ls $a/sub"; as ou "touch $a/sub/x"; as lo "ls $a/sub"; as st "ls $a/sub"
 echo '--- chmod of the share itself by root'
 chmod 777 $a; as ou "ls $a"; as ou "touch $a/x"; chmod 755 $a
+echo '##### traversal: may ou pass a directory that denies it execute?'
+echo pub > $a/p; chown root:wheel $a/p; setfacl -b $a/p; chmod 644 $a/p; getfacl -q $a/p | head -4
+as ou "stat -f %Sp $a/p"; as ou "cat $a/p"; as ou "ls -l $a/p"; as ou "chmod 666 $a/o"
+as ou "sh -c 'cd $a && pwd'"
+echo '--- control: plain mode 700 directory, no ACL'
+mkdir /tank/s/pl; chmod 700 /tank/s/pl; echo pub > /tank/s/pl/p; chmod 644 /tank/s/pl/p
+as ou "stat -f %Sp /tank/s/pl/p"; as ou "cat /tank/s/pl/p"
+echo '--- control: same with one deny ACE, no group trick'
+mkdir /tank/s/pd; chmod 755 /tank/s/pd; setfacl -m u:ou:x::deny /tank/s/pd; echo pub > /tank/s/pd/p; chmod 644 /tank/s/pd/p; getfacl -q /tank/s/pd | head -3
+as ou "stat -f %Sp /tank/s/pd/p"; as ou "cat /tank/s/pd/p"
 echo '##### done'
