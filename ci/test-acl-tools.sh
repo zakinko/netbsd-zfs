@@ -22,10 +22,10 @@ share() { # dir teacher-perms
 as() { su -m "$1" -c "$2" >/dev/null 2>&1; echo "  rc=$? $1: $2" | cut -c1-90; }
 rights() { # file
 	stat -f '  mode %Sp owner %Su %N' $1
-	for u in ad te t2 st ou lo; do
-		su -m $u -c "cat $1" >/dev/null 2>&1 && r=r || r=-
-		su -m $u -c "sh -c ': >> $1'" >/dev/null 2>&1 && w=w || w=-
-		printf '  %s:%s%s' $u $r $w
+	for v in ad te t2 st ou lo; do
+		su -m $v -c "cat $1" >/dev/null 2>&1 && r=r || r=-
+		su -m $v -c "sh -c ': >> $1'" >/dev/null 2>&1 && w=w || w=-
+		printf '  %s:%s%s' $v $r $w
 	done; echo
 }
 named() { getfacl -q $1 | grep -c 'group:\(admins\|teachers\|students\|everybody\)'; }
