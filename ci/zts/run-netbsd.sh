@@ -19,6 +19,23 @@ cp "$HERE"/*.run $Z/runfiles/
 grep -q '^zts:' /etc/passwd || useradd -m -g wheel -s /bin/sh zts
 printf 'zts ALL=(ALL) NOPASSWD:SETENV: ALL\n' > /usr/pkg/etc/sudoers.d/zts
 P=/usr/bin:/bin:/usr/sbin:/sbin:/usr/pkg/bin:/usr/pkg/sbin:/usr/pkg/gnu/bin
-su zts -c "cd /var/tmp && PATH=$P $Z/zfs-tests.sh -v -f -x -s 4G -r $RUN"
-rc=$?; echo "zfs-tests.sh rc=$rc"
+# Sections that take the machine down run last, one runfile each, so that
+# what ran before them is kept.
+: "${LATE:=mv_files}"
+awk -v late="$LATE" 'BEGIN { RS=""; ORS="\n\n"; n=split(late, l, " ") }
+	{ for (i = 1; i <= n; i++) if ($0 ~ "tests/functional/" l[i] "\\]") next; print }' \
+    "$HERE/$RUN.run" > $Z/runfiles/early.run
+one() {
+	echo "##### runfile $1 $(date)"
+	su zts -c "cd /var/tmp && PATH=$P $Z/zfs-tests.sh -v -f -x -s 4G -r $1"
+	echo "##### zfs-tests.sh $1 rc=$?"
+	tar czf /var/tmp/res.tgz -C /var/tmp test_results; sync
+}
+one early
+for t in $LATE; do
+	f=$(echo "$t" | tr / _)
+	awk -v t="$t" 'BEGIN { RS=""; ORS="\n\n" } /^\[DEFAULT\]|^# ZFS/ || $0 ~ "tests/functional/" t "\\]"' \
+	    "$HERE/$RUN.run" > "$Z/runfiles/late-$f.run"
+	one "late-$f"
+done
 exit 0
