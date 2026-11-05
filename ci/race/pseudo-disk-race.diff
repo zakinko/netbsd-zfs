@@ -20,14 +20,15 @@
  	sc->sc_comp_offsets = NULL;
  	sc->sc_comp_buff = NULL;
  	sc->sc_comp_decombuf = NULL;
-@@ -288,6 +290,16 @@ vnd_detach(device_t self, int flags)
+@@ -288,6 +290,17 @@ vnd_detach(device_t self, int flags)
  		if (error != 0)
  			return error;
  	}
 +
 +	/*
-+	 * An open or a close may hold the lock, and an open waiting for the lock finds VNF_CLEARING and stays away
-+	 * from what is destroyed below; its reference keeps the softc.
++	 * An open or a close may hold the lock.  An open waiting for it
++	 * finds VNF_CLEARING and stays away from what is destroyed
++	 * below; its reference keeps the softc.
 +	 */
 +	if ((flags & DETACH_FORCE) == 0 &&
 +	    ((sc->sc_flags & VNF_LOCKED) != 0 ||
@@ -37,7 +38,7 @@
  
  	pmf_device_deregister(self);
  	bufq_free(sc->sc_tab);
-@@ -296,38 +308,48 @@ vnd_detach(device_t self, int flags)
+@@ -296,38 +309,48 @@ vnd_detach(device_t self, int flags)
  	return 0;
  }
  
@@ -99,7 +100,7 @@
  	struct vnd_softc *sc;
  	int error = 0, part, pmask;
  	struct disklabel *lp;
-@@ -336,26 +358,23 @@ vndopen(dev_t dev, int flags, int mode, struct lwp *l)
+@@ -336,26 +359,23 @@ vndopen(dev_t dev, int flags, int mode, struct lwp *l)
  	if (vnddebug & VDB_FOLLOW)
  		printf("vndopen(0x%"PRIx64", 0x%x, 0x%x, %p)\n", dev, flags, mode, l);
  #endif
@@ -137,7 +138,7 @@
  	lp = sc->sc_dkdev.dk_label;
  
  	part = DISKPART(dev);
-@@ -413,6 +432,7 @@ vndopen(dev_t dev, int flags, int mode, struct lwp *l)
+@@ -413,6 +433,7 @@ vndopen(dev_t dev, int flags, int mode, struct lwp *l)
   done:
  	mutex_exit(&sc->sc_dkdev.dk_openlock);
  	vndunlock(sc);
@@ -145,7 +146,7 @@
  	return error;
  }
  
-@@ -461,14 +481,6 @@ vndclose(dev_t dev, int flags, int mode, struct lwp *l
+@@ -461,14 +482,6 @@ vndclose(dev_t dev, int flags, int mode, struct lwp *l
  
  	vndunlock(sc);
  
@@ -160,7 +161,7 @@
  	return 0;
  }
  
-@@ -1116,6 +1128,9 @@ vnddoclear(struct vnd_softc *vnd, int pmask, int minor
+@@ -1116,6 +1129,9 @@ vnddoclear(struct vnd_softc *vnd, int pmask, int minor
  	/* Detach the disk. */
  	disk_detach(&vnd->sc_dkdev);
  
@@ -170,7 +171,7 @@
  	return 0;
  }
  
-@@ -1257,6 +1272,20 @@ vndioctl(dev_t dev, u_long cmd, void *data, int flag, 
+@@ -1257,6 +1273,20 @@ vndioctl(dev_t dev, u_long cmd, void *data, int flag, 
  		if ((error = vndlock(vnd)) != 0)
  			return error;
  
@@ -191,7 +192,7 @@
  		fflags = FREAD;
  		if ((vio->vnd_flags & VNDIOF_READONLY) == 0)
  			fflags |= FWRITE;
-@@ -1792,6 +1821,13 @@ vndclear(struct vnd_softc *vnd, int myminor)
+@@ -1792,6 +1822,13 @@ vndclear(struct vnd_softc *vnd, int myminor)
  	while (vnd->sc_flags & VNF_KTHREAD)
  		tsleep(&vnd->sc_kthread, PRIBIO, "vnthr", 0);
  
@@ -205,7 +206,7 @@
  #ifdef VND_COMPRESSION
  	/* free the compressed file buffers */
  	if (vnd->sc_flags & VNF_COMP) {
-@@ -1811,7 +1847,7 @@ vndclear(struct vnd_softc *vnd, int myminor)
+@@ -1811,7 +1848,7 @@ vndclear(struct vnd_softc *vnd, int myminor)
  #endif /* VND_COMPRESSION */
  	vnd->sc_flags &=
  	    ~(VNF_INITED | VNF_READONLY | VNF_KLABEL | VNF_VLABEL
@@ -214,7 +215,7 @@
  	if (vp == NULL)
  		panic("vndclear: null vp");
  	(void) vn_close(vp, fflags, vnd->sc_cred);
-@@ -2139,6 +2175,43 @@ CFDRIVER_DECL(vnd, DV_DISK, NULL);
+@@ -2139,6 +2176,43 @@ CFDRIVER_DECL(vnd, DV_DISK, NULL);
  int vnd_bmajor = -1, vnd_cmajor = -1;
  
  CFDRIVER_DECL(vnd, DV_DISK, NULL);
@@ -258,7 +259,7 @@
  #endif
  
  static int
-@@ -2183,6 +2256,13 @@ vnd_modcmd(modcmd_t cmd, void *arg)
+@@ -2183,6 +2257,13 @@ vnd_modcmd(modcmd_t cmd, void *arg)
  
  	case MODULE_CMD_FINI:
  #ifdef _MODULE
