@@ -304,15 +304,12 @@
  		return NULL;
  	}
  
-@@ -721,13 +723,24 @@ cgdopen(dev_t dev, int flags, int fmt, struct lwp *l)
- 	if (error)
- 		return error;
+@@ -723,11 +725,22 @@ cgdopen(dev_t dev, int flags, int fmt, struct lwp *l)
  	sc = getcgd_softc(dev);
--	if (sc == NULL)
--		sc = cgd_spawn(CGDUNIT(dev));
--	cgd_unlock();
  	if (sc == NULL)
-+		sc = cgd_spawn(CGDUNIT(dev));
+ 		sc = cgd_spawn(CGDUNIT(dev));
+-	cgd_unlock();
+-	if (sc == NULL)
 +	if (sc == NULL) {
 +		cgd_unlock();
  		return ENXIO;
@@ -333,3 +330,13 @@
  }
  
  static int
+@@ -752,7 +765,8 @@ cgdclose(dev_t dev, int flags, int fmt, struct lwp *l)
+ 	if ((error =  dk_close(dksc, dev, flags, fmt, l)) != 0)
+ 		goto done;
+ 
+-	if (!DK_ATTACHED(dksc)) {
++	/* Another partition may still be open, and detach would refuse. */
++	if (!DK_ATTACHED(dksc) && !DK_BUSY(dksc, 0)) {
+ 		if ((error = cgd_destroy(sc->sc_dksc.sc_dev)) != 0) {
+ 			device_printf(dksc->sc_dev,
+ 			    "unable to detach instance\n");

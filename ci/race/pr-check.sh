@@ -34,6 +34,9 @@ if [ "$M" = trunk ]; then
 	    vnd.o cgd.o) >"$OUT/strict.log" 2>&1 || { tail -40 "$OUT/strict.log"; exit 1; }
 	echo "=== strict warnings in vnd.c, vndvar.h, cgd.c"
 	grep -E 'dev/(vnd\.c|vndvar\.h|cgd\.c):[0-9]+:[0-9]+: (warning|error)' "$OUT/strict.log" || echo none
+	grep -cE '(vnd|cgd)\.c' "$OUT/strict.log" || :
+	grep -m1 -E 'Wshadow.*vnd\.c|vnd\.c.*Wshadow|compile.*vnd' "$OUT/strict.log" | cut -c1-200 || :
+	ls -l "$W/obj/sys/arch/amd64/compile/$MARK/vnd.o"
 	echo "=== end strict"
 fi
 if [ "$M" = module ]; then
