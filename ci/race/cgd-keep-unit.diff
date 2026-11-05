@@ -1,0 +1,325 @@
+--- a/sys/dev/cgd.c
++++ b/sys/dev/cgd.c
+@@ -394,7 +394,6 @@ static void cgd_destroy_worker(struct cgd_worker *);
+ static void cgd_destroy_one_worker(struct cgd_worker *);
+ static struct cgd_worker *cgd_create_worker(void);
+ static void cgd_destroy_worker(struct cgd_worker *);
+-static int cgd_destroy(device_t);
+ 
+ /* Internal Functions */
+ 
+@@ -575,7 +574,8 @@ cgd_spawn(int unit)
+ 	cf->cf_name = cgd_cd.cd_name;
+ 	cf->cf_atname = cgd_cd.cd_name;
+ 	cf->cf_unit = unit;
+-	cf->cf_fstate = FSTATE_STAR;
++	/* Not STAR, which would take the next unit if this one is busy. */
++	cf->cf_fstate = FSTATE_NOTFOUND;
+ 
+ 	cw = cgd_create_one_worker();
+ 	if (cw == NULL) {
+@@ -586,129 +586,15 @@ cgd_spawn(int unit)
+ 	sc = device_private(config_attach_pseudo(cf));
+ 	if (sc == NULL) {
+ 		cgd_destroy_one_worker(cw);
++		kmem_free(cf, sizeof(*cf));
+ 		return NULL;
+ 	}
+ 
+ 	sc->sc_worker = cw;
+ 
+ 	return sc;
+-}
+-
+-static int
+-cgd_destroy(device_t dev)
+-{
+-	struct cgd_softc *sc = device_private(dev);
+-	struct cgd_worker *cw = sc->sc_worker;
+-	cfdata_t cf;
+-	int error;
+-
+-	cf = device_cfdata(dev);
+-	error = config_detach(dev, DETACH_QUIET);
+-	if (error)
+-		return error;
+-
+-	cgd_destroy_one_worker(cw);
+-
+-	kmem_free(cf, sizeof(*cf));
+-	return 0;
+-}
+-
+-static void
+-cgd_busy(struct cgd_softc *sc)
+-{
+-
+-	mutex_enter(&sc->sc_lock);
+-	while (sc->sc_busy)
+-		cv_wait(&sc->sc_cv, &sc->sc_lock);
+-	sc->sc_busy = true;
+-	mutex_exit(&sc->sc_lock);
+-}
+-
+-static void
+-cgd_unbusy(struct cgd_softc *sc)
+-{
+-
+-	mutex_enter(&sc->sc_lock);
+-	sc->sc_busy = false;
+-	cv_broadcast(&sc->sc_cv);
+-	mutex_exit(&sc->sc_lock);
+-}
+-
+-static struct cgd_worker *
+-cgd_create_one_worker(void)
+-{
+-	KASSERT(cgd_spawning);
+-
+-	if (cgd_refcnt++ == 0) {
+-		KASSERT(cgd_worker == NULL);
+-		cgd_worker = cgd_create_worker();
+-	}
+-
+-	KASSERT(cgd_worker != NULL);
+-	return cgd_worker;
+-}
+-
+-static void
+-cgd_destroy_one_worker(struct cgd_worker *cw)
+-{
+-	KASSERT(cgd_spawning);
+-	KASSERT(cw == cgd_worker);
+-
+-	if (--cgd_refcnt == 0) {
+-		cgd_destroy_worker(cgd_worker);
+-		cgd_worker = NULL;
+-	}
+ }
+ 
+-static struct cgd_worker *
+-cgd_create_worker(void)
+-{
+-	struct cgd_worker *cw;
+-	struct workqueue *wq;
+-	struct pool *cp;
+-	int error;
+-
+-	cw = kmem_alloc(sizeof(struct cgd_worker), KM_SLEEP);
+-	cp = kmem_alloc(sizeof(struct pool), KM_SLEEP);
+-
+-	error = workqueue_create(&wq, "cgd", cgd_process, NULL,
+-	    PRI_BIO, IPL_BIO, WQ_FPU|WQ_MPSAFE|WQ_PERCPU);
+-	if (error) {
+-		kmem_free(cp, sizeof(struct pool));
+-		kmem_free(cw, sizeof(struct cgd_worker));
+-		return NULL;
+-	}
+-
+-	cw->cw_cpool = cp;
+-	cw->cw_wq = wq;
+-	pool_init(cw->cw_cpool, sizeof(struct cgd_xfer), 0,
+-	    0, 0, "cgdcpl", NULL, IPL_BIO);
+-	mutex_init(&cw->cw_lock, MUTEX_DEFAULT, IPL_BIO);
+-
+-	return cw;
+-}
+-
+-static void
+-cgd_destroy_worker(struct cgd_worker *cw)
+-{
+-
+-	/*
+-	 * Wait for all worker threads to complete before destroying
+-	 * the rest of the cgd_worker.
+-	 */
+-	if (cw->cw_wq)
+-		workqueue_destroy(cw->cw_wq);
+-
+-	mutex_destroy(&cw->cw_lock);
+-
+-	if (cw->cw_cpool) {
+-		pool_destroy(cw->cw_cpool);
+-		kmem_free(cw->cw_cpool, sizeof(struct pool));
+-	}
+-
+-	kmem_free(cw, sizeof(struct cgd_worker));
+-}
+-
+ static int
+ cgdopen(dev_t dev, int flags, int fmt, struct lwp *l)
+ {
+@@ -748,17 +634,13 @@ cgdclose(dev_t dev, int flags, int fmt, struct lwp *l)
+ 		goto done;
+ 	}
+ 
++	/*
++	 * The unit stays, unconfigured or not: cgdopen() calls dk_open()
++	 * after dropping the lock, and destroying the softc here used to
++	 * free it under that.  cgd_destroy_idle() has the rest.
++	 */
+ 	dksc = &sc->sc_dksc;
+-	if ((error =  dk_close(dksc, dev, flags, fmt, l)) != 0)
+-		goto done;
+-
+-	if (!DK_ATTACHED(dksc)) {
+-		if ((error = cgd_destroy(sc->sc_dksc.sc_dev)) != 0) {
+-			device_printf(dksc->sc_dev,
+-			    "unable to detach instance\n");
+-			goto done;
+-		}
+-	}
++	error = dk_close(dksc, dev, flags, fmt, l);
+ 
+ done:
+ 	cgd_unlock();
+@@ -1728,6 +1610,140 @@ CFDRIVER_DECL(cgd, DV_DISK, NULL);
+ #ifdef _MODULE
+ CFDRIVER_DECL(cgd, DV_DISK, NULL);
+ 
++static int
++cgd_destroy(device_t dev)
++{
++	struct cgd_softc *sc = device_private(dev);
++	struct cgd_worker *cw = sc->sc_worker;
++	cfdata_t cf;
++	int error;
++
++	cf = device_cfdata(dev);
++	error = config_detach(dev, DETACH_QUIET);
++	if (error)
++		return error;
++
++	cgd_destroy_one_worker(cw);
++
++	kmem_free(cf, sizeof(*cf));
++	return 0;
++}
++
++static void
++cgd_busy(struct cgd_softc *sc)
++{
++
++	mutex_enter(&sc->sc_lock);
++	while (sc->sc_busy)
++		cv_wait(&sc->sc_cv, &sc->sc_lock);
++	sc->sc_busy = true;
++	mutex_exit(&sc->sc_lock);
++}
++
++static void
++cgd_unbusy(struct cgd_softc *sc)
++{
++
++	mutex_enter(&sc->sc_lock);
++	sc->sc_busy = false;
++	cv_broadcast(&sc->sc_cv);
++	mutex_exit(&sc->sc_lock);
++}
++
++static struct cgd_worker *
++cgd_create_one_worker(void)
++{
++	KASSERT(cgd_spawning);
++
++	if (cgd_refcnt++ == 0) {
++		KASSERT(cgd_worker == NULL);
++		cgd_worker = cgd_create_worker();
++	}
++
++	KASSERT(cgd_worker != NULL);
++	return cgd_worker;
++}
++
++static void
++cgd_destroy_one_worker(struct cgd_worker *cw)
++{
++	KASSERT(cgd_spawning);
++	KASSERT(cw == cgd_worker);
++
++	if (--cgd_refcnt == 0) {
++		cgd_destroy_worker(cgd_worker);
++		cgd_worker = NULL;
++	}
++}
++
++static struct cgd_worker *
++cgd_create_worker(void)
++{
++	struct cgd_worker *cw;
++	struct workqueue *wq;
++	struct pool *cp;
++	int error;
++
++	cw = kmem_alloc(sizeof(struct cgd_worker), KM_SLEEP);
++	cp = kmem_alloc(sizeof(struct pool), KM_SLEEP);
++
++	error = workqueue_create(&wq, "cgd", cgd_process, NULL,
++	    PRI_BIO, IPL_BIO, WQ_FPU|WQ_MPSAFE|WQ_PERCPU);
++	if (error) {
++		kmem_free(cp, sizeof(struct pool));
++		kmem_free(cw, sizeof(struct cgd_worker));
++		return NULL;
++	}
++
++	cw->cw_cpool = cp;
++	cw->cw_wq = wq;
++	pool_init(cw->cw_cpool, sizeof(struct cgd_xfer), 0,
++	    0, 0, "cgdcpl", NULL, IPL_BIO);
++	mutex_init(&cw->cw_lock, MUTEX_DEFAULT, IPL_BIO);
++
++	return cw;
++}
++
++static void
++cgd_destroy_worker(struct cgd_worker *cw)
++{
++
++	/*
++	 * Wait for all worker threads to complete before destroying
++	 * the rest of the cgd_worker.
++	 */
++	if (cw->cw_wq)
++		workqueue_destroy(cw->cw_wq);
++
++	mutex_destroy(&cw->cw_lock);
++
++	if (cw->cw_cpool) {
++		pool_destroy(cw->cw_cpool);
++		kmem_free(cw->cw_cpool, sizeof(struct pool));
++	}
++
++	kmem_free(cw, sizeof(struct cgd_worker));
++}
++
++/* The units that opens have left, unless one of them is in use. */
++static int
++cgd_destroy_idle(void)
++{
++	struct cgd_softc *sc;
++	int error = 0, unit;
++
++	for (unit = 0; error == 0 && unit < cgd_cd.cd_ndevs; unit++) {
++		sc = device_lookup_private(&cgd_cd, unit);
++		if (sc == NULL)
++			continue;
++		if (DK_ATTACHED(&sc->sc_dksc) || DK_BUSY(&sc->sc_dksc, 0))
++			error = EBUSY;
++		else
++			error = cgd_destroy(sc->sc_dksc.sc_dev);
++	}
++	return error;
++}
++
+ devmajor_t cgd_bmajor = -1, cgd_cmajor = -1;
+ #endif
+ 
+@@ -1777,6 +1793,8 @@ cgd_modcmd(modcmd_t cmd, void *arg)
+ 
+ 	case MODULE_CMD_FINI:
+ #ifdef _MODULE
++		if ((error = cgd_destroy_idle()) != 0)
++			break;
+ 		/*
+ 		 * Remove device from autoconf database
+ 		 */

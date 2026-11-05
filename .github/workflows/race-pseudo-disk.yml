@@ -122,3 +122,46 @@ jobs:
       - run: |
           ssh netbsd "mkdir -p /var/tmp/race"; scp ci/race/* netbsd:/var/tmp/race/
           ssh -o ServerAliveInterval=10 -o ServerAliveCountMax=3 netbsd "REGRESS=1 sh /var/tmp/race/in-vm.sh 400000000 vnd"
+  cgd-kernel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      MARK: RACECGD
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: nb/tools
+          key: racetools-11.0-amd64
+      - run: sh ci/race/kernel.sh "$PWD/nb" "$PWD/out" ci/race/cgd-keep-unit.diff ci/race/widen-cgd.diff
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cgdkernel
+          path: out/netbsd
+          retention-days: 14
+  cgd-fixed:
+    needs: cgd-kernel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      MARK: RACECGD
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: cgdkernel
+          path: out
+      - uses: vmactions/netbsd-vm@v1
+        with:
+          release: '11.0'
+          cpu: 4
+          mem: 4096
+          sync: rsync
+          copyback: false
+          run: uname -a
+      - run: sh ci/race/swap.sh out/netbsd RACECGD ssh netbsd
+      - name: With the fix, and the delay that panicked the stock code
+        run: |
+          ssh netbsd "mkdir -p /var/tmp/race"; scp ci/race/* netbsd:/var/tmp/race/
+          ssh -o ServerAliveInterval=10 -o ServerAliveCountMax=6 netbsd "sh /var/tmp/race/in-vm.sh 20000000 cgd"
+          ssh netbsd "dmesg | grep -c 'unable to detach' || :"

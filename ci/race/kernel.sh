@@ -8,6 +8,7 @@ mkdir -p "$W" "$OUT"; cd "$W"
 for s in src gnusrc syssrc sharesrc; do curl -fsSL "$CDN/$s.tgz" | tar xzf -; done
 cd usr/src
 case $D in *pseudo-disk-race*) sh "$R/patch-11.sh" "$D" ;; *) patch -f -p1 -i "$D" </dev/null ;; esac
+[ -z "${4:-}" ] || patch -f -p1 -i "$(realpath "$4")" </dev/null
 printf 'include "arch/amd64/conf/GENERIC"\n' >sys/arch/amd64/conf/"$MARK"
 J=$(nproc)
 [ -x "$W/tools/bin/nbmake-amd64" ] || ./build.sh -U -m amd64 -j "$J" -O "$W/obj" -T "$W/tools" tools >"$OUT/tools.log" 2>&1 || { tail -40 "$OUT/tools.log"; exit 1; }

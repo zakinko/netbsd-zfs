@@ -1,0 +1,18 @@
+--- a/sys/dev/cgd.c
++++ b/sys/dev/cgd.c
+@@ -34,6 +34,7 @@
+ 
+ #include <sys/types.h>
+ #include <sys/param.h>
++#include <sys/proc.h>
+ #include <sys/buf.h>
+ #include <sys/bufq.h>
+ #include <sys/conf.h>
+@@ -726,6 +727,7 @@
+ 	cgd_unlock();
+ 	if (sc == NULL)
+ 		return ENXIO;
++	kpause("racew", false, 1, NULL);
+ 
+ 	return dk_open(&sc->sc_dksc, dev, flags, fmt, l);
+ }
