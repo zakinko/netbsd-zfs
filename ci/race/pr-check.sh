@@ -3,7 +3,7 @@
 #   module  11.0 kernel without vnd, plus vnd.kmod from the diff
 #   trunk   current GENERIC with the diff
 set -eu
-M=$1; W=$2; OUT=$3; D=$(realpath "$4")
+M=$1; W=$2; OUT=$3; D=$(realpath "$4"); R=$(dirname "$(realpath "$0")")
 mkdir -p "$W" "$OUT"; cd "$W"
 if [ "$M" = trunk ]; then
 	curl -fsSL https://codeload.github.com/NetBSD/src/tar.gz/refs/heads/trunk | tar xzf -
@@ -13,7 +13,7 @@ else
 	for s in src gnusrc syssrc sharesrc; do curl -fsSL "$CDN/$s.tgz" | tar xzf -; done
 fi
 cd usr/src
-patch -p1 <"$D"
+if [ "$M" = trunk ]; then patch -f -p1 -i "$D" </dev/null; else sh "$R/patch-11.sh" "$D"; fi
 { echo 'include "arch/amd64/conf/GENERIC"'
   if [ "$M" = trunk ]; then
 	echo 'options DIAGNOSTIC'; echo 'options DEBUG'; echo 'options LOCKDEBUG'
