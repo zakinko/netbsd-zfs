@@ -53,6 +53,15 @@ mount /dev/vnd0d /mnt
 cat /mnt/y; umount /mnt
 vnconfig -u vnd0
 drvctl -d vnd0; ./race 5 /dev/vnd0d /dev/rvnd0d
+# A detach of a configured unit with opens in progress must finish.
+./race 40 /dev/vnd0d /dev/rvnd0d &
+i=0; while [ $i -lt 100 ]; do
+	vnconfig vnd0 /var/tmp/img 2>/dev/null || :
+	drvctl -d vnd0 2>/dev/null || :
+	i=$((i + 1))
+done
+wait
+vnconfig -u vnd0 2>/dev/null || :
 dd if=/dev/urandom of=/var/tmp/key bs=32 count=1
 dd if=/dev/zero of=/var/tmp/img2 bs=1m count=8
 vnconfig vnd1 /var/tmp/img2

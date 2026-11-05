@@ -20,20 +20,21 @@
  	sc->sc_comp_offsets = NULL;
  	sc->sc_comp_buff = NULL;
  	sc->sc_comp_decombuf = NULL;
-@@ -288,6 +290,17 @@ vnd_detach(device_t self, int flags)
+@@ -287,7 +289,18 @@ vnd_detach(device_t self, int flags)
+ 		error = vnddoclear(sc, 0, -1, (flags & DETACH_FORCE) != 0);
  		if (error != 0)
  			return error;
++	} else if ((flags & DETACH_FORCE) == 0 &&
++	    ((sc->sc_flags & VNF_LOCKED) != 0 ||
++	     sc->sc_dkdev.dk_openmask != 0)) {
++		/* An open or a close may hold the lock. */
++		return EBUSY;
  	}
 +
 +	/*
-+	 * An open or a close may hold the lock.  An open waiting for it
-+	 * finds VNF_CLEARING and stays away from what is destroyed
-+	 * below; its reference keeps the softc.
++	 * An open waiting for the lock finds this and stays away from
++	 * what is destroyed below; its reference keeps the softc.
 +	 */
-+	if ((flags & DETACH_FORCE) == 0 &&
-+	    ((sc->sc_flags & VNF_LOCKED) != 0 ||
-+	     sc->sc_dkdev.dk_openmask != 0))
-+		return EBUSY;
 +	sc->sc_flags |= VNF_CLEARING;
  
  	pmf_device_deregister(self);
@@ -161,7 +162,39 @@
  	return 0;
  }
  
-@@ -1116,6 +1129,9 @@ vnddoclear(struct vnd_softc *vnd, int pmask, int minor
+@@ -563,8 +576,14 @@ vndstrategy(struct buf *bp)
+ 		 */
+ 		if (curlwp != vnd->sc_kthread &&
+ 		    !uvm_lwp_is_pagedaemon(curlwp)) {
+-			while (vnd->sc_pending >= VND_MAXPENDING(vnd))
++			while (vnd->sc_pending >= VND_MAXPENDING(vnd) &&
++			    (vnd->sc_flags & VNF_CLEARING) == 0)
+ 				tsleep(&vnd->sc_pending, PRIBIO, "vndpc", 0);
++			/* Nothing would take it, or the next unit would. */
++			if ((vnd->sc_flags & VNF_CLEARING) != 0) {
++				bp->b_error = ENXIO;
++				goto done;
++			}
+ 		}
+ 		vnd->sc_pending++;
+ 		KASSERT(vnd->sc_pending > 0);
+@@ -1104,6 +1123,15 @@ vnddoclear(struct vnd_softc *vnd, int pmask, int minor
+ 	 */
+ 	vnd->sc_flags |= VNF_CLEARING;
+ 	vndunlock(vnd);
++
++	/*
++	 * From vnd_detach().  vndclear() revokes the device, which waits
++	 * for opens in progress, and those wait in device_lookup_acquire()
++	 * until this says the detach will not back out.
++	 */
++	if (minor == -1)
++		config_detach_commit(vnd->sc_dev);
++
+ 	vndclear(vnd, minor);
+ #ifdef DEBUG
+ 	if (vnddebug & VDB_INIT)
+@@ -1116,6 +1144,9 @@ vnddoclear(struct vnd_softc *vnd, int pmask, int minor
  	/* Detach the disk. */
  	disk_detach(&vnd->sc_dkdev);
  
@@ -171,10 +204,11 @@
  	return 0;
  }
  
-@@ -1257,6 +1273,20 @@ vndioctl(dev_t dev, u_long cmd, void *data, int flag, 
+@@ -1256,6 +1287,20 @@ vndioctl(dev_t dev, u_long cmd, void *data, int flag, 
+ 	case VNDIOCSET:
  		if ((error = vndlock(vnd)) != 0)
  			return error;
- 
++
 +		/* It was looked at before sleeping for the lock. */
 +		if ((vnd->sc_flags & (VNF_INITED | VNF_CLEARING)) != 0) {
 +			vndunlock(vnd);
@@ -188,11 +222,10 @@
 +		vnd->sc_flags &= ~(VNF_COMP | VNF_READONLY | VNF_WLABEL |
 +		    VNF_USE_VN_RDWR | VNF_VLABEL);
 +		vnd->sc_flags |= VNF_KLABEL;
-+
+ 
  		fflags = FREAD;
  		if ((vio->vnd_flags & VNDIOF_READONLY) == 0)
- 			fflags |= FWRITE;
-@@ -1792,6 +1822,13 @@ vndclear(struct vnd_softc *vnd, int myminor)
+@@ -1792,6 +1837,16 @@ vndclear(struct vnd_softc *vnd, int myminor)
  	while (vnd->sc_flags & VNF_KTHREAD)
  		tsleep(&vnd->sc_kthread, PRIBIO, "vnthr", 0);
  
@@ -200,13 +233,16 @@
 +	 * The queue was drained without the thread counting it off, and
 +	 * the softc outlives this configuration.
 +	 */
++	s = splbio();
++	bufq_drain(vnd->sc_tab);
 +	vnd->sc_pending = 0;
 +	wakeup(&vnd->sc_pending);
++	splx(s);
 +
  #ifdef VND_COMPRESSION
  	/* free the compressed file buffers */
  	if (vnd->sc_flags & VNF_COMP) {
-@@ -1811,7 +1848,7 @@ vndclear(struct vnd_softc *vnd, int myminor)
+@@ -1811,7 +1866,7 @@ vndclear(struct vnd_softc *vnd, int myminor)
  #endif /* VND_COMPRESSION */
  	vnd->sc_flags &=
  	    ~(VNF_INITED | VNF_READONLY | VNF_KLABEL | VNF_VLABEL
@@ -215,7 +251,7 @@
  	if (vp == NULL)
  		panic("vndclear: null vp");
  	(void) vn_close(vp, fflags, vnd->sc_cred);
-@@ -2139,6 +2176,43 @@ CFDRIVER_DECL(vnd, DV_DISK, NULL);
+@@ -2139,6 +2194,43 @@ CFDRIVER_DECL(vnd, DV_DISK, NULL);
  int vnd_bmajor = -1, vnd_cmajor = -1;
  
  CFDRIVER_DECL(vnd, DV_DISK, NULL);
@@ -259,7 +295,7 @@
  #endif
  
  static int
-@@ -2183,6 +2257,13 @@ vnd_modcmd(modcmd_t cmd, void *arg)
+@@ -2183,6 +2275,13 @@ vnd_modcmd(modcmd_t cmd, void *arg)
  
  	case MODULE_CMD_FINI:
  #ifdef _MODULE
