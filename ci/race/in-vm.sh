@@ -12,6 +12,10 @@ for d in "$@"; do
 done
 [ "${REGRESS:-}" ] || exit 0
 set -ex
+# An open held across the churn must keep its unit.
+sleep 20 </dev/rvnd2d &
+./race 15 /dev/vnd2d /dev/rvnd2d /dev/vnd2e /dev/rvnd2e
+wait
 dd if=/dev/zero of=/var/tmp/img bs=1m count=32
 newfs -F -s 32m /var/tmp/img | tail -1
 vnconfig vnd0 /var/tmp/img
