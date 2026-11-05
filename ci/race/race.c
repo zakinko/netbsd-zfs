@@ -2,26 +2,25 @@
  * Open and close the nodes of one unit from many threads at once, as the
  * import scan of zpool(8) does to everything under /dev.
  *
- *   race SECONDS NODE...
+ *   race OPENS NODE...
  */
 #include <err.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
 #include <unistd.h>
 
-static time_t end;
+static unsigned long limit;
 
 static void *
 run(void *arg)
 {
 	const char *path = arg;
-	unsigned long n = 0;
+	unsigned long n;
 	int fd;
 
-	while ((n++ & 1023) != 0 || time(NULL) < end) {
+	for (n = 0; n < limit; n++) {
 		if ((fd = open(path, O_RDONLY | O_NONBLOCK)) >= 0)
 			close(fd);
 	}
@@ -38,7 +37,7 @@ main(int argc, char **argv)
 
 	if (argc < 3)
 		errx(1, "usage");
-	end = time(NULL) + atoi(argv[1]);
+	limit = strtoul(argv[1], NULL, 0) / (8 * (argc - 2));
 	for (j = 0; j < 8; j++)
 		for (i = 2; i < argc && n < 256; i++)
 			if (pthread_create(&t[n], NULL, run, argv[i]) == 0)

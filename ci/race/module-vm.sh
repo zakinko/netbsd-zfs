@@ -6,7 +6,7 @@ cd /var/tmp/race; cc -O2 -pthread -o race race.c
 for i in 1 2; do
 	modload /var/tmp/race/vnd.kmod
 	modstat | grep -w '^vnd'
-	./race 60 /dev/vnd0a /dev/vnd0d /dev/rvnd0a /dev/rvnd0d /dev/vnd0e /dev/rvnd0e
+	./race 100000000 /dev/vnd0a /dev/vnd0d /dev/rvnd0a /dev/rvnd0d /dev/vnd0e /dev/rvnd0e
 	dd if=/dev/zero of=/var/tmp/img bs=1m count=32
 	newfs -F -s 32m /var/tmp/img | tail -1
 	vnconfig vnd0 /var/tmp/img
