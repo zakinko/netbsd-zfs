@@ -24,6 +24,17 @@ mount /dev/vnd0d /mnt; echo hello >/mnt/x; sync; umount /mnt
 mount -r /dev/vnd0d /mnt; cat /mnt/x; umount /mnt
 vnconfig -u vnd0
 vnconfig -l | head -2
+# A unit configured and closed must stay so with failing opens around.
+vnconfig vnd3 /var/tmp/img
+./race 10 /dev/vnd3f /dev/rvnd3f
+vnconfig -l | grep '^vnd3: /'
+vnconfig -u vnd3
+# A unit backed by another one, configured with failing opens around.
+vnconfig vnd0 /var/tmp/img
+./race 25 /dev/vnd1a /dev/rvnd1a /dev/vnd2a /dev/rvnd2a &
+i=0; while [ $i -lt 200 ]; do vnconfig vnd1 /dev/vnd0d; vnconfig -u vnd1; i=$((i + 1)); done
+wait
+vnconfig -u vnd0
 dd if=/dev/urandom of=/var/tmp/key bs=32 count=1
 dd if=/dev/zero of=/var/tmp/img2 bs=1m count=8
 vnconfig vnd1 /var/tmp/img2

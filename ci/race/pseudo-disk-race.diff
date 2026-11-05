@@ -32,30 +32,7 @@
  	sc->sc_comp_offsets = NULL;
  	sc->sc_comp_buff = NULL;
  	sc->sc_comp_decombuf = NULL;
-@@ -287,7 +295,22 @@ vnd_detach(device_t self, int flags)
- 		error = vnddoclear(sc, 0, -1, (flags & DETACH_FORCE) != 0);
- 		if (error != 0)
- 			return error;
-+	}
-+
-+	/*
-+	 * An open that already holds a reference finds VNF_DETACHED
-+	 * once it has the lock, and goes round again rather than touch
-+	 * what is destroyed below.  The softc itself stays until the
-+	 * reference is gone.
-+	 */
-+	if ((error = vndlock(sc)) != 0)
-+		return error;
-+	if ((flags & DETACH_FORCE) == 0 && sc->sc_dkdev.dk_openmask != 0) {
-+		vndunlock(sc);
-+		return EBUSY;
- 	}
-+	sc->sc_flags |= VNF_DETACHED;
-+	vndunlock(sc);
- 
- 	pmf_device_deregister(self);
- 	bufq_free(sc->sc_tab);
-@@ -296,18 +319,23 @@ vnd_detach(device_t self, int flags)
+@@ -296,18 +304,23 @@ vnd_detach(device_t self, int flags)
  	return 0;
  }
  
@@ -82,7 +59,7 @@
  }
  
  static int
-@@ -317,18 +345,67 @@ vnd_destroy(device_t dev)
+@@ -317,18 +330,81 @@ vnd_destroy(device_t dev)
  	cfdata_t cf;
  
  	cf = device_cfdata(dev);
@@ -92,8 +69,8 @@
  		return error;
  	free(cf, M_DEVBUF);
  	return 0;
- }
- 
++}
++
 +/*
 + * Find a unit, or make one, and return it with a reference that keeps
 + * the softc in place: vndlock() cannot, as it lives in the softc, and
@@ -117,31 +94,45 @@
 +}
 +
 +/*
-+ * Destroy a unit that was seen unconfigured, unless it has been opened
-+ * since.  The caller must not hold a reference: detach waits for them
-+ * under the lock, and a second close could be waiting for the lock
-+ * with one.
++ * Destroy a unit that was seen unconfigured, unless it is no longer so
++ * idle.  It must be looked at again here, as it may have been configured
++ * since, and detach would then unconfigure it.  A locked unit is left
++ * alone rather than waited for: the holder may be in vn_open() of a
++ * backing file that needs this lock, and it reaps the unit itself if
++ * it has to.  An open that already holds a reference finds VNF_DETACHED
++ * once it has the lock, and goes round again rather than touch what
++ * detach destroys; the softc itself stays until the reference is gone.
++ *
++ * The caller must not hold a reference: detach waits for them under
++ * the lock, and a second close could be waiting for the lock with one.
 + */
- static int
++static int
 +vnd_reap(int unit)
 +{
 +	device_t dv;
++	struct vnd_softc *sc;
 +	int error = 0;
 +
 +	mutex_enter(&vnd_device_lock);
-+	if ((dv = device_lookup_acquire(&vnd_cd, unit)) != NULL) {
-+		error = vnd_destroy(dv);
-+		if (error == EBUSY)
-+			error = 0;
-+		else if (error != 0)
-+			aprint_error("vnd%d: unable to detach instance\n",
-+			    unit);
++	if ((dv = device_lookup_acquire(&vnd_cd, unit)) == NULL)
++		goto out;
++	sc = device_private(dv);
++	if ((sc->sc_flags & (VNF_INITED | VNF_LOCKED)) != 0 ||
++	    sc->sc_dkdev.dk_openmask != 0) {
++		device_release(dv);
++		goto out;
 +	}
++	sc->sc_flags |= VNF_DETACHED;
++	if ((error = vnd_destroy(dv)) != 0) {
++		sc->sc_flags &= ~VNF_DETACHED;
++		aprint_error("vnd%d: unable to detach instance\n", unit);
++	}
++out:
 +	mutex_exit(&vnd_device_lock);
 +	return error;
-+}
-+
-+static int
+ }
+ 
+ static int
  vndopen(dev_t dev, int flags, int mode, struct lwp *l)
  {
  	int unit = vndunit(dev);
@@ -151,7 +142,7 @@
  	int error = 0, part, pmask;
  	struct disklabel *lp;
  
-@@ -336,18 +413,21 @@ vndopen(dev_t dev, int flags, int mode, struct lwp *l)
+@@ -336,18 +412,21 @@ vndopen(dev_t dev, int flags, int mode, struct lwp *l)
  	if (vnddebug & VDB_FOLLOW)
  		printf("vndopen(0x%"PRIx64", 0x%x, 0x%x, %p)\n", dev, flags, mode, l);
  #endif
@@ -182,7 +173,7 @@
  
  	mutex_enter(&sc->sc_dkdev.dk_openlock);
  
-@@ -412,7 +492,13 @@ vndopen(dev_t dev, int flags, int mode, struct lwp *l)
+@@ -412,7 +491,13 @@ vndopen(dev_t dev, int flags, int mode, struct lwp *l)
  
   done:
  	mutex_exit(&sc->sc_dkdev.dk_openlock);
@@ -196,7 +187,7 @@
  	return error;
  }
  
-@@ -420,19 +506,23 @@ vndclose(dev_t dev, int flags, int mode, struct lwp *l
+@@ -420,19 +505,23 @@ vndclose(dev_t dev, int flags, int mode, struct lwp *l
  vndclose(dev_t dev, int flags, int mode, struct lwp *l)
  {
  	int unit = vndunit(dev);
@@ -223,7 +214,7 @@
  
  	mutex_enter(&sc->sc_dkdev.dk_openlock);
  
-@@ -459,17 +549,11 @@ vndclose(dev_t dev, int flags, int mode, struct lwp *l
+@@ -459,17 +548,11 @@ vndclose(dev_t dev, int flags, int mode, struct lwp *l
  
  	mutex_exit(&sc->sc_dkdev.dk_openlock);
  
@@ -244,7 +235,7 @@
  }
  
  /*
-@@ -2149,12 +2233,14 @@ vnd_modcmd(modcmd_t cmd, void *arg)
+@@ -2149,12 +2232,14 @@ vnd_modcmd(modcmd_t cmd, void *arg)
  	switch (cmd) {
  	case MODULE_CMD_INIT:
  #ifdef _MODULE
@@ -259,7 +250,7 @@
  #ifdef DIAGNOSTIC
                          aprint_error("%s: unable to attach %s devsw, "
                              "error %d", __func__, vnd_cd.cd_name, error);
-@@ -2165,6 +2251,7 @@ vnd_modcmd(modcmd_t cmd, void *arg)
+@@ -2165,6 +2250,7 @@ vnd_modcmd(modcmd_t cmd, void *arg)
  		error = config_cfdriver_attach(&vnd_cd);
  		if (error) {
  			devsw_detach(&vnd_bdevsw, &vnd_cdevsw);
@@ -267,7 +258,7 @@
  			break;
  		}
  
-@@ -2172,6 +2259,7 @@ vnd_modcmd(modcmd_t cmd, void *arg)
+@@ -2172,6 +2258,7 @@ vnd_modcmd(modcmd_t cmd, void *arg)
  	        if (error) {
  			config_cfdriver_detach(&vnd_cd);
  			devsw_detach(&vnd_bdevsw, &vnd_cdevsw);
@@ -275,7 +266,7 @@
  #ifdef DIAGNOSTIC
  			aprint_error("%s: unable to register cfattach for \n"
  			    "%s, error %d", __func__, vnd_cd.cd_name, error);
-@@ -2207,6 +2295,7 @@ vnd_modcmd(modcmd_t cmd, void *arg)
+@@ -2207,6 +2294,7 @@ vnd_modcmd(modcmd_t cmd, void *arg)
                   * Remove {b,c}devsw's
                   */
  		devsw_detach(&vnd_bdevsw, &vnd_cdevsw);
