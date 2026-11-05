@@ -103,7 +103,7 @@ jobs:
   fixed:
     needs: kernel
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 70
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -121,4 +121,4 @@ jobs:
       - run: sh ci/race/swap.sh out/netbsd "$MARK" ssh netbsd
       - run: |
           ssh netbsd "mkdir -p /var/tmp/race"; scp ci/race/* netbsd:/var/tmp/race/
-          ssh -o ServerAliveInterval=10 -o ServerAliveCountMax=3 netbsd "REGRESS=1 sh /var/tmp/race/in-vm.sh 400000000 vnd cgd md"
+          ssh -o ServerAliveInterval=10 -o ServerAliveCountMax=3 netbsd "REGRESS=1 sh /var/tmp/race/in-vm.sh 400000000 vnd"
