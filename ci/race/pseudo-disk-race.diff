@@ -1,17 +1,17 @@
 --- a/sys/dev/vnd.c
 +++ b/sys/dev/vnd.c
-@@ -236,8 +236,9 @@ CFATTACH_DECL3_NEW(vnd, sizeof(struct vnd_softc),
+@@ -236,8 +236,8 @@ CFATTACH_DECL3_NEW(vnd, sizeof(struct vnd_softc),
  CFATTACH_DECL3_NEW(vnd, sizeof(struct vnd_softc),
      vnd_match, vnd_attach, vnd_detach, NULL, NULL, NULL, DVF_DETACH_SHUTDOWN);
  
 -static struct vnd_softc	*vnd_spawn(int);
+-static int	vnd_destroy(device_t);
 +static device_t	vnd_spawn(int);
- static int	vnd_destroy(device_t);
 +static device_t	vnd_acquire(int);
  
  static const struct	dkdriver vnddkdriver = {
  	.d_strategy = vndstrategy,
-@@ -268,6 +269,8 @@ vnd_attach(device_t parent, device_t self, void *aux)
+@@ -268,6 +268,8 @@ vnd_attach(device_t parent, device_t self, void *aux)
  	struct vnd_softc *sc = device_private(self);
  
  	sc->sc_dev = self;
@@ -20,7 +20,7 @@
  	sc->sc_comp_offsets = NULL;
  	sc->sc_comp_buff = NULL;
  	sc->sc_comp_decombuf = NULL;
-@@ -296,18 +299,23 @@ vnd_detach(device_t self, int flags)
+@@ -296,38 +298,48 @@ vnd_detach(device_t self, int flags)
  	return 0;
  }
  
@@ -46,19 +46,8 @@
 +	return dv;
  }
  
- static int
-@@ -317,17 +325,36 @@ vnd_destroy(device_t dev)
- 	cfdata_t cf;
- 
- 	cf = device_cfdata(dev);
--	error = config_detach(dev, DETACH_QUIET);
-+	error = config_detach_release(dev, DETACH_QUIET);
- 	if (error)
- 		return error;
- 	free(cf, M_DEVBUF);
- 	return 0;
-+}
-+
+-static int
+-vnd_destroy(device_t dev)
 +/*
 + * Find a unit, or make one.  A unit stays once made: vndclose() used to
 + * destroy it as soon as it saw it unconfigured, with no regard for an
@@ -68,9 +57,17 @@
 + */
 +static device_t
 +vnd_acquire(int unit)
-+{
+ {
+-	int error;
+-	cfdata_t cf;
 +	device_t dv;
-+
+ 
+-	cf = device_cfdata(dev);
+-	error = config_detach(dev, DETACH_QUIET);
+-	if (error)
+-		return error;
+-	free(cf, M_DEVBUF);
+-	return 0;
 +	if ((dv = device_lookup_acquire(&vnd_cd, unit)) == NULL &&
 +	    (dv = vnd_spawn(unit)) == NULL)
 +		dv = device_lookup_acquire(&vnd_cd, unit);
@@ -85,7 +82,7 @@
  	struct vnd_softc *sc;
  	int error = 0, part, pmask;
  	struct disklabel *lp;
-@@ -336,19 +363,15 @@ vndopen(dev_t dev, int flags, int mode, struct lwp *l)
+@@ -336,19 +348,15 @@ vndopen(dev_t dev, int flags, int mode, struct lwp *l)
  	if (vnddebug & VDB_FOLLOW)
  		printf("vndopen(0x%"PRIx64", 0x%x, 0x%x, %p)\n", dev, flags, mode, l);
  #endif
@@ -111,7 +108,7 @@
  	mutex_enter(&sc->sc_dkdev.dk_openlock);
  
  	if ((sc->sc_flags & VNF_CLEARING) != 0) {
-@@ -413,6 +436,7 @@ vndopen(dev_t dev, int flags, int mode, struct lwp *l)
+@@ -413,6 +421,7 @@ vndopen(dev_t dev, int flags, int mode, struct lwp *l)
   done:
  	mutex_exit(&sc->sc_dkdev.dk_openlock);
  	vndunlock(sc);
@@ -119,7 +116,7 @@
  	return error;
  }
  
-@@ -420,6 +444,7 @@ vndclose(dev_t dev, int flags, int mode, struct lwp *l
+@@ -420,6 +429,7 @@ vndclose(dev_t dev, int flags, int mode, struct lwp *l
  vndclose(dev_t dev, int flags, int mode, struct lwp *l)
  {
  	int unit = vndunit(dev);
@@ -127,7 +124,7 @@
  	struct vnd_softc *sc;
  	int error = 0, part;
  
-@@ -427,12 +452,14 @@ vndclose(dev_t dev, int flags, int mode, struct lwp *l
+@@ -427,12 +437,14 @@ vndclose(dev_t dev, int flags, int mode, struct lwp *l
  	if (vnddebug & VDB_FOLLOW)
  		printf("vndclose(0x%"PRIx64", 0x%x, 0x%x, %p)\n", dev, flags, mode, l);
  #endif
@@ -145,7 +142,7 @@
  
  	mutex_enter(&sc->sc_dkdev.dk_openlock);
  
-@@ -460,14 +487,7 @@ vndclose(dev_t dev, int flags, int mode, struct lwp *l
+@@ -460,14 +472,7 @@ vndclose(dev_t dev, int flags, int mode, struct lwp *l
  	mutex_exit(&sc->sc_dkdev.dk_openlock);
  
  	vndunlock(sc);
@@ -161,10 +158,24 @@
  
  	return 0;
  }
-@@ -2139,6 +2159,29 @@ CFDRIVER_DECL(vnd, DV_DISK, NULL);
+@@ -2139,6 +2144,43 @@ CFDRIVER_DECL(vnd, DV_DISK, NULL);
  int vnd_bmajor = -1, vnd_cmajor = -1;
  
  CFDRIVER_DECL(vnd, DV_DISK, NULL);
++
++static int
++vnd_destroy(device_t dev)
++{
++	int error;
++	cfdata_t cf;
++
++	cf = device_cfdata(dev);
++	error = config_detach_release(dev, DETACH_QUIET);
++	if (error)
++		return error;
++	free(cf, M_DEVBUF);
++	return 0;
++}
 +
 +/* Destroy the units left by vnd_acquire(), if none of them is in use. */
 +static int
@@ -191,7 +202,7 @@
  #endif
  
  static int
-@@ -2183,11 +2226,24 @@ vnd_modcmd(modcmd_t cmd, void *arg)
+@@ -2183,11 +2225,24 @@ vnd_modcmd(modcmd_t cmd, void *arg)
  
  	case MODULE_CMD_FINI:
  #ifdef _MODULE
@@ -216,7 +227,7 @@
  #ifdef DIAGNOSTIC
                          aprint_error("%s: failed to detach %s cfattach, "
                              "error %d\n", __func__, vnd_cd.cd_name, error);
-@@ -2197,16 +2253,14 @@ vnd_modcmd(modcmd_t cmd, void *arg)
+@@ -2197,16 +2252,14 @@ vnd_modcmd(modcmd_t cmd, void *arg)
                  error = config_cfdriver_detach(&vnd_cd);
                  if (error) {
                          (void)config_cfattach_attach(vnd_cd.cd_name, &vnd_ca); 
