@@ -11,6 +11,7 @@ for d in "$@"; do
 	echo "### $d survived rc=$?"
 done
 [ "${REGRESS:-}" ] || exit 0
+echo '--- units left'; drvctl -l | grep -c vnd || :; drvctl -l | grep vnd | head
 set -ex
 # An open held across the churn must keep its unit.
 sleep 20 </dev/rvnd2d &

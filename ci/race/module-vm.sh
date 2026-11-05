@@ -11,6 +11,9 @@ for i in 1 2; do
 	newfs -F -s 32m /var/tmp/img | tail -1
 	vnconfig vnd0 /var/tmp/img
 	mount /dev/vnd0d /mnt; echo hello >/mnt/x; sync; umount /mnt
+	# Configured: the unload is refused and the module still works.
+	! modunload vnd
+	mount -r /dev/vnd0d /mnt; cat /mnt/x; umount /mnt
 	vnconfig -u vnd0
 	modunload vnd
 done

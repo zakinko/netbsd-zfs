@@ -2,7 +2,7 @@ name: race-pr-check
 on:
   push:
     branches: [zts-fixes]
-    paths: ['ci/race/pr-check.sh', 'ci/race/module-vm.sh', '.github/workflows/race-pr-check.yml']
+    paths: ['ci/race/**', '.github/workflows/race-pr-check.yml']
   workflow_dispatch:
 concurrency:
   group: race-pr-check
