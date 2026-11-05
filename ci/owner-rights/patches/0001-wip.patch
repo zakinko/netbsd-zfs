@@ -1,0 +1,838 @@
+From 54f129acef7f015d18496c877dbf6cd2c85da65b Mon Sep 17 00:00:00 2001
+From: Showta Ishizaki <zakinko@snowrabbit.org>
+Date: Thu, 5 Nov 2026 19:50:19 +0900
+Subject: [PATCH] wip OWNER_RIGHTS
+
+Signed-off-by: Showta Ishizaki <zakinko@snowrabbit.org>
+---
+ bin/setfacl/merge.c                           |   1 +
+ bin/setfacl/setfacl.1                         |  13 +-
+ lib/libc/posix1e/acl_from_text_nfs4.c         |   2 +
+ lib/libc/posix1e/acl_set.c                    |   2 +
+ lib/libc/posix1e/acl_set_tag_type.3           |   3 +-
+ lib/libc/posix1e/acl_to_text_nfs4.c           |   5 +
+ share/man/man9/acl.9                          |   5 +
+ .../openzfs/include/os/freebsd/spl/sys/acl.h  |   7 +
+ .../include/os/freebsd/spl/sys/policy.h       |   1 +
+ sys/contrib/openzfs/include/sys/zfs_ioctl.h   |   3 +-
+ sys/contrib/openzfs/include/zfeature_common.h |   1 +
+ .../openzfs/lib/libspl/include/sys/acl.h      |   7 +
+ sys/contrib/openzfs/lib/libzfs/libzfs.abi     |   3 +-
+ sys/contrib/openzfs/man/man7/zpool-features.7 |  16 ++
+ .../module/os/freebsd/spl/acl_common.c        |   3 +
+ .../openzfs/module/os/freebsd/spl/spl_acl.c   |   6 +-
+ .../module/os/freebsd/spl/spl_policy.c        |  13 +-
+ .../openzfs/module/os/freebsd/zfs/zfs_acl.c   | 146 ++++++++++++++++--
+ .../openzfs/module/zcommon/zfeature_common.c  |  12 ++
+ sys/contrib/openzfs/module/zfs/dmu_recv.c     |  13 ++
+ sys/contrib/openzfs/module/zfs/dmu_send.c     |   5 +
+ .../cli_root/zpool_get/zpool_get.cfg          |   1 +
+ sys/fs/nfs/nfs_commonacl.c                    |  11 ++
+ sys/kern/subr_acl_nfs4.c                      |   2 +
+ sys/sys/acl.h                                 |   6 +
+ sys/ufs/ufs/ufs_acl.c                         |  11 +-
+ 26 files changed, 275 insertions(+), 23 deletions(-)
+
+diff --git a/bin/setfacl/merge.c b/bin/setfacl/merge.c
+index 5d23b67a20e..9312d87d97f 100644
+--- a/bin/setfacl/merge.c
++++ b/bin/setfacl/merge.c
+@@ -165,6 +165,7 @@ merge_acl(acl_t acl, acl_t *prev_acl, const char *filename)
+ 			case ACL_OTHER:
+ 			case ACL_MASK:
+ 			case ACL_EVERYONE:
++			case ACL_OWNER_RIGHTS:
+ 				if (acl_get_permset(entry, &permset) == -1)
+ 					err(1, "%s: acl_get_permset() failed",
+ 					    filename);
+diff --git a/bin/setfacl/setfacl.1 b/bin/setfacl/setfacl.1
+index b021f850913..ccbc04d9cf1 100644
+--- a/bin/setfacl/setfacl.1
++++ b/bin/setfacl/setfacl.1
+@@ -312,7 +312,15 @@ specifying the access granted to the owner of the file;
+ .Dq Li group@
+ specifying the access granted to the file owning group;
+ .Dq Li everyone@
+-specifying everyone.
++specifying everyone;
++.Dq Li owner_rights@
++specifying the access granted to the owner of the file, where the
++owner also loses the
++.Dq Li read_acl
++and
++.Dq Li write_acl
++it would otherwise hold without any entry, on file systems that
++support it.
+ Note that
+ .Dq Li everyone@
+ is not the same as traditional Unix
+@@ -327,8 +335,9 @@ user name, or gid or group name.
+ In entries whose tag type is one of
+ .Dq Li owner@ ,
+ .Dq Li group@ ,
+-or
+ .Dq Li everyone@ ,
++or
++.Dq Li owner_rights@ ,
+ this field is omitted altogether, including the trailing colon.
+ .It Ar "access permissions"
+ Access permissions may be specified in either short or long form.
+diff --git a/lib/libc/posix1e/acl_from_text_nfs4.c b/lib/libc/posix1e/acl_from_text_nfs4.c
+index ed82c1093bc..a78933d1d60 100644
+--- a/lib/libc/posix1e/acl_from_text_nfs4.c
++++ b/lib/libc/posix1e/acl_from_text_nfs4.c
+@@ -61,6 +61,8 @@ parse_tag(const char *str, acl_entry_t entry, int *need_qualifier)
+ 		return (acl_set_tag_type(entry, ACL_GROUP_OBJ));
+ 	if (strcmp(str, "everyone@") == 0)
+ 		return (acl_set_tag_type(entry, ACL_EVERYONE));
++	if (strcmp(str, "owner_rights@") == 0)
++		return (acl_set_tag_type(entry, ACL_OWNER_RIGHTS));
+ 
+ 	*need_qualifier = 1;
+ 
+diff --git a/lib/libc/posix1e/acl_set.c b/lib/libc/posix1e/acl_set.c
+index 359dda2c161..5061954413d 100644
+--- a/lib/libc/posix1e/acl_set.c
++++ b/lib/libc/posix1e/acl_set.c
+@@ -200,6 +200,7 @@ acl_set_tag_type(acl_entry_t entry_d, acl_tag_t tag_type)
+ 		_entry_brand_as(entry_d, ACL_BRAND_POSIX);
+ 		break;
+ 	case ACL_EVERYONE:
++	case ACL_OWNER_RIGHTS:
+ 		if (!_entry_brand_may_be(entry_d, ACL_BRAND_NFS4)) {
+ 			errno = EINVAL;
+ 			return (-1);
+@@ -216,6 +217,7 @@ acl_set_tag_type(acl_entry_t entry_d, acl_tag_t tag_type)
+ 	case ACL_MASK:
+ 	case ACL_OTHER:
+ 	case ACL_EVERYONE:
++	case ACL_OWNER_RIGHTS:
+ 		entry_d->ae_tag = tag_type;
+ 		return (0);
+ 	}
+diff --git a/lib/libc/posix1e/acl_set_tag_type.3 b/lib/libc/posix1e/acl_set_tag_type.3
+index fcb8884d8f1..7d9646cf947 100644
+--- a/lib/libc/posix1e/acl_set_tag_type.3
++++ b/lib/libc/posix1e/acl_set_tag_type.3
+@@ -55,6 +55,7 @@ Valid values are:
+ .It ACL_OTHER Ta Permissions apply to "other"
+ .It ACL_OTHER_OBJ Ta "Same as ACL_OTHER"
+ .It ACL_EVERYONE Ta Permissions apply to "everyone@"
++.It ACL_OWNER_RIGHTS Ta Permissions apply to "owner_rights@"
+ .El
+ .Pp
+ Calling
+@@ -62,7 +63,7 @@ Calling
+ with
+ .Fa tag_type
+ equal to ACL_MASK, ACL_OTHER or ACL_OTHER_OBJ brands the ACL as POSIX.1e.
+-Calling it with ACL_EVERYONE brands the ACL as NFSv4.
++Calling it with ACL_EVERYONE or ACL_OWNER_RIGHTS brands the ACL as NFSv4.
+ .Sh RETURN VALUES
+ .Rv -std acl_set_tag_type
+ .Sh ERRORS
+diff --git a/lib/libc/posix1e/acl_to_text_nfs4.c b/lib/libc/posix1e/acl_to_text_nfs4.c
+index 44d98efab6c..f5f726d0833 100644
+--- a/lib/libc/posix1e/acl_to_text_nfs4.c
++++ b/lib/libc/posix1e/acl_to_text_nfs4.c
+@@ -99,6 +99,10 @@ format_who(char *str, size_t size, const acl_entry_t entry, int numeric)
+ 		snprintf(str, size, "everyone@");
+ 		break;
+ 
++	case ACL_OWNER_RIGHTS:
++		snprintf(str, size, "owner_rights@");
++		break;
++
+ 	default:
+ 		return (-1);
+ 	}
+@@ -151,6 +155,7 @@ format_additional_id(char *str, size_t size, const acl_entry_t entry)
+ 	case ACL_USER_OBJ:
+ 	case ACL_GROUP_OBJ:
+ 	case ACL_EVERYONE:
++	case ACL_OWNER_RIGHTS:
+ 		str[0] = '\0';
+ 		break;
+ 
+diff --git a/share/man/man9/acl.9 b/share/man/man9/acl.9
+index 414737d90ce..a91c4520190 100644
+--- a/share/man/man9/acl.9
++++ b/share/man/man9/acl.9
+@@ -112,6 +112,11 @@ Same as
+ .It Dv ACL_EVERYONE
+ Discretionary access rights for all users.
+ This is only valid for NFSv4 ACLs.
++.It Dv ACL_OWNER_RIGHTS
++Discretionary access rights for the owner of the file, as
++.Dv ACL_USER_OBJ ,
++which also cancel the rights the owner would hold without any entry.
++This is only valid for NFSv4 ACLs, on file systems that support it.
+ .El
+ .Pp
+ Each POSIX.1e ACL must contain exactly one
+diff --git a/sys/contrib/openzfs/include/os/freebsd/spl/sys/acl.h b/sys/contrib/openzfs/include/os/freebsd/spl/sys/acl.h
+index ecbeec407d5..099e71e7346 100644
+--- a/sys/contrib/openzfs/include/os/freebsd/spl/sys/acl.h
++++ b/sys/contrib/openzfs/include/os/freebsd/spl/sys/acl.h
+@@ -104,6 +104,13 @@ typedef struct ace {
+ #define	ACE_OWNER			0x1000
+ #define	ACE_GROUP			0x2000
+ #define	ACE_EVERYONE			0x4000
++/*
++ * OWNER_RIGHTS@, draft-ietf-nfsv4-acls-update-06 8.4.3.  Always set with
++ * ACE_OWNER and left out of ACE_TYPE_FLAGS, so the ACE has the size and the
++ * matching of OWNER@ everywhere, including in a kernel that knows nothing
++ * of this bit.
++ */
++#define	ACE_OWNER_RIGHTS		0x8000
+ 
+ #define	ACE_ACCESS_ALLOWED_ACE_TYPE	0x0000
+ #define	ACE_ACCESS_DENIED_ACE_TYPE	0x0001
+diff --git a/sys/contrib/openzfs/include/os/freebsd/spl/sys/policy.h b/sys/contrib/openzfs/include/os/freebsd/spl/sys/policy.h
+index a096c8cf779..c35969363e6 100644
+--- a/sys/contrib/openzfs/include/os/freebsd/spl/sys/policy.h
++++ b/sys/contrib/openzfs/include/os/freebsd/spl/sys/policy.h
+@@ -51,6 +51,7 @@ int	secpolicy_vnode_access(cred_t *cr, vnode_t *vp, uid_t owner,
+ int	secpolicy_vnode_access2(cred_t *cr, vnode_t *vp, uid_t owner,
+ 	    accmode_t curmode, accmode_t wantmode);
+ int	secpolicy_vnode_any_access(cred_t *cr, vnode_t *vp, uid_t owner);
++int	secpolicy_vnode_setdac_priv(vnode_t *vp, cred_t *cr);
+ int	secpolicy_vnode_setdac(vnode_t *vp, cred_t *cr, uid_t owner);
+ int	secpolicy_vnode_setattr(cred_t *cr, vnode_t *vp, struct vattr *vap,
+ 	    const struct vattr *ovap, int flags,
+diff --git a/sys/contrib/openzfs/include/sys/zfs_ioctl.h b/sys/contrib/openzfs/include/sys/zfs_ioctl.h
+index 8fb8a3379f8..c6acbad5117 100644
+--- a/sys/contrib/openzfs/include/sys/zfs_ioctl.h
++++ b/sys/contrib/openzfs/include/sys/zfs_ioctl.h
+@@ -138,6 +138,7 @@ typedef enum drr_headertype {
+ #define	DMU_BACKUP_FEATURE_SWITCH_TO_LARGE_BLOCKS (1 << 27)
+ #define	DMU_BACKUP_FEATURE_LONGNAME		(1 << 28)
+ #define	DMU_BACKUP_FEATURE_LARGE_MICROZAP	(1 << 29)
++#define	DMU_BACKUP_FEATURE_ACL_OWNER_RIGHTS	(1 << 30)
+ 
+ /*
+  * Mask of all supported backup features
+@@ -149,7 +150,7 @@ typedef enum drr_headertype {
+     DMU_BACKUP_FEATURE_RAW | DMU_BACKUP_FEATURE_HOLDS | \
+     DMU_BACKUP_FEATURE_REDACTED | DMU_BACKUP_FEATURE_SWITCH_TO_LARGE_BLOCKS | \
+     DMU_BACKUP_FEATURE_ZSTD | DMU_BACKUP_FEATURE_LONGNAME | \
+-    DMU_BACKUP_FEATURE_LARGE_MICROZAP)
++    DMU_BACKUP_FEATURE_LARGE_MICROZAP | DMU_BACKUP_FEATURE_ACL_OWNER_RIGHTS)
+ 
+ /* Are all features in the given flag word currently supported? */
+ #define	DMU_STREAM_SUPPORTED(x)	(!((x) & ~DMU_BACKUP_FEATURE_MASK))
+diff --git a/sys/contrib/openzfs/include/zfeature_common.h b/sys/contrib/openzfs/include/zfeature_common.h
+index ef9707559c9..6e9176f246e 100644
+--- a/sys/contrib/openzfs/include/zfeature_common.h
++++ b/sys/contrib/openzfs/include/zfeature_common.h
+@@ -81,6 +81,7 @@ typedef enum spa_feature {
+ 	SPA_FEATURE_BLOCK_CLONING_ENDIAN,
+ 	SPA_FEATURE_PHYSICAL_REWRITE,
+ 	SPA_FEATURE_DRAID_FAIL_DOMAINS,
++	SPA_FEATURE_ACL_OWNER_RIGHTS,
+ 	SPA_FEATURES
+ } spa_feature_t;
+ 
+diff --git a/sys/contrib/openzfs/lib/libspl/include/sys/acl.h b/sys/contrib/openzfs/lib/libspl/include/sys/acl.h
+index 570d3ade8e8..67a32127653 100644
+--- a/sys/contrib/openzfs/lib/libspl/include/sys/acl.h
++++ b/sys/contrib/openzfs/lib/libspl/include/sys/acl.h
+@@ -100,6 +100,13 @@ typedef struct acl_info acl_t;
+ #define	ACE_OWNER			0x1000
+ #define	ACE_GROUP			0x2000
+ #define	ACE_EVERYONE			0x4000
++/*
++ * OWNER_RIGHTS@, draft-ietf-nfsv4-acls-update-06 8.4.3.  Always set with
++ * ACE_OWNER and left out of ACE_TYPE_FLAGS, so the ACE has the size and the
++ * matching of OWNER@ everywhere, including in a kernel that knows nothing
++ * of this bit.
++ */
++#define	ACE_OWNER_RIGHTS		0x8000
+ 
+ #define	ACE_ACCESS_ALLOWED_ACE_TYPE	0x0000
+ #define	ACE_ACCESS_DENIED_ACE_TYPE	0x0001
+diff --git a/sys/contrib/openzfs/lib/libzfs/libzfs.abi b/sys/contrib/openzfs/lib/libzfs/libzfs.abi
+index 2b597435ece..148738bb56e 100644
+--- a/sys/contrib/openzfs/lib/libzfs/libzfs.abi
++++ b/sys/contrib/openzfs/lib/libzfs/libzfs.abi
+@@ -6710,7 +6710,8 @@
+       <enumerator name='SPA_FEATURE_BLOCK_CLONING_ENDIAN' value='45'/>
+       <enumerator name='SPA_FEATURE_PHYSICAL_REWRITE' value='46'/>
+       <enumerator name='SPA_FEATURE_DRAID_FAIL_DOMAINS' value='47'/>
+-      <enumerator name='SPA_FEATURES' value='48'/>
++      <enumerator name='SPA_FEATURE_ACL_OWNER_RIGHTS' value='48'/>
++      <enumerator name='SPA_FEATURES' value='49'/>
+     </enum-decl>
+     <typedef-decl name='spa_feature_t' type-id='33ecb627' id='d6618c78'/>
+     <qualified-type-def type-id='80f4b756' const='yes' id='b99c00c9'/>
+diff --git a/sys/contrib/openzfs/man/man7/zpool-features.7 b/sys/contrib/openzfs/man/man7/zpool-features.7
+index a1b0dbe6d0a..2b59b00a2ab 100644
+--- a/sys/contrib/openzfs/man/man7/zpool-features.7
++++ b/sys/contrib/openzfs/man/man7/zpool-features.7
+@@ -332,6 +332,22 @@ are destroyed.
+ .Sh FEATURES
+ The following features are supported on this system:
+ .Bl -tag -width Ds
++.feature org.openzfs acl_owner_rights yes extensible_dataset
++This feature allows an ACL to hold OWNER_RIGHTS@ entries, which grant rights
++to the owner of the file as owner@ does, and cancel the
++.Sy read_acl
++and
++.Sy write_acl
++the owner would otherwise hold without any entry.
++A system without this feature would read them as owner@ entries.
++.Pp
++This feature becomes
++.Sy active
++the first time such an ACL is set on a dataset.
++It will only be returned to the
++.Sy enabled
++state when all datasets that ever had one are destroyed.
++.
+ .feature org.zfsonlinux allocation_classes yes
+ This feature enables support for separate allocation classes.
+ .Pp
+diff --git a/sys/contrib/openzfs/module/os/freebsd/spl/acl_common.c b/sys/contrib/openzfs/module/os/freebsd/spl/acl_common.c
+index d0a476bc0f9..de253999435 100644
+--- a/sys/contrib/openzfs/module/os/freebsd/spl/acl_common.c
++++ b/sys/contrib/openzfs/module/os/freebsd/spl/acl_common.c
+@@ -339,6 +339,9 @@ ace_trivial_common(void *acep, int aclcnt,
+ 	uintptr_t cookie = 0;
+ 
+ 	while ((cookie = walk(acep, cookie, aclcnt, &flags, &type, &mask))) {
++		if (flags & ACE_OWNER_RIGHTS)
++			return (1);
++
+ 		switch (flags & ACE_TYPE_FLAGS) {
+ 		case ACE_OWNER:
+ 		case ACE_GROUP|ACE_IDENTIFIER_GROUP:
+diff --git a/sys/contrib/openzfs/module/os/freebsd/spl/spl_acl.c b/sys/contrib/openzfs/module/os/freebsd/spl/spl_acl.c
+index 10cbe90f69a..80fe9ee23a1 100644
+--- a/sys/contrib/openzfs/module/os/freebsd/spl/spl_acl.c
++++ b/sys/contrib/openzfs/module/os/freebsd/spl/spl_acl.c
+@@ -128,7 +128,9 @@ acl_from_aces(struct acl *aclp, const ace_t *aces, int nentries)
+ 		entry = &(aclp->acl_entry[i]);
+ 		ace = &(aces[i]);
+ 
+-		if (ace->a_flags & ACE_OWNER)
++		if (ace->a_flags & ACE_OWNER_RIGHTS)
++			entry->ae_tag = ACL_OWNER_RIGHTS;
++		else if (ace->a_flags & ACE_OWNER)
+ 			entry->ae_tag = ACL_USER_OBJ;
+ 		else if (ace->a_flags & ACE_GROUP)
+ 			entry->ae_tag = ACL_GROUP_OBJ;
+@@ -187,6 +189,8 @@ aces_from_acl(ace_t *aces, int *nentries, const struct acl *aclp)
+ 
+ 		if (entry->ae_tag == ACL_USER_OBJ)
+ 			ace->a_flags = ACE_OWNER;
++		else if (entry->ae_tag == ACL_OWNER_RIGHTS)
++			ace->a_flags = ACE_OWNER | ACE_OWNER_RIGHTS;
+ 		else if (entry->ae_tag == ACL_GROUP_OBJ)
+ 			ace->a_flags = (ACE_GROUP | ACE_IDENTIFIER_GROUP);
+ 		else if (entry->ae_tag == ACL_GROUP)
+diff --git a/sys/contrib/openzfs/module/os/freebsd/spl/spl_policy.c b/sys/contrib/openzfs/module/os/freebsd/spl/spl_policy.c
+index dfcc92fa7dc..64e23f71598 100644
+--- a/sys/contrib/openzfs/module/os/freebsd/spl/spl_policy.c
++++ b/sys/contrib/openzfs/module/os/freebsd/spl/spl_policy.c
+@@ -192,16 +192,23 @@ secpolicy_vnode_any_access(cred_t *cr, vnode_t *vp, uid_t owner)
+ }
+ 
+ int
+-secpolicy_vnode_setdac(vnode_t *vp, cred_t *cr, uid_t owner)
++secpolicy_vnode_setdac_priv(vnode_t *vp, cred_t *cr)
+ {
+ 
+-	if (owner == cr->cr_uid)
+-		return (0);
+ 	if (secpolicy_fs_owner(vp->v_mount, cr) == 0)
+ 		return (0);
+ 	return (priv_check_cred(cr, PRIV_VFS_ADMIN));
+ }
+ 
++int
++secpolicy_vnode_setdac(vnode_t *vp, cred_t *cr, uid_t owner)
++{
++
++	if (owner == cr->cr_uid)
++		return (0);
++	return (secpolicy_vnode_setdac_priv(vp, cr));
++}
++
+ int
+ secpolicy_vnode_setattr(cred_t *cr, vnode_t *vp, struct vattr *vap,
+     const struct vattr *ovap, int flags,
+diff --git a/sys/contrib/openzfs/module/os/freebsd/zfs/zfs_acl.c b/sys/contrib/openzfs/module/os/freebsd/zfs/zfs_acl.c
+index e93dd503439..c4997a156cf 100644
+--- a/sys/contrib/openzfs/module/os/freebsd/zfs/zfs_acl.c
++++ b/sys/contrib/openzfs/module/os/freebsd/zfs/zfs_acl.c
+@@ -43,6 +43,9 @@
+ #include <sys/dnode.h>
+ #include <sys/zap.h>
+ #include <sys/sa.h>
++#include <sys/dsl_dataset.h>
++#include <sys/dmu_objset.h>
++#include <sys/spa.h>
+ #include <acl/acl_common.h>
+ 
+ 
+@@ -69,6 +72,22 @@
+     ACE_DELETE|ACE_DELETE_CHILD)
+ #define	WRITE_MASK (WRITE_MASK_DATA|WRITE_MASK_ATTRS)
+ 
++/*
++ * What OWNER_RIGHTS@ cancels.  draft-ietf-nfsv4-acls-update-06 8.4.3 takes
++ * the set from acmi_defown (8.3.15), and without ACL_Choice (5.9), which
++ * this server does not offer, says a client can assume these two.
++ *
++ * The other things the owner gets here without an ACE, read_attributes,
++ * write_attributes and write_owner, stay: they are outside that set.
++ *
++ * chmod is the owner's by secpolicy_vnode_setattr() and stays too.  8.3.9
++ * lists SETATTR of mode under ACE4_WRITE_ACL, so this is a reading and not
++ * the text of the draft: the set above is taken as the rights of the acl
++ * attribute, and ownership of the mode as the owner-override of RFC 8881
++ * 6.3.1.1.  What chmod does to the ACE is in zfs_acl_chmod().
++ */
++#define	OWNER_RIGHTS_MASK (ACE_READ_ACL|ACE_WRITE_ACL)
++
+ #define	OGE_CLEAR	(ACE_READ_DATA|ACE_LIST_DIRECTORY|ACE_WRITE_DATA| \
+     ACE_ADD_FILE|ACE_APPEND_DATA|ACE_ADD_SUBDIRECTORY|ACE_EXECUTE)
+ 
+@@ -506,6 +525,9 @@ zfs_acl_valid_ace_type(uint_t type, uint_t flags)
+ {
+ 	uint16_t entry_type;
+ 
++	if ((flags & ACE_OWNER_RIGHTS) && (flags & ACE_TYPE_FLAGS) != ACE_OWNER)
++		return (B_FALSE);
++
+ 	switch (type) {
+ 	case ALLOW:
+ 	case DENY:
+@@ -1314,7 +1336,7 @@ zfs_aclset_common(znode_t *zp, zfs_acl_t *aclp, cred_t *cr, dmu_tx_t *tx)
+ 
+ static void
+ zfs_acl_chmod(vtype_t vtype, uint64_t mode, boolean_t split, boolean_t trim,
+-    zfs_acl_t *aclp)
++    boolean_t discard, zfs_acl_t *aclp)
+ {
+ 	void		*acep = NULL;
+ 	uint64_t	who;
+@@ -1327,6 +1349,7 @@ zfs_acl_chmod(vtype_t vtype, uint64_t mode, boolean_t split, boolean_t trim,
+ 	size_t 		abstract_size = aclp->z_ops->ace_abstract_size();
+ 	void 		*zacep;
+ 	boolean_t	isdir;
++	boolean_t	owner_rights = B_FALSE;
+ 	trivial_acl_t	masks;
+ 
+ 	new_count = new_bytes = 0;
+@@ -1360,13 +1383,30 @@ zfs_acl_chmod(vtype_t vtype, uint64_t mode, boolean_t split, boolean_t trim,
+ 	while ((acep = zfs_acl_next_ace(aclp, acep, &who, &access_mask,
+ 	    &iflags, &type))) {
+ 		entry_type = (iflags & ACE_TYPE_FLAGS);
++		/*
++		 * OWNER_RIGHTS@ is not one of the who values the mode is
++		 * made of, and draft-ietf-nfsv4-acls-update-06 10.7.1 leaves
++		 * the effect of the other special values unmodified.  If it
++		 * went here, the owner, who may chmod, would have the right
++		 * back by doing so.  It does count as OWNER@ in the mode
++		 * computed from the ACL, which RFC 8881 6.4.1.1 requires to
++		 * equal the mode set, so it gives up the bits of the mode.
++		 */
++		if (iflags & ACE_OWNER_RIGHTS) {
++			if (!(iflags & ACE_INHERIT_ONLY_ACE))
++				access_mask &= ~OGE_CLEAR;
++			owner_rights = B_TRUE;
++		} else if (discard) {
++			continue;
++		}
+ 		/*
+ 		 * ACEs used to represent the file mode may be divided
+ 		 * into an equivalent pair of inherit-only and regular
+ 		 * ACEs, if they are inheritable.
+ 		 * Skip regular ACEs, which are replaced by the new mode.
+ 		 */
+-		if (split && (entry_type == ACE_OWNER ||
++		if (split && !(iflags & ACE_OWNER_RIGHTS) &&
++		    (entry_type == ACE_OWNER ||
+ 		    entry_type == OWNING_GROUP ||
+ 		    entry_type == ACE_EVERYONE)) {
+ 			if (!isdir || !(iflags &
+@@ -1408,7 +1448,8 @@ zfs_acl_chmod(vtype_t vtype, uint64_t mode, boolean_t split, boolean_t trim,
+ 			 * Applies when the "aclmode" property is set to
+ 			 * "groupmask".
+ 			 */
+-			if ((type == ALLOW) && trim)
++			if ((type == ALLOW) && trim &&
++			    !(iflags & ACE_OWNER_RIGHTS))
+ 				access_mask &= masks.group;
+ 		}
+ 		zfs_set_ace(aclp, zacep, access_mask, type, who, iflags);
+@@ -1417,6 +1458,9 @@ zfs_acl_chmod(vtype_t vtype, uint64_t mode, boolean_t split, boolean_t trim,
+ 		new_count++;
+ 		new_bytes += ace_size;
+ 	}
++	/* An OWNER@ made from the mode must not grant what was cancelled. */
++	if (owner_rights)
++		masks.owner &= ~OWNER_RIGHTS_MASK;
+ 	zfs_set_ace(aclp, zacep, masks.owner, ALLOW, -1, ACE_OWNER);
+ 	zacep = (void *)((uintptr_t)zacep + abstract_size);
+ 	zfs_set_ace(aclp, zacep, masks.group, ALLOW, -1, OWNING_GROUP);
+@@ -1437,11 +1481,13 @@ int
+ zfs_acl_chmod_setattr(znode_t *zp, zfs_acl_t **aclp, uint64_t mode)
+ {
+ 	int error = 0;
++	boolean_t discard;
+ 
+ 	mutex_enter(&zp->z_acl_lock);
+ 	if (zp->z_zfsvfs->z_replay == B_FALSE)
+ 		ASSERT_VOP_ELOCKED(ZTOV(zp), __func__);
+-	if (zp->z_zfsvfs->z_acl_mode == ZFS_ACL_DISCARD)
++	discard = (zp->z_zfsvfs->z_acl_mode == ZFS_ACL_DISCARD);
++	if (discard && (zp->z_pflags & ZFS_ACL_TRIVIAL))
+ 		*aclp = zfs_acl_alloc(zfs_acl_version_zp(zp));
+ 	else
+ 		error = zfs_acl_node_read(zp, B_TRUE, aclp, B_TRUE);
+@@ -1449,7 +1495,8 @@ zfs_acl_chmod_setattr(znode_t *zp, zfs_acl_t **aclp, uint64_t mode)
+ 	if (error == 0) {
+ 		(*aclp)->z_hints = zp->z_pflags & V4_ACL_WIDE_FLAGS;
+ 		zfs_acl_chmod(ZTOV(zp)->v_type, mode, B_TRUE,
+-		    (zp->z_zfsvfs->z_acl_mode == ZFS_ACL_GROUPMASK), *aclp);
++		    (zp->z_zfsvfs->z_acl_mode == ZFS_ACL_GROUPMASK), discard,
++		    *aclp);
+ 	}
+ 	mutex_exit(&zp->z_acl_lock);
+ 
+@@ -1522,6 +1569,7 @@ zfs_acl_inherit(zfsvfs_t *zfsvfs, vtype_t vtype, zfs_acl_t *paclp,
+ 		 */
+ 		if ((aclinherit == ZFS_ACL_PASSTHROUGH ||
+ 		    aclinherit == ZFS_ACL_PASSTHROUGH_X) &&
++		    !(iflags & ACE_OWNER_RIGHTS) &&
+ 		    ((iflags & (ACE_OWNER|ACE_EVERYONE)) ||
+ 		    ((iflags & OWNING_GROUP) == OWNING_GROUP)) &&
+ 		    (isreg || (isdir && (iflags & ACE_DIRECTORY_INHERIT_ACE))))
+@@ -1726,7 +1774,7 @@ zfs_acl_ids_create(znode_t *dzp, int flag, vattr_t *vap, cred_t *cr,
+ 			    zfsvfs->z_acl_inherit != ZFS_ACL_PASSTHROUGH_X)
+ 				trim = B_TRUE;
+ 			zfs_acl_chmod(vap->va_type, acl_ids->z_mode, B_FALSE,
+-			    trim, acl_ids->z_aclp);
++			    trim, B_FALSE, acl_ids->z_aclp);
+ 		}
+ 	}
+ 
+@@ -1874,6 +1922,10 @@ zfs_vsec_2_aclp(zfsvfs_t *zfsvfs, umode_t obj_type,
+ 	zfs_acl_node_t *aclnode;
+ 	int aclcnt = vsecp->vsa_aclcnt;
+ 	int error;
++	void *acep = NULL;
++	uint64_t who;
++	uint32_t access_mask;
++	uint16_t iflags, type;
+ 
+ 	if (vsecp->vsa_aclcnt > MAX_ACL_ENTRIES || vsecp->vsa_aclcnt <= 0)
+ 		return (SET_ERROR(EINVAL));
+@@ -1904,6 +1956,25 @@ zfs_vsec_2_aclp(zfsvfs_t *zfsvfs, umode_t obj_type,
+ 	aclp->z_acl_count = aclcnt;
+ 	list_insert_head(&aclp->z_acl, aclnode);
+ 
++	/*
++	 * A kernel without the feature reads OWNER_RIGHTS@ as OWNER@ and
++	 * loses what it cancels, so it may only be written under the feature.
++	 */
++	while ((acep = zfs_acl_next_ace(aclp, acep, &who, &access_mask,
++	    &iflags, &type))) {
++		if (!(iflags & ACE_OWNER_RIGHTS))
++			continue;
++		if (!spa_feature_is_enabled(dmu_objset_spa(zfsvfs->z_os),
++		    SPA_FEATURE_ACL_OWNER_RIGHTS)) {
++			zfs_acl_free(aclp);
++			return (SET_ERROR(ENOTSUP));
++		}
++		dmu_objset_ds(zfsvfs->z_os)->
++		    ds_feature_activation[SPA_FEATURE_ACL_OWNER_RIGHTS] =
++		    (void *)B_TRUE;
++		break;
++	}
++
+ 	/*
+ 	 * If flags are being set then add them to z_hints
+ 	 */
+@@ -2211,6 +2282,44 @@ zfs_zaccess_aces_check(znode_t *zp, uint32_t *working_mode,
+ 	return (0);
+ }
+ 
++/*
++ * Does an OWNER_RIGHTS@ ACE apply to this object?  It cancels by being there,
++ * whatever its type and mask (draft-ietf-nfsv4-acls-update-06 8.4.3), so this
++ * can't be learnt from zfs_zaccess_aces_check(), which stops at the first
++ * ACE that settles the request.  An inherit-only ACE on a directory is not in
++ * effect, as there.
++ */
++static boolean_t
++zfs_acl_owner_rights(znode_t *zp)
++{
++	zfs_acl_t	*aclp;
++	void		*acep = NULL;
++	uint64_t	who;
++	uint32_t	access_mask;
++	uint16_t	iflags, type;
++	boolean_t	found = B_FALSE;
++
++	if (zp->z_pflags & ZFS_ACL_TRIVIAL)
++		return (B_FALSE);
++
++	mutex_enter(&zp->z_acl_lock);
++	if (zfs_acl_node_read(zp, B_TRUE, &aclp, B_FALSE) != 0) {
++		mutex_exit(&zp->z_acl_lock);
++		return (B_TRUE);
++	}
++	while ((acep = zfs_acl_next_ace(aclp, acep, &who, &access_mask,
++	    &iflags, &type))) {
++		if ((iflags & ACE_OWNER_RIGHTS) && (type == ALLOW ||
++		    type == DENY) && !(ZTOV(zp)->v_type == VDIR &&
++		    (iflags & ACE_INHERIT_ONLY_ACE))) {
++			found = B_TRUE;
++			break;
++		}
++	}
++	mutex_exit(&zp->z_acl_lock);
++	return (found);
++}
++
+ static int
+ zfs_zaccess_common(znode_t *zp, uint32_t v4_mode, uint32_t *working_mode,
+     boolean_t *check_privs, boolean_t skipaclchk, cred_t *cr)
+@@ -2325,6 +2434,8 @@ zfs_zaccess(znode_t *zp, int mode, int flags, boolean_t skipaclchk, cred_t *cr)
+ 	znode_t 	*check_zp = zp;
+ 	mode_t		needed_bits;
+ 	uid_t		owner;
++	uint32_t	implicit;	/* read rights the owner has by default */
++	boolean_t	owner_rights = B_FALSE;
+ 
+ 	is_attr = ((zp->z_pflags & ZFS_XATTR) && (ZTOV(zp)->v_type == VDIR));
+ 
+@@ -2379,10 +2490,13 @@ zfs_zaccess(znode_t *zp, int mode, int flags, boolean_t skipaclchk, cred_t *cr)
+ 	 */
+ 	needed_bits = 0;
+ 
++	if ((mode & OWNER_RIGHTS_MASK) && owner == crgetuid(cr))
++		owner_rights = zfs_acl_owner_rights(check_zp);
++	implicit = ACE_READ_ATTRIBUTES | (owner_rights ? 0 : ACE_READ_ACL);
++
+ 	working_mode = mode;
+-	if ((working_mode & (ACE_READ_ACL|ACE_READ_ATTRIBUTES)) &&
+-	    owner == crgetuid(cr))
+-		working_mode &= ~(ACE_READ_ACL|ACE_READ_ATTRIBUTES);
++	if ((working_mode & implicit) && owner == crgetuid(cr))
++		working_mode &= ~implicit;
+ 
+ 	if (working_mode & (ACE_READ_DATA|ACE_READ_NAMED_ATTRS|
+ 	    ACE_READ_ACL|ACE_READ_ATTRIBUTES|ACE_SYNCHRONIZE))
+@@ -2422,9 +2536,8 @@ zfs_zaccess(znode_t *zp, int mode, int flags, boolean_t skipaclchk, cred_t *cr)
+ 
+ 		ASSERT3U(working_mode, !=, 0);
+ 
+-		if ((working_mode & (ACE_READ_ACL|ACE_READ_ATTRIBUTES) &&
+-		    owner == crgetuid(cr)))
+-			working_mode &= ~(ACE_READ_ACL|ACE_READ_ATTRIBUTES);
++		if ((working_mode & implicit) && owner == crgetuid(cr))
++			working_mode &= ~implicit;
+ 
+ 		if (working_mode & (ACE_READ_DATA|ACE_READ_NAMED_ATTRS|
+ 		    ACE_READ_ACL|ACE_READ_ATTRIBUTES|ACE_SYNCHRONIZE))
+@@ -2440,8 +2553,15 @@ zfs_zaccess(znode_t *zp, int mode, int flags, boolean_t skipaclchk, cred_t *cr)
+ 
+ 		if (error == 0 && (working_mode & ACE_WRITE_OWNER))
+ 			error = secpolicy_vnode_chown(check_vp, cr, owner);
++		/*
++		 * Privilege is not a default right of the owner and is not
++		 * cancelled; RFC 8881 6.3.1.1 has the superuser beyond the
++		 * ACL.  That also keeps the ACL changeable by someone.
++		 */
+ 		if (error == 0 && (working_mode & ACE_WRITE_ACL))
+-			error = secpolicy_vnode_setdac(check_vp, cr, owner);
++			error = owner_rights ?
++			    secpolicy_vnode_setdac_priv(check_vp, cr) :
++			    secpolicy_vnode_setdac(check_vp, cr, owner);
+ 
+ 		if (error == 0 && (working_mode &
+ 		    (ACE_DELETE|ACE_DELETE_CHILD)))
+diff --git a/sys/contrib/openzfs/module/zcommon/zfeature_common.c b/sys/contrib/openzfs/module/zcommon/zfeature_common.c
+index f92112a5a0c..cd78eaaefc4 100644
+--- a/sys/contrib/openzfs/module/zcommon/zfeature_common.c
++++ b/sys/contrib/openzfs/module/zcommon/zfeature_common.c
+@@ -699,6 +699,18 @@ zpool_feature_init(void)
+ 		    draid_fdomain_deps, sfeatures);
+ 	}
+ 
++	{
++		static const spa_feature_t acl_owner_rights_deps[] = {
++			SPA_FEATURE_EXTENSIBLE_DATASET,
++			SPA_FEATURE_NONE
++		};
++		zfeature_register(SPA_FEATURE_ACL_OWNER_RIGHTS,
++		    "org.openzfs:acl_owner_rights", "acl_owner_rights",
++		    "Support for the OWNER_RIGHTS@ ACE.",
++		    ZFEATURE_FLAG_PER_DATASET | ZFEATURE_FLAG_READONLY_COMPAT,
++		    ZFEATURE_TYPE_BOOLEAN, acl_owner_rights_deps, sfeatures);
++	}
++
+ 	{
+ 		static const spa_feature_t zilsaxattr_deps[] = {
+ 			SPA_FEATURE_EXTENSIBLE_DATASET,
+diff --git a/sys/contrib/openzfs/module/zfs/dmu_recv.c b/sys/contrib/openzfs/module/zfs/dmu_recv.c
+index 61f4e7a49ee..ee9ba82048a 100644
+--- a/sys/contrib/openzfs/module/zfs/dmu_recv.c
++++ b/sys/contrib/openzfs/module/zfs/dmu_recv.c
+@@ -652,6 +652,10 @@ recv_begin_check_feature_flags_impl(uint64_t featureflags, spa_t *spa)
+ 	    !spa_feature_is_enabled(spa, SPA_FEATURE_LONGNAME))
+ 		return (SET_ERROR(ENOTSUP));
+ 
++	if ((featureflags & DMU_BACKUP_FEATURE_ACL_OWNER_RIGHTS) &&
++	    !spa_feature_is_enabled(spa, SPA_FEATURE_ACL_OWNER_RIGHTS))
++		return (SET_ERROR(ENOTSUP));
++
+ 	return (0);
+ }
+ 
+@@ -1063,6 +1067,15 @@ dmu_recv_begin_sync(void *arg, dmu_tx_t *tx)
+ 		newds->ds_feature[SPA_FEATURE_LONGNAME] = (void *)B_TRUE;
+ 	}
+ 
++	if (featureflags & DMU_BACKUP_FEATURE_ACL_OWNER_RIGHTS &&
++	    !dsl_dataset_feature_is_active(newds,
++	    SPA_FEATURE_ACL_OWNER_RIGHTS)) {
++		dsl_dataset_activate_feature(newds->ds_object,
++		    SPA_FEATURE_ACL_OWNER_RIGHTS, (void *)B_TRUE, tx);
++		newds->ds_feature[SPA_FEATURE_ACL_OWNER_RIGHTS] =
++		    (void *)B_TRUE;
++	}
++
+ 	if (featureflags & DMU_BACKUP_FEATURE_LARGE_MICROZAP &&
+ 	    !dsl_dataset_feature_is_active(newds, SPA_FEATURE_LARGE_MICROZAP)) {
+ 		/*
+diff --git a/sys/contrib/openzfs/module/zfs/dmu_send.c b/sys/contrib/openzfs/module/zfs/dmu_send.c
+index 3381edb6460..8258e2ccf84 100644
+--- a/sys/contrib/openzfs/module/zfs/dmu_send.c
++++ b/sys/contrib/openzfs/module/zfs/dmu_send.c
+@@ -2029,6 +2029,11 @@ setup_featureflags(struct dmu_send_params *dspp, objset_t *os,
+ 		*featureflags |= DMU_BACKUP_FEATURE_LONGNAME;
+ 	}
+ 
++	if (dsl_dataset_feature_is_active(to_ds,
++	    SPA_FEATURE_ACL_OWNER_RIGHTS)) {
++		*featureflags |= DMU_BACKUP_FEATURE_ACL_OWNER_RIGHTS;
++	}
++
+ 	if (dsl_dataset_feature_is_active(to_ds, SPA_FEATURE_LARGE_MICROZAP)) {
+ 		/*
+ 		 * We must never split a large microzap block, so we can only
+diff --git a/sys/contrib/openzfs/tests/zfs-tests/tests/functional/cli_root/zpool_get/zpool_get.cfg b/sys/contrib/openzfs/tests/zfs-tests/tests/functional/cli_root/zpool_get/zpool_get.cfg
+index a9167362437..bec0723e017 100644
+--- a/sys/contrib/openzfs/tests/zfs-tests/tests/functional/cli_root/zpool_get/zpool_get.cfg
++++ b/sys/contrib/openzfs/tests/zfs-tests/tests/functional/cli_root/zpool_get/zpool_get.cfg
+@@ -140,6 +140,7 @@ typeset -a properties=(
+     "feature@device_rebuild"
+     "feature@draid"
+     "feature@draid_failure_domains"
++    "feature@acl_owner_rights"
+     "feature@redaction_list_spill"
+     "feature@dynamic_gang_header"
+     "feature@physical_rewrite"
+diff --git a/sys/fs/nfs/nfs_commonacl.c b/sys/fs/nfs/nfs_commonacl.c
+index 64272b35a82..add6a6020ec 100644
+--- a/sys/fs/nfs/nfs_commonacl.c
++++ b/sys/fs/nfs/nfs_commonacl.c
+@@ -99,6 +99,12 @@ nfsrv_dissectace(struct nfsrv_descript *nd, struct acl_entry *acep,
+ 		acep->ae_tag = ACL_EVERYONE;
+ 		acep->ae_id = ACL_UNDEFINED_ID;
+ 		gotid = 1;
++	} else if (len == 13 && !NFSBCMP(name, "OWNER_RIGHTS@", 13)) {
++		/* draft-ietf-nfsv4-acls-update-06 8.4.3 */
++		acep->ae_tag = ACL_OWNER_RIGHTS;
++		acep->ae_id = ACL_UNDEFINED_ID;
++		owner = 1;
++		gotid = 1;
+ 	}
+ 	if (gotid == 0) {
+ 		if (flag & NFSV4ACE_IDENTIFIERGROUP) {
+@@ -566,6 +572,11 @@ nfsrv_buildacl(struct nfsrv_descript *nd, NFSACL_T *aclp, __enum_uint8(vtype) ty
+ 			name = "EVERYONE@";
+ 			namelen = 9;
+ 			break;
++		case ACL_OWNER_RIGHTS:
++			isowner = 1;
++			name = "OWNER_RIGHTS@";
++			namelen = 13;
++			break;
+ 		case ACL_USER:
+ 			name = namestr;
+ 			nfsv4_uidtostr(aclp->acl_entry[i].ae_id, &name,
+diff --git a/sys/kern/subr_acl_nfs4.c b/sys/kern/subr_acl_nfs4.c
+index 654a9a69bb2..e1484973f90 100644
+--- a/sys/kern/subr_acl_nfs4.c
++++ b/sys/kern/subr_acl_nfs4.c
+@@ -128,6 +128,7 @@ _acl_denies(const struct acl *aclp, int access_mask, struct ucred *cred,
+ 			continue;
+ 		switch (entry->ae_tag) {
+ 		case ACL_USER_OBJ:
++		case ACL_OWNER_RIGHTS:
+ 			if (file_uid != cred->cr_uid)
+ 				continue;
+ 			break;
+@@ -1321,6 +1322,7 @@ acl_nfs4_check(const struct acl *aclp, int is_directory)
+ 
+ 		switch (entry->ae_tag) {
+ 		case ACL_USER_OBJ:
++		case ACL_OWNER_RIGHTS:
+ 		case ACL_GROUP_OBJ:
+ 		case ACL_EVERYONE:
+ 			if (entry->ae_id != ACL_UNDEFINED_ID)
+diff --git a/sys/sys/acl.h b/sys/sys/acl.h
+index d4770667fcf..9518c8b1aaa 100644
+--- a/sys/sys/acl.h
++++ b/sys/sys/acl.h
+@@ -168,6 +168,12 @@ typedef void *acl_t;
+ #define	ACL_OTHER		0x00000020
+ #define	ACL_OTHER_OBJ		ACL_OTHER
+ #define	ACL_EVERYONE		0x00000040
++/*
++ * OWNER_RIGHTS@, draft-ietf-nfsv4-acls-update-06 8.4.3: matches like
++ * ACL_USER_OBJ, and cancels what the owner holds without any ACE.  NFSv4
++ * ACLs only.
++ */
++#define	ACL_OWNER_RIGHTS	0x00000080
+ 
+ /*
+  * Possible valid values for ae_entry_type field, valid only for NFSv4 ACLs.
+diff --git a/sys/ufs/ufs/ufs_acl.c b/sys/ufs/ufs/ufs_acl.c
+index 4b6cabc2ab3..669d6a98017 100644
+--- a/sys/ufs/ufs/ufs_acl.c
++++ b/sys/ufs/ufs/ufs_acl.c
+@@ -611,7 +611,7 @@ ufs_setacl(struct vop_setacl_args *ap)
+ static int
+ ufs_aclcheck_nfs4(struct vop_aclcheck_args *ap, struct mount *mp)
+ {
+-	int is_directory = 0;
++	int i, is_directory = 0;
+ 
+ 	if ((mp->mnt_flag & MNT_NFS4ACLS) == 0)
+ 		return (EINVAL);
+@@ -627,6 +627,15 @@ ufs_aclcheck_nfs4(struct vop_aclcheck_args *ap, struct mount *mp)
+ 	if (ap->a_vp->v_type == VDIR)
+ 		is_directory = 1;
+ 
++	/*
++	 * vaccess_acl_nfs4() has no notion of rights held by the owner that
++	 * an entry could cancel, so the tag would be stored and not honoured.
++	 */
++	for (i = 0; i < ap->a_aclp->acl_cnt; i++) {
++		if (ap->a_aclp->acl_entry[i].ae_tag == ACL_OWNER_RIGHTS)
++			return (EINVAL);
++	}
++
+ 	return (acl_nfs4_check(ap->a_aclp, is_directory));
+ }
+ 
+-- 
+2.54.0 (Apple Git-157)
+

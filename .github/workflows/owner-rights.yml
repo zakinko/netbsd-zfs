@@ -1,0 +1,129 @@
+name: owner-rights
+on:
+  push:
+    branches: [freebsd-owner-rights]
+    paths: ['ci/owner-rights/**', '.github/workflows/owner-rights.yml']
+  workflow_dispatch:
+concurrency:
+  group: owner-rights
+  cancel-in-progress: true
+env:
+  FBSD_SHA: 7806832f23f
+  FBSD_REPO: https://github.com/freebsd/freebsd-src
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        id: c
+        with:
+          path: fb-out
+          key: or-fb-${{ env.FBSD_SHA }}-${{ hashFiles('ci/owner-rights/patches/*', 'ci/owner-rights/build.sh') }}
+      - name: Build kernel and world
+        if: steps.c.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get -yq install bmake libarchive-dev libarchive-tools clang-18 lld-18
+          sh ci/owner-rights/build.sh "$PWD/fb" "$PWD/fb-out"
+      - uses: actions/cache/save@v4
+        if: steps.c.outputs.cache-hit != 'true'
+        with:
+          path: fb-out
+          key: or-fb-${{ env.FBSD_SHA }}-${{ hashFiles('ci/owner-rights/patches/*', 'ci/owner-rights/build.sh') }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fb-out
+          path: fb-out
+          retention-days: 5
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: build-log
+          path: fb-out/*.log
+          retention-days: 5
+  test:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: fb-out
+          path: fb-out
+      - uses: vmactions/freebsd-vm@v1
+        with:
+          release: "15.1"
+          mem: 8192
+          cpu: 4
+          usesh: true
+          prepare: pkg install -y perl5
+          run: echo vm ready
+      - name: Baseline on the stock system
+        run: |
+          ssh freebsd "mkdir -p /var/tmp/or/sets"
+          scp -r ci/owner-rights/*.sh fb-out/acltests freebsd:/var/tmp/or/
+          ssh freebsd "uname -v; sh /var/tmp/or/regress.sh" 2>&1 | tee regress-stock.log
+      - name: Swap the kernel and reboot
+        run: |
+          scp fb-out/*.tar.zst freebsd:/var/tmp/or/sets/
+          ssh freebsd "sh /var/tmp/or/swap.sh"
+          ssh freebsd "(sleep 3; shutdown -r now) >/dev/null 2>&1 &" || true
+          sleep 60
+          for i in $(seq 1 90); do ssh -o ConnectTimeout=5 freebsd true && break; sleep 5; done
+          ssh freebsd "uname -a; uname -i" | tee uname.log
+          grep -q OWNERRIGHTS uname.log
+      - name: Run the tests
+        timeout-minutes: 60
+        run: |
+          ssh freebsd "sh /var/tmp/or/chroot-run.sh sh /var/tmp/or/in-vm.sh" 2>&1 | tee in-vm.log
+          ssh freebsd "sh /var/tmp/or/chroot-run.sh sh /var/tmp/or/regress.sh" 2>&1 | tee regress-patched.log
+      - name: Collect
+        if: always()
+        shell: bash
+        run: |
+          grep -c '^PASS' in-vm.log || true; grep '^FAIL' in-vm.log || true
+          diff -u <(sed 1d regress-stock.log) <(sed 1d regress-patched.log) | tee regress.diff || true
+          ssh -o ConnectTimeout=20 freebsd "dmesg | tail -40" | tee dmesg.log || true
+          scp -o ConnectTimeout=20 freebsd:/var/tmp/w/var/tmp/pool-old.img.zst . || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs
+          path: |
+            *.log
+            regress.diff
+            pool-old.img.zst
+          retention-days: 14
+      - name: Verdict
+        run: "! grep -q '^FAIL' in-vm.log && grep -q '^DONE' in-vm.log"
+  stock-reader:
+    needs: test
+    if: always() && needs.test.result != 'skipped'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: logs
+          path: logs
+      - uses: vmactions/freebsd-vm@v1
+        with:
+          release: "15.1"
+          mem: 4096
+          cpu: 2
+          usesh: true
+          run: echo vm ready
+      - name: A kernel without the feature opens the pool
+        run: |
+          scp logs/pool-old.img.zst ci/owner-rights/stock-reader.sh freebsd:/var/tmp/
+          ssh freebsd "uname -v; sh /var/tmp/stock-reader.sh" 2>&1 | tee stock-reader.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stock-reader
+          path: stock-reader.log
+          retention-days: 14
