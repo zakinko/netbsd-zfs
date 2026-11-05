@@ -59,7 +59,7 @@ jobs:
           mem: 8192
           cpu: 4
           usesh: true
-          prepare: pkg install -y perl5
+          prepare: pkg install -y perl5 rsync
           run: echo vm ready
       - name: Baseline on the stock system
         run: |

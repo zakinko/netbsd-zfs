@@ -1,7 +1,31 @@
-From 54f129acef7f015d18496c877dbf6cd2c85da65b Mon Sep 17 00:00:00 2001
+From b24a975d04a33e491642b44be6564affbd38cbbe Mon Sep 17 00:00:00 2001
 From: Showta Ishizaki <zakinko@snowrabbit.org>
 Date: Thu, 5 Nov 2026 19:50:19 +0900
-Subject: [PATCH] wip OWNER_RIGHTS
+Subject: [PATCH 1/2] Implement OWNER_RIGHTS@ in acl(9), ZFS and the NFSv4
+ server
+
+Without any ACE the owner of a file holds read_acl and write_acl, so an
+ACL can't take them away; a shared directory where owners must not
+change the ACL has no way to say so.  OWNER_RIGHTS@, in section 8.4.3
+of draft-ietf-nfsv4-acls-update-06, acts as OWNER@ and also cancels
+those default rights unless they are granted explicitly.
+
+Add the ACL_OWNER_RIGHTS tag, owner_rights@ in setfacl and getfacl, and
+the NFSv4 who value.  UFS refuses the tag, as vaccess_acl_nfs4() does
+not honour it.  ZFS stores it as ACE_OWNER plus a new flag, 0x8000, so
+the ACE keeps the size and the matching of OWNER@ even in a kernel that
+does not know the flag.  Such a kernel would lose the cancellation in
+silence, so the ACE needs a new read-only compatible feature,
+acl_owner_rights, and zfs send carries a matching stream flag.
+
+The owner's chmod stays, by secpolicy_vnode_setattr().  It keeps the
+ACE, without the bits of the mode, under every aclmode, as section
+10.7.1 of the draft leaves the effect of the other special who values
+unmodified; otherwise a chmod would undo the cancellation.  Root is
+not bound.
+
+The flag value, the feature name and the stream flag are in the
+namespace of OpenZFS and are tentative.  module/os/linux is not done.
 
 Signed-off-by: Showta Ishizaki <zakinko@snowrabbit.org>
 ---

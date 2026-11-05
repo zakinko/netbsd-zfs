@@ -1,0 +1,147 @@
+From a5f82d2aa6608463bc3614a68f6b5bb4657a2cac Mon Sep 17 00:00:00 2001
+From: Showta Ishizaki <zakinko@snowrabbit.org>
+Date: Thu, 5 Nov 2026 20:05:25 +0900
+Subject: [PATCH 2/2] nfsd: Add vfs.nfsd.smnone, so SETATTR of mode can leave
+ an ACL alone
+
+A client's chmod reaches the server as SETATTR of mode, and on ZFS that
+rewrites the ACL under every aclmode but restricted, which fails with
+EPERM instead.  Programs that chmod as a matter of course, cp -p and
+rsync among them, so take away access that a shared directory's ACL was
+there to give, or stop on the error when they are not the owner.
+
+With the sysctl set, SETATTR of mode or mode_set_masked on an object
+with a real ACL does nothing and returns success, for the owner and for
+whoever may write the file.  GETATTR still returns the mode computed
+from the ACL.  The file system is not changed, and neither is a chmod
+run on the server.
+
+This breaks the MUST of RFC 8881 6.4.1.1 and of
+draft-ietf-nfsv4-acls-update-06 10.7.1, and no client can be told, as
+the draft's ACL_Choice attribute is not implemented and has no flag for
+this.  It is off by default and experimental.
+
+Signed-off-by: Showta Ishizaki <zakinko@snowrabbit.org>
+---
+ sys/fs/nfsserver/nfs_nfsdserv.c | 91 +++++++++++++++++++++++++++++++--
+ 1 file changed, 87 insertions(+), 4 deletions(-)
+
+diff --git a/sys/fs/nfsserver/nfs_nfsdserv.c b/sys/fs/nfsserver/nfs_nfsdserv.c
+index 0e0d791ef0e..a572093ed2c 100644
+--- a/sys/fs/nfsserver/nfs_nfsdserv.c
++++ b/sys/fs/nfsserver/nfs_nfsdserv.c
+@@ -69,6 +69,10 @@ extern int nfsrv_issuedelegs;
+ 
+ static int	nfs_async = 0;
+ SYSCTL_DECL(_vfs_nfsd);
++
++static int nfsrv_smnone = 0;
++SYSCTL_INT(_vfs_nfsd, OID_AUTO, smnone, CTLFLAG_RW, &nfsrv_smnone, 0,
++    "Let SETATTR of mode leave an object with an ACL alone (not RFC 8881)");
+ SYSCTL_INT(_vfs_nfsd, OID_AUTO, async, CTLFLAG_RW, &nfs_async, 0,
+     "Tell client that writes were synced even though they were not");
+ extern int	nfsrv_doflexfile;
+@@ -396,6 +400,76 @@ nfsrvd_getattr(struct nfsrv_descript *nd, int isdgram,
+ 	return (error);
+ }
+ 
++/*
++ * Experimental, and off by default.  With vfs.nfsd.smnone set, SETATTR of
++ * mode or mode_set_masked on an object with a real ACL succeeds without
++ * touching the object, so a chmod from a client can't rewrite the ACL under
++ * any aclmode.  GETATTR goes on returning the mode the file system computes.
++ *
++ * THIS VIOLATES THE PROTOCOL.  RFC 8881 6.4.1.1: the acl MUST be modified so
++ * that the mode computed from it yields the low-order nine bits set.
++ * draft-ietf-nfsv4-acls-update-06 10.7.1 has the same MUST.  A client reads
++ * back a mode other than the one it set.  The draft's ACL_Choice attribute
++ * (5.9), where SMJUST3, SMOLD and SMFULL say what a server does here, is not
++ * implemented, and has no value for this; a tentative ACC4BN_SMNONE would have
++ * to be added before a client could be told.
++ *
++ * A real ACL: anything other than OWNER@, GROUP@ and EVERYONE@ entries, or
++ * an inheritable entry.  Those three alone are just the mode, and the SETATTR
++ * proceeds as usual, as it does when the ACL is being set in the same SETATTR.
++ *
++ * Who: as nothing changes, this only decides who is told success.  The owner,
++ * a privileged user, and whoever may write the file.  ACE4_WRITE_ATTRIBUTES
++ * can't be asked here, as VOP_ACCESS(9) of ZFS answers only VREAD, VWRITE,
++ * VEXEC and VAPPEND from the ACL.  Anybody else gets NFS4ERR_PERM.
++ *
++ * SUID, SGID and SVTX: VOP_SETATTR(9) has no way to set these alone, and on
++ * ZFS it would rewrite the ACL.  A request that would change them gets
++ * NFS4ERR_PERM rather than a success that did nothing to a security bit; one
++ * that repeats their present state, as cp -p does, succeeds.
++ */
++static int
++nfsrvd_smnone(struct vnode *vp, struct nfsvattr *nvap,
++    struct nfsrv_descript *nd, struct nfsexstuff *exp, NFSPROC_T *p,
++    bool *keepaclp)
++{
++	struct acl *aclp;
++	struct vattr va;
++	int error, i;
++	bool real;
++
++	aclp = acl_alloc(M_WAITOK);
++	/* The ACL is looked at for the server, not for the caller. */
++	error = VOP_GETACL(vp, ACL_TYPE_NFS4, aclp, p->td_ucred, p);
++	real = false;
++	for (i = 0; error == 0 && i < aclp->acl_cnt; i++) {
++		if ((aclp->acl_entry[i].ae_tag != ACL_USER_OBJ &&
++		    aclp->acl_entry[i].ae_tag != ACL_GROUP_OBJ &&
++		    aclp->acl_entry[i].ae_tag != ACL_EVERYONE) ||
++		    (aclp->acl_entry[i].ae_flags &
++		    (ACL_ENTRY_FILE_INHERIT | ACL_ENTRY_DIRECTORY_INHERIT)))
++			real = true;
++	}
++	acl_free(aclp);
++	if (!real)
++		return (0);
++
++	error = VOP_GETATTR(vp, &va, nd->nd_cred);
++	if (error != 0)
++		return (error);
++	if (((nvap->na_mode ^ va.va_mode) & (S_ISUID | S_ISGID | S_ISVTX)) != 0)
++		return (NFSERR_PERM);
++	if (va.va_uid != nd->nd_cred->cr_uid &&
++	    priv_check_cred(nd->nd_cred, PRIV_VFS_ADMIN) != 0) {
++		error = nfsvno_accchk(vp, VWRITE, nd->nd_cred, exp, p,
++		    NFSACCCHK_NOOVERRIDE, NFSACCCHK_VPISLOCKED, NULL);
++		if (error != 0)
++			return (error == EROFS ? error : NFSERR_PERM);
++	}
++	*keepaclp = true;
++	return (0);
++}
++
+ /*
+  * nfs setattr service
+  */
+@@ -596,10 +670,19 @@ nfsrvd_setattr(struct nfsrv_descript *nd, __unused int isdgram,
+ 	    if (!nd->nd_repstat &&
+ 		(NFSISSET_ATTRBIT(&attrbits, NFSATTRBIT_MODE) ||
+ 		 NFSISSET_ATTRBIT(&attrbits, NFSATTRBIT_MODESETMASKED))) {
+-		NFSVNO_ATTRINIT(&nva2);
+-		NFSVNO_SETATTRVAL(&nva2, mode, nva.na_mode);
+-		nd->nd_repstat = nfsvno_setattr(vp, &nva2, nd->nd_cred, p,
+-		    exp);
++		bool keepacl;
++
++		keepacl = false;
++		if (nfsrv_smnone != 0 &&
++		    !NFSISSET_ATTRBIT(&attrbits, NFSATTRBIT_ACL))
++			nd->nd_repstat = nfsrvd_smnone(vp, &nva, nd, exp, p,
++			    &keepacl);
++		if (!nd->nd_repstat && !keepacl) {
++			NFSVNO_ATTRINIT(&nva2);
++			NFSVNO_SETATTRVAL(&nva2, mode, nva.na_mode);
++			nd->nd_repstat = nfsvno_setattr(vp, &nva2, nd->nd_cred,
++			    p, exp);
++		}
+ 		if (!nd->nd_repstat) {
+ 		    if (NFSISSET_ATTRBIT(&attrbits, NFSATTRBIT_MODE))
+ 			NFSSETBIT_ATTRBIT(&retbits, NFSATTRBIT_MODE);
+-- 
+2.54.0 (Apple Git-157)
+

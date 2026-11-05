@@ -165,6 +165,55 @@ want x "client: owner refused getfacl" A getfacl /n/nf
 want 0 "client: root can" setfacl -a1 u:bob:r::allow /n/nf
 A chmod 640 /n/nf; echo "client chmod rc=$? (recorded)"
 sleep 2; kill $TD; sleep 1
+echo "--- vfs.nfsd.smnone"
+C() { chroot -u carol / "$@"; }
+id carol >/dev/null 2>&1 || pw useradd carol -u 2003
+zfs set aclmode=discard t
+mk() { rm -f /t/$1; A touch /t/$1; A sh -c "echo data >/t/$1"; setfacl -a0 u:bob:rw::allow /t/$1; }
+sysctl vfs.nfsd.smnone=0 >/dev/null
+mk s0
+want x "off: non-owner chmod EPERM as today" B chmod 666 /n/s0
+want 0 "off: owner chmod" A chmod 640 /n/s0
+hasnt "off: the ACL went" 'user:bob' getfacl -q /t/s0
+sysctl vfs.nfsd.smnone=1 >/dev/null
+mk s1; before=$(getfacl -q /t/s1); m=$(stat -f %Lp /t/s1)
+for mode in 600 666 777; do
+	want 0 "on: owner chmod $mode" A chmod $mode /n/s1
+	want 0 "on: bob (write) chmod $mode" B chmod $mode /n/s1
+	[ "$(getfacl -q /t/s1)" = "$before" ] && ok "on: ACL intact after $mode" || bad "on: ACL changed by $mode"
+	[ "$(stat -f %Lp /t/s1)" = "$m" ] && ok "on: mode stays computed ($m)" || bad "on: mode $(stat -f %Lp /t/s1)"
+	[ "$(stat -f %Lp /n/s1)" = "$m" ] && ok "on: client sees $m" || bad "on: client mode $(stat -f %Lp /n/s1)"
+done
+want x "on: carol, no rights, refused" C chmod 666 /n/s1
+want x "on: setuid refused" A chmod 4644 /n/s1
+[ "$(stat -f %Lp /t/s1)" = "$m" ] && ok "on: setuid not set" || bad "on: mode $(stat -f %Lp /t/s1)"
+A touch /t/triv; want 0 "on: trivial ACL" A chmod 600 /n/triv
+[ "$(stat -f %Lp /t/triv)" = 600 ] && ok "on: trivial chmod applied" || bad "on: trivial $(stat -f %Lp /t/triv)"
+mkdir -p /t/s; chmod 777 /t/s
+setfacl -a0 u:alice:modify_set:fd:allow,u:bob:modify_set:fd:allow /t/s
+A sh -c 'echo x >/n/s/src; chmod 640 /n/s/src'
+want 0 "on: bob cp -p to a new file" B cp -p /n/s/src /n/s/cp.bob
+want 0 "on: bob cp -p over a file" B cp -p /n/s/src /n/s/cp.bob
+mkdir -p /var/tmp/rs; chown alice /var/tmp/rs; A sh -c 'echo y >/var/tmp/rs/a; chmod 600 /var/tmp/rs/a'
+want 0 "on: alice rsync -a" A /usr/local/bin/rsync -a /var/tmp/rs/ /n/s/rs/
+has "on: rsync file kept the inherited ACL" 'user:bob' getfacl -q /t/s/rs/a
+want 0 "on: sed -i" A sed -i '' s/x/z/ /n/s/src
+has "on: sed -i kept the ACL" 'user:bob' getfacl -q /t/s/src
+want 0 "on: install" A install -m 755 /n/s/src /n/s/ins
+has "on: install kept the ACL" 'user:bob' getfacl -q /t/s/ins
+A sh -c 'cd /var/tmp/rs && tar cf /var/tmp/rs/x.tar a'
+want 0 "on: tar -xp" A tar -xpf /var/tmp/rs/x.tar -C /n/s/
+has "on: tar kept the ACL" 'user:bob' getfacl -q /t/s/a
+A ssh-keygen -q -t ed25519 -N '' -f /n/s/key
+stat -f 'on: key mode %Lp (recorded)' /n/s/key; getfacl -q /t/s/key | sed 's/^/  : /'
+A ssh-keygen -y -P '' -f /n/s/key >/dev/null 2>$O; echo "on: ssh-keygen -y rc=$? (recorded)"; sed 's/^/  | /' $O
+mk s2; setfacl -m owner@:rw-p--aARW----:-------:allow /t/s2
+setfacl -a0 owner_rights@:rw-p--aARW----:-------:allow /t/s2
+want 0 "local chmod by the owner works under OWNER_RIGHTS@" A chmod 640 /t/s2
+hasnt "local chmod is not stopped by smnone: bob went" 'user:bob' getfacl -q /t/s2
+has "..and OWNER_RIGHTS@ stayed" owner_rights@ getfacl -q /t/s2
+sysctl vfs.nfsd.smnone=0 >/dev/null
+
 [ "$(strings -a /var/tmp/nfs.pcap | grep -c 'OWNER_RIGHTS@')" -gt 0 ] && ok "OWNER_RIGHTS@ on the wire" || bad "not on the wire"
 umount /n; killall nfsd mountd nfsuserd rpcbind 2>/dev/null
 
