@@ -48,8 +48,9 @@ mount -r /dev/vnd0d /mnt; cat /mnt/y; umount /mnt
 vnconfig -u vnd0
 # drvctl must refuse a unit in use and take an idle one.
 vnconfig vnd0 /var/tmp/img
-drvctl -d vnd0 2>&1 | head -1 || :
-mount /dev/vnd0d /mnt; umount /mnt
+mount /dev/vnd0d /mnt
+! drvctl -d vnd0
+cat /mnt/y; umount /mnt
 vnconfig -u vnd0
 drvctl -d vnd0; ./race 5 /dev/vnd0d /dev/rvnd0d
 dd if=/dev/urandom of=/var/tmp/key bs=32 count=1
