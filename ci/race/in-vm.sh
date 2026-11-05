@@ -62,6 +62,34 @@ i=0; while [ $i -lt 100 ]; do
 done
 wait
 vnconfig -u vnd0 2>/dev/null || :
+# A forced unconfigure with writes queued: a sparse file uses vn_rdwr(),
+# and nothing may be left for the next configuration.
+dd if=/dev/zero of=/var/tmp/sp bs=1 count=0 seek=256m
+vnconfig vnd4 /var/tmp/sp
+for w in 1 2 3 4 5 6 7 8; do
+	dd if=/dev/zero of=/dev/rvnd4d bs=64k count=2000 2>/dev/null &
+done
+sleep 2
+vnconfig -F -u vnd4
+wait || :
+dd if=/dev/zero of=/var/tmp/clean bs=1m count=32
+vnconfig vnd4 /var/tmp/clean
+dd if=/dev/zero of=/dev/rvnd4d bs=64k count=16
+vnconfig -u vnd4
+cmp /var/tmp/clean /dev/zero 2>&1 | grep -q EOF
+# A detach racing with an open of a wedge on the unit must finish.
+vnconfig vnd5 /var/tmp/clean
+gpt create -f vnd5
+gpt add -t ffs -s 4m vnd5
+dkctl vnd5 listwedges
+wedge=$(dkctl vnd5 listwedges | sed -n 's/^\(dk[0-9]*\):.*/\1/p' | head -1)
+echo "wedge $wedge"
+(i=0; while [ $i -lt 2000 ]; do : </dev/r$wedge 2>/dev/null || :; i=$((i + 1)); done) &
+sleep 1
+drvctl -d vnd5 || :
+wait
+vnconfig -u vnd5 2>/dev/null || :
+echo FORCE+WEDGE OK
 dd if=/dev/urandom of=/var/tmp/key bs=32 count=1
 dd if=/dev/zero of=/var/tmp/img2 bs=1m count=8
 vnconfig vnd1 /var/tmp/img2
