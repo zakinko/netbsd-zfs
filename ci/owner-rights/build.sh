@@ -23,7 +23,7 @@ WITHOUT_SENDMAIL=yes
 WITHOUT_DEBUG_FILES=yes
 C
 mkdir -p "$W/obj"; export MAKEOBJDIRPREFIX="$W/obj"
-M="./tools/build/make.py --cross-bindir=/usr/lib/llvm-18/bin TARGET=amd64 TARGET_ARCH=amd64 SRCCONF=$W/src.conf"
+M="./tools/build/make.py --cross-bindir=/usr/lib/llvm-20/bin TARGET=amd64 TARGET_ARCH=amd64 SRCCONF=$W/src.conf"
 J=$(nproc)
 $M -n
 $M KERNCONF=OWNERRIGHTS buildworld buildkernel -s -j"$J" >"$OUT/build.log" 2>&1 ||

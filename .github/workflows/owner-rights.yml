@@ -24,7 +24,7 @@ jobs:
       - name: Build kernel and world
         if: steps.c.outputs.cache-hit != 'true'
         run: |
-          sudo apt-get -yq install bmake libarchive-dev libarchive-tools clang-18 lld-18
+          sudo apt-get -yq install bmake libarchive-dev libarchive-tools clang-20 lld-20
           sh ci/owner-rights/build.sh "$PWD/fb" "$PWD/fb-out"
       - uses: actions/cache/save@v4
         if: steps.c.outputs.cache-hit != 'true'
