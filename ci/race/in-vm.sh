@@ -29,10 +29,11 @@ vnconfig vnd3 /var/tmp/img
 ./race 10 /dev/vnd3f /dev/rvnd3f
 vnconfig -l | grep '^vnd3: /'
 vnconfig -u vnd3
-# A unit backed by another one, configured with failing opens around.
+# VNDIOCSET opens a vnd as its backing file, then refuses it: that open
+# is what could wait on a lock held across detach.
 vnconfig vnd0 /var/tmp/img
 ./race 25 /dev/vnd1a /dev/rvnd1a /dev/vnd2a /dev/rvnd2a &
-i=0; while [ $i -lt 200 ]; do vnconfig vnd1 /dev/vnd0d; vnconfig -u vnd1; i=$((i + 1)); done
+i=0; while [ $i -lt 200 ]; do vnconfig vnd1 /dev/vnd0d 2>/dev/null || :; vnconfig -u vnd1 2>/dev/null || :; i=$((i + 1)); done
 wait
 vnconfig -u vnd0
 dd if=/dev/urandom of=/var/tmp/key bs=32 count=1
