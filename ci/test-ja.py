@@ -8,7 +8,8 @@ and check that the console really draws them.
 The check is on pixels, not on text: the kanji font the kernel carries
 (sys/dev/wsfont/shnmk16.h, indexed by jisx0208.h) is rendered here for
 a phrase from the Japanese welcome message, and that bitmap has to
-appear somewhere in a screendump.  Screendumps are written to outdir as PNG so they can
+appear somewhere in a screendump.  sysinst's shell then writes to a
+second screen, which shows the cells vcons keeps.  Screendumps are written to outdir as PNG so they can
 be looked at afterwards.
 """
 
@@ -115,6 +116,18 @@ def find(bits, w, h, pix, rows, width):
     return None
 
 
+KEYS = {" ": (False, "spc"), "\n": (False, "ret"), "\\": (False, "backslash"),
+        "'": (False, "apostrophe"), ";": (False, "semicolon"),
+        "/": (False, "slash"), "[": (False, "bracket_left"),
+        "%": (True, "5"), ">": (True, "dot"), "@": (True, "2")}
+KEYS.update((c, (True, c.lower())) for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+
+def u8(s):
+    """A string as the octal escapes printf(1) turns back into UTF-8."""
+    return "".join("\\%03o" % b for b in s.encode("utf-8"))
+
+
 class QMP:
     def __init__(self, path):
         self.s = socket.socket(socket.AF_UNIX)
@@ -140,6 +153,21 @@ class QMP:
         for k in keys:
             self.cmd("send-key", keys=[{"type": "qcode", "data": k}])
             time.sleep(0.2)
+
+    def type(self, text):
+        """Type at a US keyboard."""
+        for ch in text:
+            shift, k = KEYS.get(ch, (False, ch))
+            keys = (["shift"] if shift else []) + [k]
+            self.cmd("send-key", keys=[{"type": "qcode", "data": x}
+                                       for x in keys])
+            time.sleep(0.05)
+
+    def switch(self, fkey, name):
+        self.cmd("send-key", keys=[{"type": "qcode", "data": k}
+                                   for k in ("ctrl", "alt", fkey)])
+        time.sleep(3)
+        return self.dump(name)
 
     def dump(self, name):
         ppm = os.path.join(outdir, name + ".ppm")
@@ -215,23 +243,70 @@ try:
     for p, pos in found:
         print("found %r at %s" % (p, pos))
 
-    # vcons repaints a screen from the cells it keeps, not from the
-    # framebuffer, so a glyph that reached the screen without going
-    # through them is gone after a switch to another one and back.
-    def switch(n):
-        q.cmd("send-key", keys=[{"type": "qcode", "data": k}
-                                for k in ("ctrl", "alt", n)])
-        time.sleep(3)
-    switch("f2")
-    w2, h2, away = q.dump("japanese-away")
-    switch("f1")
-    w, h, pix = q.dump("japanese-back")
-    print("the second screen %s" %
-          ("was shown" if away != pix else "did not appear"))
-    missing = [p for p, rows, width in todo
-               if find(None, w, h, pix, rows, width) is None]
-    if missing:
-        sys.exit("lost in a screen switch: %s" % ", ".join(missing))
+    # Leave sysinst for its shell: keep the keyboard, then Exit.
+    q.keys(["ret"])
+    time.sleep(3)
+    q.keys(["x", "ret"])
+    time.sleep(5)
+
+    # A second screen, written while it is not shown.  Nothing reaches
+    # the framebuffer until the switch, so what appears then comes from
+    # the cells vcons keeps.  Each line has one job:
+    #   3  wide glyphs at all
+    #   4  A over the left half of a glyph takes the right half with it
+    #   5  a Latin-1 byte the wide font also has stays one cell wide
+    #   6  a cut-short sequence and an overlong form print nothing
+    #   7  a wide glyph with one column left wraps to the next line
+    cols = w // 8
+    away_text = (r"\033%G\033[2J\033[3;1H" + u8("さしすせそ")
+                 + r"\033[4;1H" + u8("たちつ") + r"\rA"
+                 + r"\033[5;1H\033%@\327\033%G" + u8("なに")
+                 + r"\033[6;1H\343\201Z\300\257" + u8("はひ")
+                 + r"\033[7;" + str(cols) + "H" + u8("まみ"))
+    home_text = r"\033[2J\033[3;1H" + u8("らりるれろ") + r"\n"
+    # printf(1) takes % as a conversion
+    q.type("wsconscfg 1; printf '%s' >/dev/ttyE1; printf '%s'\n"
+           % (away_text.replace("%", "%%"), home_text))
+
+    home = render("らりるれろ")
+    for i in range(12):
+        time.sleep(5)
+        w, h, pix = q.dump("shell")
+        if find(None, w, h, pix, *home):
+            break
+    else:
+        sys.exit("the shell never printed on the first screen")
+
+    w, h, away = q.switch("f2", "japanese-away")
+    if away == pix:
+        sys.exit("the second screen was not shown")
+
+    # where each string has to be: x, and the screen line
+    want = [("さしすせそ", 0, 3), ("ちつ", 16, 4), ("なに", 8, 5),
+            ("はひ", 8, 6), ("まみ", 0, 8)]
+    for p, x, row in want:
+        at = find(None, w, h, away, *render(p))
+        if at != (x, (row - 1) * 16):
+            sys.exit("%r at %s, not at (%d, %d)"
+                     % (p, at, x, (row - 1) * 16))
+        print("found %r at %s" % (p, at))
+    if find(None, w, h, away, *render("たち")):
+        sys.exit("the left half of a glyph survived being overwritten")
+    bg = away[0:3]
+    for r in range(3 * 16, 4 * 16):
+        for c in range(8, 16):
+            if away[(r * w + c) * 3:(r * w + c) * 3 + 3] != bg:
+                sys.exit("the right half of an overwritten glyph is "
+                         "still on the screen")
+
+    # and back, then there again: both directions repaint from the cells
+    w, h, back = q.switch("f1", "japanese-back")
+    if find(None, w, h, back, *home) is None:
+        sys.exit("lost in a screen switch: らりるれろ")
+    w, h, again = q.switch("f2", "japanese-again")
+    if again != away:
+        sys.exit("the second screen came back different")
+    print("both screens repainted")
     print("Japanese console OK")
 finally:
     qemu.terminate()
