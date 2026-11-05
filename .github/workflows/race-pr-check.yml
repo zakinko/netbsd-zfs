@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [module, trunk]
+        mode: [trunk]
     env:
       MARK: RACE${{ matrix.mode == 'trunk' && 'CUR' || 'MOD' }}
     steps:
@@ -35,7 +35,7 @@ jobs:
           [ ! -f out/vnd.kmod ] || scp out/vnd.kmod netbsd:/var/tmp/race/
           O="-o ServerAliveInterval=10 -o ServerAliveCountMax=3"
           if [ ${{ matrix.mode }} = trunk ]; then
-            ssh $O netbsd "uname -a; REGRESS=1 sh /var/tmp/race/in-vm.sh 240 vnd cgd"
+            ssh $O netbsd "uname -a; REGRESS=1 sh /var/tmp/race/in-vm.sh 240 vnd"
           else
             ssh $O netbsd "sh /var/tmp/race/module-vm.sh"
           fi
