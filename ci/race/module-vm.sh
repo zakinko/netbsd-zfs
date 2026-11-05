@@ -12,8 +12,10 @@ for i in 1 2; do
 	vnconfig vnd0 /var/tmp/img
 	mount /dev/vnd0d /mnt; echo hello >/mnt/x; sync; umount /mnt
 	# Configured: the unload is refused and the module still works.
+	mount /dev/vnd0d /mnt
 	! modunload vnd
-	mount -r /dev/vnd0d /mnt; cat /mnt/x; umount /mnt
+	echo written >/mnt/z; sync; cat /mnt/x /mnt/z
+	umount /mnt
 	vnconfig -u vnd0
 	modunload vnd
 done

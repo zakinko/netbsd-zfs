@@ -28,6 +28,9 @@ cp "$W/obj/sys/arch/amd64/compile/$MARK/netbsd" "$OUT/netbsd"
 if [ "$M" = trunk ]; then
 	# The strictest warnings, for the two files only; the tree as a whole
 	# is not clean at this level.  Not -Werror, so all of them are listed.
+	(cd "$W/obj/sys/arch/amd64/compile/$MARK" && rm -f vnd.o &&
+	 "$W/tools/bin/nbmake-amd64" -n NOGCCERROR=1 \
+	    COPTS+='-Wall -Wextra -Wshadow' vnd.o | grep -c -e -Wshadow) || :
 	(cd "$W/obj/sys/arch/amd64/compile/$MARK" && rm -f vnd.o cgd.o &&
 	 "$W/tools/bin/nbmake-amd64" NOGCCERROR=1 \
 	    COPTS+='-Wall -Wextra -Wshadow -Wcast-qual -Wpointer-arith -Wunused -Wno-unused-parameter -Wno-sign-compare -Wno-missing-field-initializers' \

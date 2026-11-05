@@ -37,6 +37,20 @@ vnconfig vnd0 /var/tmp/img
 i=0; while [ $i -lt 200 ]; do vnconfig vnd1 /dev/vnd0d 2>/dev/null || :; vnconfig -u vnd1 2>/dev/null || :; i=$((i + 1)); done
 wait
 vnconfig -u vnd0
+# A failed configuration must leave nothing to the next one.
+vnconfig -z vnd0 /var/tmp/img && exit 1
+vnconfig vnd0 /var/tmp/img
+mount /dev/vnd0d /mnt; echo again >/mnt/y; sync; umount /mnt
+vnconfig -u vnd0
+vnconfig vnd0 /var/tmp/img
+mount -r /dev/vnd0d /mnt; cat /mnt/y; umount /mnt
+vnconfig -u vnd0
+# drvctl must refuse a unit in use and take an idle one.
+vnconfig vnd0 /var/tmp/img
+drvctl -d vnd0 2>&1 | head -1 || :
+mount /dev/vnd0d /mnt; umount /mnt
+vnconfig -u vnd0
+drvctl -d vnd0; ./race 5 /dev/vnd0d /dev/rvnd0d
 dd if=/dev/urandom of=/var/tmp/key bs=32 count=1
 dd if=/dev/zero of=/var/tmp/img2 bs=1m count=8
 vnconfig vnd1 /var/tmp/img2
