@@ -214,6 +214,24 @@ try:
         sys.exit("not found on the screen: %s" % ", ".join(missing))
     for p, pos in found:
         print("found %r at %s" % (p, pos))
+
+    # vcons repaints a screen from the cells it keeps, not from the
+    # framebuffer, so a glyph that reached the screen without going
+    # through them is gone after a switch to another one and back.
+    def switch(n):
+        q.cmd("send-key", keys=[{"type": "qcode", "data": k}
+                                for k in ("ctrl", "alt", n)])
+        time.sleep(3)
+    switch("f2")
+    w2, h2, away = q.dump("japanese-away")
+    switch("f1")
+    w, h, pix = q.dump("japanese-back")
+    print("the second screen %s" %
+          ("was shown" if away != pix else "did not appear"))
+    missing = [p for p, rows, width in todo
+               if find(None, w, h, pix, rows, width) is None]
+    if missing:
+        sys.exit("lost in a screen switch: %s" % ", ".join(missing))
     print("Japanese console OK")
 finally:
     qemu.terminate()
