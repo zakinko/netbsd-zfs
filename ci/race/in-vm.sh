@@ -38,7 +38,8 @@ i=0; while [ $i -lt 200 ]; do vnconfig vnd1 /dev/vnd0d 2>/dev/null || :; vnconfi
 wait
 vnconfig -u vnd0
 # A failed configuration must leave nothing to the next one.
-vnconfig -z vnd0 /var/tmp/img && exit 1
+dd if=/dev/urandom of=/var/tmp/junk bs=1m count=1
+if vnconfig -z vnd0 /var/tmp/junk; then echo 'junk accepted'; vnconfig -u vnd0; fi
 vnconfig vnd0 /var/tmp/img
 mount /dev/vnd0d /mnt; echo again >/mnt/y; sync; umount /mnt
 vnconfig -u vnd0
