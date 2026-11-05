@@ -20,11 +20,10 @@
  	sc->sc_comp_offsets = NULL;
  	sc->sc_comp_buff = NULL;
  	sc->sc_comp_decombuf = NULL;
-@@ -288,6 +290,17 @@ vnd_detach(device_t self, int flags)
- 		if (error != 0)
+@@ -289,6 +291,17 @@ vnd_detach(device_t self, int flags)
  			return error;
  	}
-+
+ 
 +	/*
 +	 * An ioctl may hold the lock with the unit not configured yet.
 +	 * An open waiting for the lock finds VNF_CLEARING and stays away
@@ -35,9 +34,10 @@
 +	     sc->sc_dkdev.dk_openmask != 0))
 +		return EBUSY;
 +	sc->sc_flags |= VNF_CLEARING;
- 
++
  	pmf_device_deregister(self);
  	bufq_free(sc->sc_tab);
+ 	disk_destroy(&sc->sc_dkdev);
 @@ -296,38 +309,48 @@ vnd_detach(device_t self, int flags)
  	return 0;
  }
@@ -100,7 +100,7 @@
  	struct vnd_softc *sc;
  	int error = 0, part, pmask;
  	struct disklabel *lp;
-@@ -336,25 +359,22 @@ vndopen(dev_t dev, int flags, int mode, struct lwp *l)
+@@ -336,26 +359,23 @@ vndopen(dev_t dev, int flags, int mode, struct lwp *l)
  	if (vnddebug & VDB_FOLLOW)
  		printf("vndopen(0x%"PRIx64", 0x%x, 0x%x, %p)\n", dev, flags, mode, l);
  #endif
@@ -132,11 +132,12 @@
 +		device_release(dv);
 +		return ENXIO;
  	}
-+
-+	mutex_enter(&sc->sc_dkdev.dk_openlock);
  
++	mutex_enter(&sc->sc_dkdev.dk_openlock);
++
  	lp = sc->sc_dkdev.dk_label;
  
+ 	part = DISKPART(dev);
 @@ -413,6 +433,7 @@ vndopen(dev_t dev, int flags, int mode, struct lwp *l)
   done:
  	mutex_exit(&sc->sc_dkdev.dk_openlock);
@@ -145,11 +146,10 @@
  	return error;
  }
  
-@@ -460,14 +481,6 @@ vndclose(dev_t dev, int flags, int mode, struct lwp *l
- 	mutex_exit(&sc->sc_dkdev.dk_openlock);
+@@ -461,14 +482,6 @@ vndclose(dev_t dev, int flags, int mode, struct lwp *l
  
  	vndunlock(sc);
--
+ 
 -	if ((sc->sc_flags & VNF_INITED) == 0) {
 -		if ((error = vnd_destroy(sc->sc_dev)) != 0) {
 -			aprint_error_dev(sc->sc_dev,
@@ -157,14 +157,14 @@
 -			return error;
 -		}
 -	}
- 
+-
  	return 0;
  }
-@@ -1256,6 +1269,17 @@ vndioctl(dev_t dev, u_long cmd, void *data, int flag, 
- 	case VNDIOCSET:
+ 
+@@ -1257,6 +1270,14 @@ vndioctl(dev_t dev, u_long cmd, void *data, int flag, 
  		if ((error = vndlock(vnd)) != 0)
  			return error;
-+
+ 
 +		/*
 +		 * The softc outlives a configuration, and a failed attempt
 +		 * at one: start from what vnd_attach() left.
@@ -172,13 +172,11 @@
 +		vnd->sc_flags &= ~(VNF_COMP | VNF_READONLY | VNF_WLABEL |
 +		    VNF_USE_VN_RDWR | VNF_VLABEL);
 +		vnd->sc_flags |= VNF_KLABEL;
-+		memset(vnd->sc_dkdev.dk_label, 0, sizeof(struct disklabel));
-+		memset(vnd->sc_dkdev.dk_cpulabel, 0,
-+		    sizeof(struct cpu_disklabel));
- 
++
  		fflags = FREAD;
  		if ((vio->vnd_flags & VNDIOF_READONLY) == 0)
-@@ -2139,6 +2163,62 @@ CFDRIVER_DECL(vnd, DV_DISK, NULL);
+ 			fflags |= FWRITE;
+@@ -2139,6 +2160,62 @@ CFDRIVER_DECL(vnd, DV_DISK, NULL);
  int vnd_bmajor = -1, vnd_cmajor = -1;
  
  CFDRIVER_DECL(vnd, DV_DISK, NULL);
@@ -241,7 +239,7 @@
  #endif
  
  static int
-@@ -2183,11 +2263,27 @@ vnd_modcmd(modcmd_t cmd, void *arg)
+@@ -2183,11 +2260,27 @@ vnd_modcmd(modcmd_t cmd, void *arg)
  
  	case MODULE_CMD_FINI:
  #ifdef _MODULE
@@ -269,7 +267,7 @@
  #ifdef DIAGNOSTIC
                          aprint_error("%s: failed to detach %s cfattach, "
                              "error %d\n", __func__, vnd_cd.cd_name, error);
-@@ -2197,16 +2293,14 @@ vnd_modcmd(modcmd_t cmd, void *arg)
+@@ -2197,16 +2290,14 @@ vnd_modcmd(modcmd_t cmd, void *arg)
                  error = config_cfdriver_detach(&vnd_cd);
                  if (error) {
                          (void)config_cfattach_attach(vnd_cd.cd_name, &vnd_ca); 
