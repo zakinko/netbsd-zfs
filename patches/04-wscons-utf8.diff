@@ -44,7 +44,7 @@ index 2404ba7ce..94b58235f 100644
  # pseudo audio device driver
  pseudo-device	pad
 diff --git a/sys/dev/rasops/rasops.c b/sys/dev/rasops/rasops.c
-index f5a104d5c..4a96b58f0 100644
+index f5a104d5c..090126745 100644
 --- a/sys/dev/rasops/rasops.c
 +++ b/sys/dev/rasops/rasops.c
 @@ -226,6 +226,10 @@ static const uint8_t apple4_devcmap[16] = {
@@ -53,8 +53,8 @@ index f5a104d5c..4a96b58f0 100644
  static int	rasops_mapchar(void *, int, u_int *);
 +#ifdef _KERNEL
 +static void	rasops_lock_wide_font(struct rasops_info *);
-+#endif
 +static void	rasops_putchar_wide(void *, int, int, u_int, long);
++#endif
  static void	rasops_cursor(void *, int, int, int);
  static int	rasops_allocattr_color(void *, int, int, int, long *);
  static int	rasops_allocattr_mono(void *, int, int, int, long *);
@@ -66,15 +66,7 @@ index f5a104d5c..4a96b58f0 100644
  #ifdef _KERNEL
  	/* Select a font if the caller doesn't care */
  	if (ri->ri_font == NULL) {
-@@ -334,6 +339,7 @@ rasops_init(struct rasops_info *ri, int wantrows, int wantcols)
- 
- 		ri->ri_wsfcookie = cookie;
- 	}
-+
- #endif
- 
- 	/* This should never happen in reality... */
-@@ -372,6 +378,15 @@ rasops_reconfig(struct rasops_info *ri, int wantrows, int wantcols)
+@@ -372,6 +377,15 @@ rasops_reconfig(struct rasops_info *ri, int wantrows, int wantcols)
  	if (wantcols == 0)
  		wantcols = RASOPS_DEFAULT_WIDTH;
  
@@ -90,7 +82,7 @@ index f5a104d5c..4a96b58f0 100644
  	/* throw away old line drawing character bitmaps, if we have any */
  	if (ri->ri_optfont.data != NULL) {
  		kmem_free(ri->ri_optfont.data, ri->ri_optfont.stride * 
-@@ -596,6 +611,17 @@ rasops_reconfig(struct rasops_info *ri, int wantrows, int wantcols)
+@@ -596,6 +610,19 @@ rasops_reconfig(struct rasops_info *ri, int wantrows, int wantcols)
  		return -1;
  	}
  
@@ -98,9 +90,11 @@ index f5a104d5c..4a96b58f0 100644
 +	 * The depth just installed a putchar for the text font's width.
 +	 * Glyphs from the wide font go through ours instead, which hands
 +	 * the rest back to it.  Rotation uses ri_real_ops the same way
-+	 * and has no wide font, so the two do not meet.
++	 * and has no wide font, so the two do not meet.  This has to come
++	 * before vcons saves ri_ops: what it replays from its cells must
++	 * reach this putchar too.
 +	 */
-+	if (ri->ri_wfont != NULL && (ri->ri_flg & RI_ROTATE_MASK) == 0) {
++	if (ri->ri_wfont != NULL) {
 +		ri->ri_real_ops = ri->ri_ops;
 +		ri->ri_ops.putchar = rasops_putchar_wide;
 +	}
@@ -108,7 +102,7 @@ index f5a104d5c..4a96b58f0 100644
  #if NRASOPS_ROTATION > 0
  	if (ri->ri_flg & RI_ROTATE_MASK) {
  		if (ri->ri_flg & RI_ROTATE_CW) {
-@@ -621,6 +647,36 @@ rasops_reconfig(struct rasops_info *ri, int wantrows, int wantcols)
+@@ -621,6 +648,37 @@ rasops_reconfig(struct rasops_info *ri, int wantrows, int wantcols)
  	return 0;
  }
  
@@ -123,14 +117,15 @@ index f5a104d5c..4a96b58f0 100644
 +{
 +	int cookie;
 +
-+	/* rasops_putchar_wide() draws whole bytes only */
-+	if (ri->ri_depth < 8)
++	/* rasops_putchar_wide() draws whole bytes, and only unrotated */
++	if ((ri->ri_flg & RI_ENABLE_WIDEGLYPH) == 0 || ri->ri_depth < 8 ||
++	    (ri->ri_flg & RI_ROTATE_MASK) != 0)
 +		return;
 +
 +	cookie = wsfont_find(NULL,
 +		ri->ri_font->fontwidth * 2,
 +		ri->ri_font->fontheight,
-+		0,
++		howmany(ri->ri_font->fontwidth * 2, 8),
 +		WSDISPLAY_FONTORDER_L2R,
 +		WSDISPLAY_FONTORDER_L2R,
 +		WSFONT_FIND_BITMAP | WSFONT_FIND_WIDE);
@@ -145,7 +140,7 @@ index f5a104d5c..4a96b58f0 100644
  /*
   * Map a character.
   */
-@@ -633,6 +689,17 @@ rasops_mapchar(void *cookie, int c, u_int *cp)
+@@ -633,6 +691,17 @@ rasops_mapchar(void *cookie, int c, u_int *cp)
  
  	int glyph = wsfont_map_unichar(ri->ri_font, c);
  	if (glyph < 0 || !CHAR_IN_FONT(glyph, PICK_FONT(ri, glyph))) {
@@ -163,10 +158,11 @@ index f5a104d5c..4a96b58f0 100644
  		*cp = ' ';
  		return 0;
  	}
-@@ -641,6 +708,88 @@ rasops_mapchar(void *cookie, int c, u_int *cp)
+@@ -641,6 +710,96 @@ rasops_mapchar(void *cookie, int c, u_int *cp)
  	return 5;
  }
  
++#ifdef _KERNEL
 +/*
 + * Draw a glyph of the wide font over this cell and the next; anything
 + * else goes to the putchar the depth installed.  Wide characters are
@@ -182,7 +178,13 @@ index f5a104d5c..4a96b58f0 100644
 +	uint32_t fg, bg, clr;
 +	int width, height, x, y, ul_top, ul_bot;
 +
-+	if ((uc & WSFONT_FLAGS_MASK) != WSFONT_FLAG_WIDE) {
++	switch (uc & WSFONT_FLAGS_MASK) {
++	case WSFONT_FLAG_WIDE:
++		break;
++	case WSFONT_FLAG_WIDECONT:
++		/* the glyph in the cell to the left covers this one */
++		return;
++	default:
 +		(*ri->ri_real_ops.putchar)(cookie, row, col, uc, attr);
 +		return;
 +	}
@@ -201,7 +203,7 @@ index f5a104d5c..4a96b58f0 100644
 +	width = font->fontwidth;
 +	height = font->fontheight;
 +
-+	/* The rows rasops_putchar_width.h underlines. */
++	/* Underline the bottom rows the same way the depth ops do. */
 +	if ((attr & WSATTR_UNDERLINE) != 0) {
 +		ul_bot = height - ri->ri_ul.off;
 +		ul_top = ul_bot - ri->ri_ul.height;
@@ -248,15 +250,29 @@ index f5a104d5c..4a96b58f0 100644
 +		fr += font->stride;
 +	}
 +}
++#endif /* _KERNEL */
 +
  /*
   * Allocate a color attribute.
   */
 diff --git a/sys/dev/rasops/rasops.h b/sys/dev/rasops/rasops.h
-index 595e09735..a12299f8f 100644
+index 595e09735..a335fa5b4 100644
 --- a/sys/dev/rasops/rasops.h
 +++ b/sys/dev/rasops/rasops.h
-@@ -154,8 +154,15 @@ struct rasops_info {
+@@ -75,6 +75,12 @@
+  * Set this to prefer a wider font.
+  */
+ #define RI_PREFER_WIDEFONT	0x8000
++/*
++ * Set this if your driver leaves the putchar rasops installs in the path
++ * of every character, so it can draw glyphs that take two cells.  Without
++ * this flag rasops_mapchar() offers none.
++ */
++#define RI_ENABLE_WIDEGLYPH	0x10000
+ 
+ struct rasops_info {
+ 	/* These must be filled in by the caller */
+@@ -154,8 +160,15 @@ struct rasops_info {
  	/* Callbacks so we can share some code */
  	void	(*ri_do_cursor)(struct rasops_info *);
  
@@ -286,77 +302,34 @@ index 0d92f5a0f..5b4532ae4 100644
  #define	WSDISPLAY_MAXFONTSZ	(512*1024)
  	int bitorder, byteorder;
 diff --git a/sys/dev/wscons/wsdisplay_vcons.c b/sys/dev/wscons/wsdisplay_vcons.c
-index 4427993a6..2645ef06b 100644
+index 4427993a6..753c86271 100644
 --- a/sys/dev/wscons/wsdisplay_vcons.c
 +++ b/sys/dev/wscons/wsdisplay_vcons.c
-@@ -123,6 +123,13 @@ static void vcons_copyrows_buffer(void *, int, int, int);
- static void vcons_eraserows_buffer(void *, int, int, long);
- static int vcons_putchar_buffer(void *, int, int, u_int, long);
- 
-+/*
-+ * A glyph two cells wide is drawn from the left one of them, and only
-+ * that cell holds it.  The cell to its right gets this instead, so that
-+ * a redraw does not put a blank over the right half of the glyph.
-+ */
-+#define	VCONS_WIDE_CONT	((u_int)~0)
-+
- /*
-  * actual wrapper methods which call both the _buffer ones above and the
-  * driver supplied ones to do the drawing
-@@ -703,6 +710,15 @@ vcons_redraw_screen(struct vcons_screen *scr)
- 				c = charptr[offset];
- 				a = attrptr[offset];
- 				acmp = a & mask;
-+				if (c == VCONS_WIDE_CONT) {
-+					/* drawn from the cell to the left */
-+					if (start != -1) {
-+						vdp->erasecols(ri, i, start,
-+						    j - start, last_a);
-+						start = -1;
-+					}
-+					goto next;
-+				}
- 				if (c == ' ') {
- 					/*
- 					 * if we already erased the background
-@@ -801,8 +817,11 @@ vcons_update_screen(struct vcons_screen *scr)
- 				 */
- 				if ((vdp->chars[boffset] != charptr[offset]) ||
- 				    (vdp->attrs[boffset] != attrptr[offset])) {
--					scr->putchar(ri, i, j,
--				 	   charptr[offset], attrptr[offset]);
-+					/* skip what the cell to the left drew */
-+					if (charptr[offset] != VCONS_WIDE_CONT)
-+						scr->putchar(ri, i, j,
-+						    charptr[offset],
-+						    attrptr[offset]);
- 					vdp->chars[boffset] = charptr[offset];
- 					vdp->attrs[boffset] = attrptr[offset];
- 				}
-@@ -1288,6 +1307,21 @@ vcons_putchar_buffer(void *cookie, int row, int col, u_int c, long attr)
+@@ -1288,6 +1288,22 @@ vcons_putchar_buffer(void *cookie, int row, int col, u_int c, long attr)
  		      (scr->scr_chars[pos + offset] != c);
  		scr->scr_attrs[pos + offset] = attr;
  		scr->scr_chars[pos + offset] = c;
 +
++		/*
++		 * A wide glyph is drawn from its left cell.  The right one
++		 * is marked in the same step, so that no redraw can run
++		 * between the two and put the old cell over the glyph.  The
++		 * mark draws nothing; a character replacing the left cell
++		 * has to clear what the glyph left in the right one.
++		 */
 +		if (col + 1 < ri->ri_cols) {
-+			uint32_t *next = &scr->scr_chars[pos + offset + 1];
-+
++			pos += offset + 1;
 +			if ((c & WSFONT_FLAGS_MASK) == WSFONT_FLAG_WIDE) {
-+				/* the cell this glyph reaches into */
-+				*next = VCONS_WIDE_CONT;
-+				scr->scr_attrs[pos + offset + 1] = attr;
-+			} else if (*next == VCONS_WIDE_CONT) {
-+				/* nothing reaches there any more */
-+				*next = ' ';
-+				scr->scr_attrs[pos + offset + 1] = attr;
-+				ret = 1;
-+			}
++				scr->scr_chars[pos] = WSFONT_FLAG_WIDECONT;
++				scr->scr_attrs[pos] = attr;
++			} else if (scr->scr_chars[pos] == WSFONT_FLAG_WIDECONT)
++				vcons_putchar(cookie, row, col + 1, ' ', attr);
 +		}
  	}
  
  	if (ret)
 diff --git a/sys/dev/wscons/wsemul_vt100.c b/sys/dev/wscons/wsemul_vt100.c
-index 5ee5b9f68..fd236714d 100644
+index 5ee5b9f68..1b638c690 100644
 --- a/sys/dev/wscons/wsemul_vt100.c
 +++ b/sys/dev/wscons/wsemul_vt100.c
 @@ -44,6 +44,7 @@ __KERNEL_RCSID(0, "$NetBSD: wsemul_vt100.c,v 1.52 2023/08/02 22:37:02 uwe Exp $"
@@ -367,18 +340,17 @@ index 5ee5b9f68..fd236714d 100644
  
  static void *wsemul_vt100_cnattach(const struct wsscreen_descr *, void *,
  				   int, int, long);
-@@ -86,6 +87,10 @@ static void wsemul_vt100_init(struct wsemul_vt100_emuldata *,
+@@ -86,6 +87,9 @@ static void wsemul_vt100_init(struct wsemul_vt100_emuldata *,
  
  static void wsemul_vt100_output_normal(struct wsemul_vt100_emuldata *,
  				       u_char, int);
 +static void wsemul_vt100_output_utf8(struct wsemul_vt100_emuldata *,
 +				     u_char, int);
-+static void wsemul_vt100_putchar(struct wsemul_vt100_emuldata *, u_int, int,
-+				 int);
++static void wsemul_vt100_putchar(struct wsemul_vt100_emuldata *, u_int, int);
  static void wsemul_vt100_output_c0c1(struct wsemul_vt100_emuldata *,
  				     u_char, int);
  
-@@ -106,7 +111,8 @@ wsemul_vt100_output_esc_spc,
+@@ -106,7 +110,8 @@ wsemul_vt100_output_esc_spc,
  wsemul_vt100_output_string,
  wsemul_vt100_output_string_esc,
  wsemul_vt100_output_dcs,
@@ -388,7 +360,7 @@ index 5ee5b9f68..fd236714d 100644
  
  #define	VT100_EMUL_STATE_NORMAL		0	/* normal processing */
  #define	VT100_EMUL_STATE_ESC		1	/* got ESC */
-@@ -121,6 +127,7 @@ wsemul_vt100_output_dcs_dollar;
+@@ -121,6 +126,7 @@ wsemul_vt100_output_dcs_dollar;
  #define	VT100_EMUL_STATE_STRING_ESC	10	/* waiting for ST, got ESC */
  #define	VT100_EMUL_STATE_DCS		11	/* got DCS (ESC P) */
  #define	VT100_EMUL_STATE_DCS_DOLLAR	12	/* got DCS<p>$ */
@@ -396,7 +368,7 @@ index 5ee5b9f68..fd236714d 100644
  
  static vt100_handler *vt100_output[] = {
  	wsemul_vt100_output_esc,
-@@ -135,6 +142,7 @@ static vt100_handler *vt100_output[] = {
+@@ -135,6 +141,7 @@ static vt100_handler *vt100_output[] = {
  	wsemul_vt100_output_string_esc,
  	wsemul_vt100_output_dcs,
  	wsemul_vt100_output_dcs_dollar,
@@ -404,7 +376,7 @@ index 5ee5b9f68..fd236714d 100644
  };
  
  static void
-@@ -152,6 +160,8 @@ wsemul_vt100_init(struct wsemul_vt100_emuldata *edp,
+@@ -152,6 +159,8 @@ wsemul_vt100_init(struct wsemul_vt100_emuldata *edp,
  	vd->ncols = type->ncols;
  	vd->crow = crow;
  	vd->ccol = ccol;
@@ -413,7 +385,7 @@ index 5ee5b9f68..fd236714d 100644
  
  	/* The underlying driver has already allocated a default and simple
  	 * attribute for us, which is stored in defattr.  We try to set the
-@@ -360,6 +370,8 @@ wsemul_vt100_reset(struct wsemul_vt100_emuldata *edp)
+@@ -360,6 +369,8 @@ wsemul_vt100_reset(struct wsemul_vt100_emuldata *edp)
  	edp->chartab0 = 0;
  	edp->chartab1 = 2;
  	edp->sschartab = 0;
@@ -422,7 +394,7 @@ index 5ee5b9f68..fd236714d 100644
  }
  
  /*
-@@ -412,16 +424,8 @@ static void
+@@ -412,16 +423,8 @@ static void
  wsemul_vt100_output_normal(struct wsemul_vt100_emuldata *edp, u_char c,
  	int kernel)
  {
@@ -439,13 +411,13 @@ index 5ee5b9f68..fd236714d 100644
  	if (c & 0x80) {
  		c &= 0x7f;
  		ct = edp->chartab_G[edp->chartab1];
-@@ -434,19 +438,109 @@ wsemul_vt100_output_normal(struct wsemul_vt100_emuldata *edp, u_char c,
+@@ -434,19 +437,98 @@ wsemul_vt100_output_normal(struct wsemul_vt100_emuldata *edp, u_char c,
  	}
  	dc = (ct ? ct[c] : c);
  
 -	if ((vd->flags & VTFL_INSERTMODE) && COLS_LEFT(vd))
 -		COPYCOLS(vd, vd->ccol, vd->ccol + 1, COLS_LEFT(vd));
-+	wsemul_vt100_putchar(edp, dc, 0, kernel);
++	wsemul_vt100_putchar(edp, dc, kernel);
 +}
 +
 +/*
@@ -454,10 +426,10 @@ index 5ee5b9f68..fd236714d 100644
 + * right, and moves to the next line when only one is left.
 + */
 +static void
-+wsemul_vt100_putchar(struct wsemul_vt100_emuldata *edp, u_int dc, int wide,
-+	int kernel)
++wsemul_vt100_putchar(struct wsemul_vt100_emuldata *edp, u_int dc, int kernel)
 +{
 +	struct vt100base_data *vd = &edp->bd;
++	const int wide = (dc & WSFONT_FLAGS_MASK) == WSFONT_FLAG_WIDE;
 +
 +	if ((vd->flags & (VTFL_LASTCHAR | VTFL_DECAWM)) ==
 +	    (VTFL_LASTCHAR | VTFL_DECAWM)) {
@@ -494,66 +466,55 @@ index 5ee5b9f68..fd236714d 100644
 + * Assemble a UTF-8 sequence, and print the code point once it is
 + * complete.  The display's mapchar says which glyph it is and whether
 + * that glyph takes two cells; a code point with no glyph prints '?'.
-+ * A byte that cannot continue the sequence in hand abandons it.
++ * Any other byte than a continuation abandons the sequence in hand.
 + */
 +static void
 +wsemul_vt100_output_utf8(struct wsemul_vt100_emuldata *edp, u_char c,
 +	int kernel)
 +{
 +	struct vt100base_data *vd = &edp->bd;
-+	u_int dc;
++	u_int cp, dc;
 +
-+	if (edp->utf8_left > 0) {
-+		if ((c & 0xc0) == 0x80) {
-+			edp->utf8_cp = (edp->utf8_cp << 6) | (c & 0x3f);
-+			if (--edp->utf8_left > 0)
-+				return;
-+		} else {
-+			/* abandon the sequence, take this byte afresh */
-+			edp->utf8_left = 0;
-+			wsemul_vt100_output_utf8(edp, c, kernel);
++	if (edp->utf8_left > 0 && (c & 0xc0) == 0x80) {
++		edp->utf8_cp = (edp->utf8_cp << 6) | (c & 0x3f);
++		if (--edp->utf8_left > 0)
 +			return;
-+		}
-+	} else if (c >= 0xc2 && c <= 0xdf) {
++		cp = edp->utf8_cp;
++		/*
++		 * A longer form than the code point needs, a UTF-16
++		 * surrogate or anything past U+10FFFF is not UTF-8.  An
++		 * overlong form of a control character must not come out
++		 * as that character.
++		 */
++		if (cp < edp->utf8_min || cp > 0x10ffff ||
++		    (cp >= 0xd800 && cp <= 0xdfff) ||
++		    (*vd->emulops->mapchar)(vd->emulcookie, cp, &dc) == 0)
++			dc = '?';
++		wsemul_vt100_putchar(edp, dc, kernel);
++		return;
++	}
++
++	edp->utf8_left = 0;
++	if (c >= 0xc2 && c <= 0xdf) {
 +		edp->utf8_cp = c & 0x1f;
 +		edp->utf8_min = 0x80;
 +		edp->utf8_left = 1;
-+		return;
 +	} else if (c >= 0xe0 && c <= 0xef) {
 +		edp->utf8_cp = c & 0x0f;
 +		edp->utf8_min = 0x800;
 +		edp->utf8_left = 2;
-+		return;
 +	} else if (c >= 0xf0 && c <= 0xf4) {
 +		edp->utf8_cp = c & 0x07;
 +		edp->utf8_min = 0x10000;
 +		edp->utf8_left = 3;
-+		return;
-+	} else {
-+		/* a stray continuation or an invalid lead byte */
-+		return;
 +	}
-+
-+	/*
-+	 * A longer form than the code point needs, a UTF-16 surrogate or
-+	 * anything past U+10FFFF is not UTF-8.  Show it as unprintable
-+	 * rather than decode it: an overlong form of a control character
-+	 * must not come out as that character.
-+	 */
-+	if (edp->utf8_cp < edp->utf8_min || edp->utf8_cp > 0x10ffff ||
-+	    (edp->utf8_cp >= 0xd800 && edp->utf8_cp <= 0xdfff))
-+		dc = '?';
-+	else if ((*vd->emulops->mapchar)(vd->emulcookie, edp->utf8_cp,
-+	    &dc) == 0)
-+		dc = '?';
-+	wsemul_vt100_putchar(edp, dc,
-+	    (dc & WSFONT_FLAGS_MASK) == WSFONT_FLAG_WIDE, kernel);
++	/* else a stray continuation or an invalid lead byte */
 +}
 +
  static void
  wsemul_vt100_output_c0c1(struct wsemul_vt100_emuldata *edp, u_char c,
  	int kernel)
-@@ -636,6 +730,8 @@ wsemul_vt100_output_esc(struct wsemul_vt100_emuldata *edp, u_char c)
+@@ -636,6 +718,8 @@ wsemul_vt100_output_esc(struct wsemul_vt100_emuldata *edp, u_char c)
  		return VT100_EMUL_STATE_SCS96;
  	case '#':
  		return VT100_EMUL_STATE_ESC_HASH;
@@ -562,7 +523,7 @@ index 5ee5b9f68..fd236714d 100644
  	case ' ': /* 7/8 bit */
  		return VT100_EMUL_STATE_ESC_SPC;
  	case ']': /* OSC operating system command */
-@@ -654,6 +750,33 @@ wsemul_vt100_output_esc(struct wsemul_vt100_emuldata *edp, u_char c)
+@@ -654,6 +738,33 @@ wsemul_vt100_output_esc(struct wsemul_vt100_emuldata *edp, u_char c)
  	return VT100_EMUL_STATE_NORMAL;
  }
  
@@ -596,18 +557,89 @@ index 5ee5b9f68..fd236714d 100644
  static u_int
  wsemul_vt100_output_scs94(struct wsemul_vt100_emuldata *edp, u_char c)
  {
-@@ -1017,6 +1140,11 @@ wsemul_vt100_output(void *cookie, const u_char *data, u_int count, int kernel)
+@@ -1017,6 +1128,14 @@ wsemul_vt100_output(void *cookie, const u_char *data, u_int count, int kernel)
  		(*vd->emulops->cursor)(vd->emulcookie, 0,
  					vd->crow, vd->ccol << vd->dw);
  	for (; count > 0; data++, count--) {
-+		if (edp->utf8 && !kernel && (*data & 0x80) != 0 &&
++		if (edp->utf8 && !kernel &&
 +		    edp->state == VT100_EMUL_STATE_NORMAL) {
-+			wsemul_vt100_output_utf8(edp, *data, kernel);
-+			continue;
++			if ((*data & 0x80) != 0) {
++				wsemul_vt100_output_utf8(edp, *data, kernel);
++				continue;
++			}
++			edp->utf8_left = 0;
 +		}
  		if ((*data & 0x7f) < 0x20) {
  			wsemul_vt100_output_c0c1(edp, *data, kernel);
  			continue;
+diff --git a/sys/dev/wscons/wsemul_vt100_chars.c b/sys/dev/wscons/wsemul_vt100_chars.c
+index f3be022c2..5f902c78b 100644
+--- a/sys/dev/wscons/wsemul_vt100_chars.c
++++ b/sys/dev/wscons/wsemul_vt100_chars.c
+@@ -37,6 +37,7 @@ __KERNEL_RCSID(0, "$NetBSD: wsemul_vt100_chars.c,v 1.15 2017/11/03 19:20:27 maya
+ #include <dev/wscons/wsemulvar.h>
+ #include <dev/wscons/wsemul_vt100var.h>
+ #include <dev/wscons/unicode.h>
++#include <dev/wsfont/wsfont.h>
+ 
+ static const u_int16_t decspcgr2uni[128] = {
+ 	0x0000, 0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007,
+@@ -76,21 +77,31 @@ static const u_int16_t dectech2uni[128] = {
+ 	0x03be, 0x03c5, 0x03b6, 0x2190, 0x2191, 0x2192, 0x2193, 0x007f,
+ };
+ 
++/*
++ * These tables are the 8 bit character sets, one cell each, and a glyph
++ * the display would draw across two is no more use here than none.
++ */
++static void
++vt100_mapchar(struct wsemul_vt100_emuldata *edp, int c, u_int *dcp)
++{
++	struct vt100base_data *vd = &edp->bd;
++
++	(*vd->emulops->mapchar)(vd->emulcookie, c, dcp);
++	if ((*dcp & WSFONT_FLAGS_MASK) == WSFONT_FLAG_WIDE)
++		*dcp = ' ';
++}
++
+ void
+ vt100_initchartables(struct wsemul_vt100_emuldata *edp)
+ {
+ 	int i;
+-	struct vt100base_data *vd = &edp->bd;
+ 
+ 	for (i = 0; i < 128; i++)
+-		(*vd->emulops->mapchar)(vd->emulcookie, 128 + i,
+-					 &edp->isolatin1tab[i]);
++		vt100_mapchar(edp, 128 + i, &edp->isolatin1tab[i]);
+ 	for (i = 0; i < 128; i++)
+-		(*vd->emulops->mapchar)(vd->emulcookie, decspcgr2uni[i],
+-					 &edp->decgraphtab[i]);
++		vt100_mapchar(edp, decspcgr2uni[i], &edp->decgraphtab[i]);
+ 	for (i = 0; i < 128; i++)
+-		(*vd->emulops->mapchar)(vd->emulcookie, dectech2uni[i],
+-					 &edp->dectechtab[i]);
++		vt100_mapchar(edp, dectech2uni[i], &edp->dectechtab[i]);
+ 	vt100_setnrc(edp, 0);
+ }
+ 
+@@ -143,13 +154,12 @@ void
+ vt100_setnrc(struct wsemul_vt100_emuldata *edp, int nrc)
+ {
+ 	int i;
+-	struct vt100base_data *vd = &edp->bd;
+ 
+ 	KASSERT(nrc < __arraycount(nrctable));
+ 
+ 	for (i = 0; i < 128; i++)
+-		(*vd->emulops->mapchar)(vd->emulcookie, i, &edp->nrctab[i]);
++		vt100_mapchar(edp, i, &edp->nrctab[i]);
+ 	for (i = 0; i < 12; i++)
+-		(*vd->emulops->mapchar)(vd->emulcookie, nrctable[nrc].c[i],
+-					 &edp->nrctab[nrcovlpos[i]]);
++		vt100_mapchar(edp, nrctable[nrc].c[i],
++			      &edp->nrctab[nrcovlpos[i]]);
+ }
 diff --git a/sys/dev/wscons/wsemul_vt100var.h b/sys/dev/wscons/wsemul_vt100var.h
 index a6433207c..e43f17d76 100644
 --- a/sys/dev/wscons/wsemul_vt100var.h
@@ -624,6 +656,19 @@ index a6433207c..e43f17d76 100644
  	u_int savedcursor_row, savedcursor_col;
  	long savedattr, savedbkgdattr;
  	int savedattrflags, savedfgcol, savedbgcol;
+diff --git a/sys/dev/wsfb/genfb.c b/sys/dev/wsfb/genfb.c
+index cb9094da5..65dfbecdf 100644
+--- a/sys/dev/wsfb/genfb.c
++++ b/sys/dev/wsfb/genfb.c
+@@ -650,7 +650,7 @@ genfb_init_screen(void *cookie, struct vcons_screen *scr,
+ 	ri->ri_width = sc->sc_width;
+ 	ri->ri_height = sc->sc_height;
+ 	ri->ri_stride = sc->sc_stride;
+-	ri->ri_flg = RI_CENTER;
++	ri->ri_flg = RI_CENTER | RI_ENABLE_WIDEGLYPH;
+ 	if (scp->sc_want_clear)
+ 		ri->ri_flg |= RI_FULLCLEAR;
+ 
 diff --git a/sys/dev/wsfont/files.wsfont b/sys/dev/wsfont/files.wsfont
 index 137c6ace5..1041bc49d 100644
 --- a/sys/dev/wsfont/files.wsfont
@@ -732,22 +777,23 @@ index 5080f6dff..ae79e7f15 100644
  		return (-1);
  
 diff --git a/sys/dev/wsfont/wsfont.h b/sys/dev/wsfont/wsfont.h
-index 737d789a4..0f4ac1e1f 100644
+index 737d789a4..4aa73cf20 100644
 --- a/sys/dev/wsfont/wsfont.h
 +++ b/sys/dev/wsfont/wsfont.h
-@@ -34,6 +34,7 @@
+@@ -34,6 +34,8 @@
  
  #define WSFONT_FLAGS_MASK	0x7f000000
  #define WSFONT_FLAG_OPT		0x01000000	/* use alternate font */
 +#define WSFONT_FLAG_WIDE	0x02000000	/* glyph takes two cells */
++#define WSFONT_FLAG_WIDECONT	0x04000000	/* second cell of such a glyph */
  #define WSFONT_GLYPH(c, font)	((uint8_t *)font->data + \
  		((c) - font->firstchar) * font->stride * font->fontheight)
  #define FONT_IS_ALPHA(f) ((f)->fontwidth <= (f)->stride)
-@@ -64,6 +65,7 @@ int	wsfont_matches(struct wsdisplay_font *, const char *, int, int, int, int);
- int	wsfont_find(const char *, int, int, int, int, int, int);
- #define WSFONT_FIND_BITMAP	0x01
- #define WSFONT_FIND_ALPHA	0x02
-+#define WSFONT_FIND_WIDE	0x04	/* double width CJK fonts only */
+@@ -67,6 +69,7 @@ int	wsfont_find(const char *, int, int, int, int, int, int);
  #define WSFONT_FIND_ALL		0xff
  #define WSFONT_FIND_BESTWIDTH	0x1000
  #define WSFONT_PREFER_ALPHA	0x2000
++#define WSFONT_FIND_WIDE	0x4000	/* double width CJK fonts only */
+ #define WSFONT_PREFER_WIDE	0x8000
+ 
+ void	wsfont_walk(void (*)(struct wsdisplay_font *, void *, int), void *);
