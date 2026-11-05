@@ -22,7 +22,7 @@ WITHOUT_GAMES=yes
 WITHOUT_SENDMAIL=yes
 WITHOUT_DEBUG_FILES=yes
 C
-export MAKEOBJDIRPREFIX="$W/obj"
+mkdir -p "$W/obj"; export MAKEOBJDIRPREFIX="$W/obj"
 M="./tools/build/make.py --cross-bindir=/usr/lib/llvm-18/bin TARGET=amd64 TARGET_ARCH=amd64 SRCCONF=$W/src.conf"
 J=$(nproc)
 $M -n
