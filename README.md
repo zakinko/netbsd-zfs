@@ -72,7 +72,7 @@ The disk image is still built from stock NetBSD 11.0 and uses osnet.
 
 ## The patches
 
-[patches/](patches/) holds four diffs against the `netbsd-11` branch
+[patches/](patches/) holds seven diffs against the `netbsd-11` branch
 (the revision they were made against is in
 [patches/SRC_REV](patches/SRC_REV)); `ci/build-iso.sh` applies them
 in name order.
@@ -130,6 +130,14 @@ themselves.  Such a program sees a longer name cut to 31 bytes.  The
 node is larger, so kernel modules have to be built against the new
 `<sys/sysctl.h>`; the module on the CD is, and a stock 11.0 module
 loaded later is not.
+
+[07-wscons-utf8.diff](patches/07-wscons-utf8.diff) gives the wscons
+console UTF-8 and a kanji font, for drivers that ask for it with
+`RI_ENABLE_WIDEGLYPH`; genfb does.
+[08-sysinst-ja.diff](patches/08-sysinst-ja.diff) adds the Japanese
+catalogs to sysinst, and
+[09-wscons-vt100-bounds.diff](patches/09-wscons-vt100-bounds.diff)
+keeps the vt100 cursor and tab stops inside the screen.
 
 Not covered: MBR/disklabel disks, because the pool is looked for on
 whole disks and wedges, and GENERIC does not turn disklabel partitions
