@@ -116,7 +116,7 @@ def find(bits, w, h, pix, rows, width):
     return None
 
 
-KEYS = {" ": (False, "spc"), "\n": (False, "ret"), "\\": (False, "backslash"),
+KEYS = {" ": (False, "spc"), "-": (False, "minus"), "\n": (False, "ret"), "\\": (False, "backslash"),
         "'": (False, "apostrophe"), ";": (False, "semicolon"),
         "/": (False, "slash"), "[": (False, "bracket_left"),
         "%": (True, "5"), ">": (True, "dot"), "@": (True, "2")}
@@ -248,6 +248,15 @@ try:
     time.sleep(3)
     q.keys(["x", "ret"])
     time.sleep(5)
+
+    # Japanese in sysinst also means the JP keyboard, where most of the
+    # punctuation below is on other keys.  '=' is the one character of
+    # this command that moves: shift and the US minus key.
+    q.type("wsconsctl -k -w encoding")
+    q.cmd("send-key", keys=[{"type": "qcode", "data": k}
+                            for k in ("shift", "minus")])
+    q.type("us\n")
+    time.sleep(2)
 
     # A second screen, written while it is not shown.  Nothing reaches
     # the framebuffer until the switch, so what appears then comes from
